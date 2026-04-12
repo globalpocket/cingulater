@@ -199,6 +199,7 @@ class GitHubClientWrapper:
             issue = repo.get_issue(issue_number)
             issue.create_comment(body)
         except GithubException as e:
+            logger.info(f"Successfully posted comment to {repo_name}#{issue_number}")
             self._handle_exception(e)
 
     @github_retry

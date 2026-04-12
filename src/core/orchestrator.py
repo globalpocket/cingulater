@@ -46,22 +46,19 @@ class Orchestrator:
         checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         
-        logger.info(f"Connecting to checkpointer (Async): {checkpoint_path}")
-        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
-            self._checkpointer = checkpointer
-            
-            global global_orchestrator
-            global_orchestrator = self
-            
-            logger.info("Compiling workflow with checkpointer...")
-            from src.core.graph.builder import compile_workflow
-            self._workflow_app = compile_workflow(checkpointer=self._checkpointer)
-            
-            logger.info("Starting WorkerPool...")
-            await self.worker_pool.run()
-            
-            logger.info("BOOT SEQUENCE COMPLETED. Entering polling loop.")
+        global global_orchestrator
+        global_orchestrator = self
+        
+        logger.info("Starting WorkerPool...")
+        await self.worker_pool.run()
+        
+        logger.info("BOOT SEQUENCE COMPLETED. Entering polling loop.")
 
+        # メインプロセスではチェックポインターを維持し続ける
+        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+            from src.core.graph.builder import compile_workflow
+            self._workflow_app = compile_workflow(checkpointer=checkpointer)
+            
             try:
                 self.is_running = True
                 while self.is_running:
@@ -85,7 +82,7 @@ class Orchestrator:
         logger.info("Orchestrator cleanup completed.")
 
     async def _poll_mentions(self):
-        """GitHub からのメンションを取得し、Huey キューに投入またはワークフローを再開する"""
+        """メンション取得とキュー投入"""
         try:
             exclude_list = self.config['agent'].get('exclude_repositories', [])
             all_mentions = await self.gh_client.get_mentions_to_process()
@@ -104,90 +101,71 @@ class Orchestrator:
                     await self._resume_workflow(task_id, "Reject")
                 else:
                     await self._queue_task(task_id, target_repo, m['number'], comment_id=str(m['comment_id']))
-                    
-        except GitHubRateLimitException as e:
-            wait_seconds = int(e.reset_at - time.time()) + 60
-            logger.warning(f"Rate limit hit. Sleeping for {wait_seconds}s...")
-            await asyncio.sleep(wait_seconds)
         except Exception as e:
             logger.error(f"Polling error: {e}")
 
     async def _resume_workflow(self, task_id: str, decision: str):
-        """承認/却下を受けて、特定のスレッドのワークフローを再開する"""
-        logger.info(f"Resuming workflow for {task_id} with decision: {decision}")
+        # メインプロセスでの実行を想定
         config = {"configurable": {"thread_id": task_id}}
-        
         await self._workflow_app.aupdate_state(config, {"governance_decision": decision, "status": "InQueue"}, as_node="intent_alignment")
         await self.worker_pool.add_task(task_id, 1, task_id.split("#")[0], int(task_id.split("#")[1]))
 
     async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: Optional[str] = None):
-        """タスクの状態を確認し、必要であれば Huey キューに投入する"""
         config = {"configurable": {"thread_id": task_id}}
         state = await self._workflow_app.aget_state(config)
         
         payload_to_send = None
-
         if state.values:
             status = state.values.get("status")
-            # すでに実行中またはキュー待機中なら何もしない
             if status in ['InProgress', 'InQueue']:
                 return
-            
-            # 再開（Resurrection）: resume_comment_id を更新し、キューに再投入
-            logger.info(f"Resurrecting task {task_id} from status: {status}")
             await self._workflow_app.aupdate_state(config, {"resume_comment_id": comment_id, "status": "InQueue"}, as_node="intent_alignment")
             payload_to_send = state.values
         else:
-            # 新規タスク: 必要情報を GitHub から取得して初期化
-            logger.info(f"Adding NEW task {task_id} to Huey queue")
-            
             repo_path = os.path.join(self.project_root, "workspaces", repo_name.split("/")[-1])
-
-            try:
-                issue = await self.gh_client.get_issue(repo_name, issue_number)
-                instruction = f"Title: {issue.get('title', '')}\n\nBody:\n{issue.get('body', '')}"
-            except Exception as ge:
-                logger.error(f"Failed to fetch issue details for {task_id}: {ge}")
-                instruction = f"Execute task for {repo_name}#{issue_number}"
-
+            issue = await self.gh_client.get_issue(repo_name, issue_number)
             initial_values = {
-                "task_id": task_id,
-                "thread_id": task_id,
-                "repo_name": repo_name,
-                "repo_path": repo_path,
-                "issue_number": issue_number,
-                "instruction": instruction,
-                "status": "InQueue",
-                "intent_confirmed": False,
-                "history": [],
-                "metadata": {},
-                "trigger_comment_id": comment_id,
-                "created_at": datetime.utcnow().isoformat()
+                "task_id": task_id, "thread_id": task_id, "repo_name": repo_name,
+                "repo_path": repo_path, "issue_number": issue_number,
+                "instruction": f"Title: {issue.get('title','')}\n\nBody:\n{issue.get('body','')}",
+                "status": "InQueue", "intent_confirmed": False, "history": [], "metadata": {},
+                "trigger_comment_id": comment_id, "created_at": datetime.utcnow().isoformat()
             }
             await self._workflow_app.aupdate_state(config, initial_values)
             payload_to_send = initial_values
 
-        logger.info(f"Task {task_id} PUSHed to Huey queue.")
+        await self.worker_pool.add_task(task_id, 1, repo_name, issue_number, payload=payload_to_send)
 
     async def _execute_task(self, task_id: str, repo_name: str, issue_number: int, payload: dict = None):
-        """Huey ワーカーから呼び出される実行実体"""
-        config = {"configurable": {"thread_id": task_id}}
-        state = await self._workflow_app.aget_state(config)
-
-        try:
-            input_data = None
-            if not state.values and payload:
-                logger.info(f"Initializing task {task_id} with provided payload.")
-                input_data = payload
-            elif not state.values:
-                logger.error(f"Task {task_id} state not found and no payload provided. Cannot execute.")
-                return
-
-            async for event in self._workflow_app.astream(input_data, config=config):
-                pass
+        """Huey ワーカーから呼び出される実行実体（ワーカープロセス内）"""
+        checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
+        
+        # ワーカー実行時にその都度チェックポインターを開くことで接続切れを防ぐ
+        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+            from src.core.graph.builder import compile_workflow
+            workflow_app = compile_workflow(checkpointer=checkpointer)
             
-            final_state = await self._workflow_app.aget_state(config)
-            if final_status := final_state.values.get("status"):
+            config = {"configurable": {"thread_id": task_id}}
+            state = await workflow_app.aget_state(config)
+
+            try:
+                input_data = None
+                if not state.values and payload:
+                    input_data = payload
+                elif not state.values:
+                    return
+
+                async for event in workflow_app.astream(input_data, config=config):
+                    for node_name, output in event.items():
+                        if node_name == "intent_alignment" and "intent_draft" in output:
+                            draft = output["intent_draft"]
+                            await self.gh_client.post_comment(repo_name, issue_number, f"### 🔍 意図の確認と提案\n\n{draft}" + get_footer())
+                        elif node_name == "core_analysis" and output.get("status") == "Phase1_Completed":
+                            await self.gh_client.post_comment(repo_name, issue_number, "### 📊 全方位分析完了\nリポジトリの解析が完了しました。" + get_footer())
+
+                final_state = await workflow_app.aget_state(config)
+                final_status = final_state.values.get("status")
+                
                 if final_status == "WaitingForClarification":
                     plan = final_state.values.get("plan", "No plan.")
                     await self.gh_client.post_comment(repo_name, issue_number, f"### 🛠 実行計画（承認待ち）\n\n{plan}" + get_footer())
@@ -195,8 +173,6 @@ class Orchestrator:
                     summary = final_state.values.get("final_summary", "Done.")
                     await self.gh_client.post_comment(repo_name, issue_number, f"### ✅ 完了報告\n\n{summary}" + get_footer())
 
-        except Exception as e:
-            logger.error(f"Task execution error: {e}", exc_info=True)
-            await self._workflow_app.aupdate_state(config, {"status": "Failed"}, as_node="intent_alignment")
-
-global_orchestrator: Optional[Orchestrator] = None
+            except Exception as e:
+                logger.error(f"Task execution error: {e}", exc_info=True)
+                await workflow_app.aupdate_state(config, {"status": "Failed"}, as_node="intent_alignment")

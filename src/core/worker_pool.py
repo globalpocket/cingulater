@@ -8,18 +8,18 @@ class WorkerPool:
         self.huey = huey
 
     async def run(self):
-        logger.info("WorkerPool: Active.")
+        logger.info("WorkerPool: Active (FileHuey Mode)")
 
     def stop(self):
         pass
 
     async def add_task(self, task_id, priority, repo_name, issue_number, **kwargs):
         from src.core.workers.tasks import analysis_task
-        # decorator 経由ではなく、明示的にシグネチャを作成して投入を試みる
-        logger.info(f"Adding task {task_id} to queue...")
+        logger.info(f"Queueing task {task_id} via FileHuey...")
         try:
+            # Huey タスクとして投入
             analysis_task(task_id, repo_name, issue_number, kwargs)
-            logger.info("Task enqueued successfully.")
+            logger.info(f"Task {task_id} successfully persisted to filesystem.")
             return True
         except Exception as e:
             logger.error(f"Task enqueue FAILED: {e}")

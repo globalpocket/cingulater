@@ -2,6 +2,7 @@ import yaml
 from typing import Dict, Any
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
+from openai import AsyncOpenAI
 from src.core.graph.state import TaskState
 from src.core.validation.schemas import IntentDraft
 
@@ -21,10 +22,11 @@ async def intent_alignment_node(state: TaskState) -> Dict[str, Any]:
     import os
     os.environ.setdefault("OPENAI_API_KEY", "EMPTY")
 
-    # Pydantic AI 1.x では OpenAIModel は内部で OpenAI クライアントを使用する。
-    # base_url を通すために、明示的に AsyncOpenAI クライアントを渡す方式を推奨。
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(base_url=planner_endpoint, api_key=os.getenv("OPENAI_API_KEY", "EMPTY"))
+    # OpenAI クライアントを明示的に作成して渡す（最も確実な方法）
+    client = AsyncOpenAI(
+        base_url='http://localhost:11434/v1',
+        api_key=os.getenv("OPENAI_API_KEY", "EMPTY")
+    )
     model = OpenAIModel(planner_model_name, openai_client=client)
 
     agent = Agent(

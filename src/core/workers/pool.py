@@ -1,4 +1,13 @@
 import os
-from huey import SqliteHuey
-db_path = os.path.join("/Users/satoshitanaka/Documents/brownie", ".brwn", "huey.db")
-huey = SqliteHuey(filename=db_path)
+import logging
+from huey import FileHuey
+
+logger = logging.getLogger(__name__)
+
+STORAGE_DIR = os.path.join("/Users/satoshitanaka/Documents/brownie", ".brwn", "huey_files")
+
+if not os.path.exists(STORAGE_DIR):
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+    logger.info(f"Created Huey storage directory: {STORAGE_DIR}")
+
+huey = FileHuey(path=STORAGE_DIR)
