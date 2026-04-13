@@ -59,3 +59,17 @@ class WorkerPool:
         except Exception as e:
             logger.error(f"Task enqueue FAILED: {e}")
             return False
+
+    async def check_health(self):
+        """ワーカープロセスの生存確認を行い、死んでいれば再起動する"""
+        if self.consumer_proc:
+            exit_code = self.consumer_proc.poll()
+            if exit_code is not None:
+                logger.warning(f"Huey consumer (PID: {self.consumer_proc.pid}) died with exit code: {exit_code}. Restarting...")
+                self.consumer_proc = None
+                await self.run()
+            else:
+                logger.debug(f"Huey consumer (PID: {self.consumer_proc.pid}) is healthy.")
+        else:
+            logger.warning("Huey consumer not running. Starting...")
+            await self.run()

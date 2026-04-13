@@ -24,6 +24,18 @@ class PersistenceManager:
                     is_active BOOLEAN DEFAULT 1
                 )
             """)
+            
+            # 処理済みメンション管理テーブル (重複排除・編集検知)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_mentions (
+                    mention_id TEXT PRIMARY KEY,
+                    repo_name TEXT,
+                    issue_number INTEGER,
+                    updated_at TEXT,
+                    body TEXT,
+                    processed_at DATETIME
+                )
+            """)
             conn.commit()
 
     def upsert_repository(self, repo_name: str):
@@ -36,6 +48,32 @@ class PersistenceManager:
                 ON CONFLICT(repo_name) DO UPDATE SET
                     last_polled_at = excluded.last_polled_at
             """, (repo_name, datetime.utcnow().isoformat()))
+            conn.commit()
+
+    def is_mention_new_or_updated(self, mention_id: str, updated_at: str) -> bool:
+        """メンションが新規または更新されているか確認"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT updated_at FROM processed_mentions WHERE mention_id = ?", (mention_id,))
+            row = cursor.fetchone()
+            if not row:
+                return True # 新規
+            
+            # 保存されている updated_at と比較 (文字列比較)
+            return updated_at > row[0]
+
+    def save_processed_mention(self, mention_id: str, repo_name: str, issue_number: int, updated_at: str, body: str):
+        """メンションを処理済みとして保存または更新"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO processed_mentions (mention_id, repo_name, issue_number, updated_at, body, processed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(mention_id) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    body = excluded.body,
+                    processed_at = excluded.processed_at
+            """, (mention_id, repo_name, issue_number, updated_at, body, datetime.utcnow().isoformat()))
             conn.commit()
 
     def get_watched_repositories(self) -> List[str]:

@@ -85,6 +85,9 @@ class Orchestrator:
                 self.is_running = True
                 while self.is_running:
                     try:
+                        # ワーカープロセスの生存確認と自動復旧
+                        await self.worker_pool.check_health()
+                        
                         await self._poll_mentions()
                         logger.debug("Polling cycle completed successfully.")
                         await asyncio.sleep(self.config['agent']['polling_interval_sec'])
@@ -170,9 +173,22 @@ class Orchestrator:
                 target_repo = m['repo_name']
                 if target_repo in exclude_list:
                     continue
-                    
+                
+                mention_id = m.get('comment_id', 'body')
+                updated_at = m.get('updated_at', '1970-01-01T00:00:00Z')
+                
+                # 重複排除と編集検知のチェック (設計改善: DB による決定論的判定)
+                if not self.persistence.is_mention_new_or_updated(mention_id, updated_at):
+                    logger.debug(f"Skipping already processed mention {mention_id} for {target_repo}#{m['number']}")
+                    continue
+                
                 task_id = f"{target_repo}#{m['number']}"
                 body = m.get('body', '').lower()
+                
+                # キュー投入前に DB を更新 (二重登録の隙間を最小化)
+                self.persistence.save_processed_mention(
+                    mention_id, target_repo, m['number'], updated_at, m.get('body', '')
+                )
                 
                 if "/approve" in body:
                     await self._resume_workflow(task_id, "Approve")

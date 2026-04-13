@@ -542,7 +542,8 @@ class GitHubClientWrapper:
                                 "number": issue.number,
                                 "comment_id": "body",
                                 "body": issue.body,
-                                "created_at": issue.created_at
+                                "created_at": issue.created_at,
+                                "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat()
                             }
                         
                         # 2. 次にすべてのコメントをチェック
@@ -558,7 +559,8 @@ class GitHubClientWrapper:
                                             "number": issue.number,
                                             "comment_id": str(comment.id),
                                             "body": comment.body,
-                                            "created_at": comment.created_at
+                                            "created_at": comment.created_at,
+                                            "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat()
                                         }
                         except Exception as ce:
                             logger.warning(f"Failed to scan comments for Issue #{issue_number} in {issue_repo_name}: {ce}")
@@ -579,7 +581,8 @@ class GitHubClientWrapper:
                                                 "number": issue.number,
                                                 "comment_id": f"review-{review.id}",
                                                 "body": review.body,
-                                                "created_at": review.submitted_at
+                                                "created_at": review.submitted_at,
+                                                "updated_at": review.submitted_at.isoformat()
                                             }
 
                                 # レビューインラインコメント
@@ -593,7 +596,8 @@ class GitHubClientWrapper:
                                                 "number": issue.number,
                                                 "comment_id": f"rc-{r_comment.id}",
                                                 "body": r_comment.body,
-                                                "created_at": r_comment.created_at
+                                                "created_at": r_comment.created_at,
+                                                "updated_at": r_comment.updated_at.isoformat() if r_comment.updated_at else r_comment.created_at.isoformat()
                                             }
                             except Exception as pe:
                                 logger.warning(f"Failed to scan PR details for Issue #{issue_number} in {issue_repo_name}: {pe}")
@@ -655,7 +659,8 @@ class GitHubClientWrapper:
                         "number": issue.number,
                         "comment_id": "body",
                         "body": issue.body,
-                        "created_at": issue.created_at
+                        "created_at": issue.created_at,
+                        "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat()
                     }
 
                 # 2. コメントをチェック
@@ -670,7 +675,8 @@ class GitHubClientWrapper:
                                     "number": issue.number,
                                     "comment_id": str(comment.id),
                                     "body": comment.body,
-                                    "created_at": comment.created_at
+                                    "created_at": comment.created_at,
+                                    "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat()
                                 }
                 except Exception as ce:
                     logger.warning(f"Failed to fetch comments for search match #{issue.number} in {repo_name}: {ce}")
