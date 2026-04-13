@@ -39,6 +39,10 @@ class Orchestrator:
         for repo in initial_repos:
             self.persistence.upsert_repository(repo)
 
+        # ワークフローの準備 (checkpoint なしで一度準備)
+        from src.core.graph.builder import compile_workflow
+        self._workflow_app = compile_workflow()
+
     async def start(self):
         """オーケストレーター（メンション監視プロセス）の起動"""
         logger.info(f"Orchestrator starting. Build ID: {get_build_id()}")
@@ -105,10 +109,21 @@ class Orchestrator:
             logger.error(f"Polling error: {e}")
 
     async def _resume_workflow(self, task_id: str, decision: str):
-        # メインプロセスでの実行を想定
-        config = {"configurable": {"thread_id": task_id}}
-        await self._workflow_app.aupdate_state(config, {"governance_decision": decision, "status": "InQueue"}, as_node="intent_alignment")
-        await self.worker_pool.add_task(task_id, 1, task_id.split("#")[0], int(task_id.split("#")[1]))
+        # データベースパスの取得
+        checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
+        
+        # チェックポインターを明示的に起動して状態を更新
+        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
+            from src.core.graph.builder import compile_workflow
+            workflow_app = compile_workflow(checkpointer=checkpointer)
+            
+            config = {"configurable": {"thread_id": task_id}}
+            await workflow_app.aupdate_state(
+                config, 
+                {"governance_decision": decision, "status": "InQueue"}, 
+                as_node="intent_alignment"
+            )
+            await self.worker_pool.add_task(task_id, 1, task_id.split("#")[0], int(task_id.split("#")[1]))
 
     async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: Optional[str] = None):
         config = {"configurable": {"thread_id": task_id}}
@@ -117,8 +132,11 @@ class Orchestrator:
         payload_to_send = None
         if state.values:
             status = state.values.get("status")
-            if status in ['InProgress', 'InQueue']:
+            # すでにキューにあるか実行中でも、新しいコメントが来た場合は更新して再投入を許可する
+            if status in ['InProgress', 'InQueue'] and state.values.get("resume_comment_id") == comment_id:
                 return
+            
+            logger.info(f"Updating task {task_id} with new comment {comment_id}")
             await self._workflow_app.aupdate_state(config, {"resume_comment_id": comment_id, "status": "InQueue"}, as_node="intent_alignment")
             payload_to_send = state.values
         else:
