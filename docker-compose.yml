@@ -9,6 +9,17 @@ services:
       - brownie-memory-data:/chroma/chroma
     restart: always
 
+  redis:
+    image: redis:7-alpine
+    container_name: brownie-queue
+    ports:
+      - "6379:6379"
+    volumes:
+      - brownie-queue-data:/data
+    restart: always
+
 volumes:
   brownie-memory-data:
+    driver: local
+  brownie-queue-data:
     driver: local

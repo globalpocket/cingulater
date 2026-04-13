@@ -45,6 +45,7 @@ dependencies = [
     "pydantic-ai>=0.0.14",
     "langchain-mcp-adapters>=0.1.0",
     "langchain-core>=1.2.28",
+    "redis>=7.4.0",
 ]
 
 [build-system]

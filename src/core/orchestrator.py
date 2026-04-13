@@ -4,6 +4,8 @@ import sys
 import logging
 import yaml
 import time
+import subprocess
+import httpx
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
@@ -42,6 +44,10 @@ class Orchestrator:
         # ワークフローの準備 (checkpoint なしで一度準備)
         from src.core.graph.builder import compile_workflow
         self._workflow_app = compile_workflow()
+        
+        self.http_client = httpx.AsyncClient(timeout=30.0)
+        self._llm_startup_lock = asyncio.Lock()
+        self.is_running = False
 
     async def start(self):
         """オーケストレーター（メンション監視プロセス）の起動"""
@@ -57,6 +63,10 @@ class Orchestrator:
         await self.worker_pool.run()
         
         logger.info("BOOT SEQUENCE COMPLETED. Entering polling loop.")
+
+        self.is_running = True
+        # LLM サーバーの自動起動監視を開始
+        asyncio.create_task(self._llm_health_loop())
 
         # メインプロセスではチェックポインターを維持し続ける
         async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
@@ -82,8 +92,65 @@ class Orchestrator:
         """オーケストレーターのクリーンアップ"""
         logger.info("Orchestrator shutting down...")
         self.is_running = False
+        await self.http_client.aclose()
+        self.worker_pool.stop()
         await self.mcp_manager.stop_all()
         logger.info("Orchestrator cleanup completed.")
+
+    async def _llm_health_loop(self):
+        """LLM サーバーの死活監視ループ"""
+        while self.is_running:
+            try:
+                await self._check_llm_health()
+            except Exception as e:
+                logger.error(f"Error in LLM health loop: {e}")
+            await asyncio.sleep(60) # 1分ごとにチェック
+
+    async def _check_llm_health(self):
+        """LLM サーバーの死活監視と自動起動"""
+        async with self._llm_startup_lock:
+            models_config = [
+                ("planner", self.config['llm']['planner_endpoint'], 8080),
+                ("executor", self.config['llm']['executor_endpoint'], 8081)
+            ]
+            
+            for role, endpoint, port in models_config:
+                try:
+                    resp = await self.http_client.get(f"{endpoint}/models", timeout=5.0)
+                    if resp.status_code == 200:
+                        continue
+                except Exception:
+                    pass
+                
+                model_name = self.config['llm']['models'].get(role)
+                logger.info(f"LLM Server ({role}) down on port {port}. Restarting MLX: {model_name}")
+                
+                # ポートに基づいた特定プロセスのクリーンアップ
+                try:
+                    result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
+                    pids = result.stdout.strip().split("\n")
+                    for pid in pids:
+                        if pid.strip():
+                            logger.info(f"Killing stale process {pid} using port {port}")
+                            subprocess.run(["kill", "-9", pid], check=False)
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup processes on port {port}: {e}")
+
+                # MLX サーバーの再起動
+                env = os.environ.copy()
+                model_dir = self.config.get('llm', {}).get('model_dir', '~/.local/share/brownie/models')
+                env["HF_HOME"] = os.path.expanduser(model_dir)
+                
+                venv_python = os.path.join(self.project_root, ".venv", "bin", "python")
+                if not os.path.exists(venv_python):
+                    venv_python = sys.executable
+
+                subprocess.Popen(
+                    [venv_python, "-m", "mlx_lm.server", "--model", model_name, "--port", str(port)], 
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, 
+                    start_new_session=True, env=env
+                )
+                logger.info(f"MLX Server ({role}) for {model_name} starting on port {port}...")
 
     async def _poll_mentions(self):
         """メンション取得とキュー投入"""
@@ -143,11 +210,12 @@ class Orchestrator:
             if comment_body:
                 # ユーザーの追加コメントを指示にマージしてエージェントに伝える
                 existing_instruction = state.values.get("instruction", "")
-                new_state["instruction"] = existing_instruction + f"\n\n[ユーザーからの追加情報 - {datetime.utcnow().isoformat()}]:\n{comment_body}"
+                timestamp = datetime.utcnow().isoformat()
+                new_state["instruction"] = existing_instruction + f"\n\n[USER UPDATE @ {timestamp}]:\n{comment_body}"
             
             await self._workflow_app.aupdate_state(config, new_state, as_node="intent_alignment")
-            payload_to_send = await self._workflow_app.aget_state(config)
-            payload_to_send = payload_to_send.values
+            updated_state = await self._workflow_app.aget_state(config)
+            payload_to_send = updated_state.values
         else:
             repo_path = os.path.join(self.project_root, "workspaces", repo_name.split("/")[-1])
             issue = await self.gh_client.get_issue(repo_name, issue_number)

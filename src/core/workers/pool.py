@@ -1,13 +1,12 @@
 import os
 import logging
-from huey import FileHuey
+from huey import RedisHuey
 
 logger = logging.getLogger(__name__)
 
-STORAGE_DIR = os.path.join("/Users/satoshitanaka/Documents/brownie", ".brwn", "huey_files")
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
-if not os.path.exists(STORAGE_DIR):
-    os.makedirs(STORAGE_DIR, exist_ok=True)
-    logger.info(f"Created Huey storage directory: {STORAGE_DIR}")
+logger.info(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
 
-huey = FileHuey(path=STORAGE_DIR)
+huey = RedisHuey('brownie-tasks', host=REDIS_HOST, port=REDIS_PORT)
