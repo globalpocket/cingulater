@@ -706,3 +706,21 @@ class GitHubClientWrapper:
         except Exception as e:
             logger.error(f"Error in get_issue: {e}")
             return {}
+
+    @github_retry
+    async def mark_issue_notifications_as_read(self, repo_name: str, issue_number: int):
+        """特定の Issue に関連する通知をすべて既読としてマークする"""
+        try:
+            await self._throttle(is_write=True)
+            # 通知一覧を取得 (全件チェックは重いため、最近の通知に絞る)
+            notifications = self.g.get_user().get_notifications(participating=True)
+            for n in notifications:
+                try:
+                    # subject.url が https://api.github.com/repos/owner/repo/issues/number の形式
+                    if n.repository.full_name == repo_name and n.subject.url.endswith(f"/{issue_number}"):
+                        n.mark_as_read()
+                        logger.info(f"Marked notification as read for {repo_name}#{issue_number}")
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.error(f"Failed to mark notifications as read for {repo_name}#{issue_number}: {e}")

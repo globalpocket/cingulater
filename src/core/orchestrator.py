@@ -206,8 +206,9 @@ class Orchestrator:
         # 投入前に最新の Issue ステータスを確認 (設計改善: クローズ済みはスキップ)
         issue_info = await self.gh_client.get_issue(repo_name, issue_number)
         if issue_info.get("state") != "open":
-            logger.info(f"Skipping task {task_id} because the issue is CLOSED.")
-            # 必要であれば通知を既読にするなどの処理
+            logger.info(f"Skipping task {task_id} because the issue is CLOSED. Marking notifications as read.")
+            # 通知を既読にする
+            await self.gh_client.mark_issue_notifications_as_read(repo_name, issue_number)
             return
 
         state = await self._workflow_app.aget_state(config)
