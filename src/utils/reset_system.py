@@ -23,7 +23,8 @@ def reset():
             print(f"Warning: Could not parse config.yaml: {e}")
 
     # 2. データベース削除
-    for p in [db_path, mem_path]:
+    checkpoint_path = os.path.join(base_dir, ".brwn", "checkpoints.db")
+    for p in [db_path, mem_path, checkpoint_path]:
         full_p = os.path.expanduser(p)
         if os.path.exists(full_p):
             print(f"Removing {full_p}...")

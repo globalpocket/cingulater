@@ -156,12 +156,16 @@ class Orchestrator:
                 if not os.path.exists(venv_python):
                     venv_python = sys.executable
 
+                # ログファイルの準備
+                log_file_path = os.path.join(self.project_root, "logs", f"mlx_{role}.log")
+                log_file = open(log_file_path, "a")
+
                 subprocess.Popen(
                     [venv_python, "-m", "mlx_lm.server", "--model", model_name, "--port", str(port)], 
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, 
+                    stdout=log_file, stderr=log_file, 
                     start_new_session=True, env=env
                 )
-                logger.info(f"MLX Server ({role}) for {model_name} starting on port {port}...")
+                logger.info(f"MLX Server ({role}) for {model_name} starting on port {port}... (Log: {log_file_path})")
 
     async def _poll_mentions(self):
         """メンション取得とキュー投入"""
