@@ -132,11 +132,12 @@ class Orchestrator:
         payload_to_send = None
         if state.values:
             status = state.values.get("status")
-            # すでにキューにあるか実行中でも、新しいコメントが来た場合は更新して再投入を許可する
+            # 実行中（InProgress/InQueue）かつ指示が変わっていない場合はスキップ
             if status in ['InProgress', 'InQueue'] and state.values.get("resume_comment_id") == comment_id:
                 return
             
-            logger.info(f"Updating task {task_id} with new comment {comment_id}")
+            # ユーザー待機中（Waiting...）または新規指示の場合は再投入
+            logger.info(f"Re-queueing task {task_id} with new status/comment.")
             await self._workflow_app.aupdate_state(config, {"resume_comment_id": comment_id, "status": "InQueue"}, as_node="intent_alignment")
             payload_to_send = state.values
         else:
@@ -146,7 +147,9 @@ class Orchestrator:
                 "task_id": task_id, "thread_id": task_id, "repo_name": repo_name,
                 "repo_path": repo_path, "issue_number": issue_number,
                 "instruction": f"Title: {issue.get('title','')}\n\nBody:\n{issue.get('body','')}",
-                "status": "InQueue", "intent_confirmed": False, "history": [], "metadata": {},
+                "status": "Phase0_WaitingForUserConfirmation",
+                "intent_confirmed": False,
+                "history": [], "metadata": {},
                 "reported_nodes": [],
                 "trigger_comment_id": comment_id, "created_at": datetime.utcnow().isoformat()
             }
