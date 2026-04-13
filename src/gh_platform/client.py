@@ -533,7 +533,10 @@ class GitHubClientWrapper:
                     
                     try:
                         # subject.url から Issue 番号を抽出
-                        issue_number = int(n.subject.url.split("/")[-1])
+                        url_parts = n.subject.url.split("/")
+                        if not url_parts or not url_parts[-1].isdigit():
+                            continue
+                        issue_number = int(url_parts[-1])
                         
                         # 既にアサイン済みとして捕捉されている場合はスキップ（重複排除）
                         if any(r["repo_name"] == issue_repo_name and r["number"] == issue_number for r in results):
@@ -684,69 +687,88 @@ class GitHubClientWrapper:
             logger.info(f"Searching for mentions in {repo_name} with query: {query}")
             issues = self.g.search_issues(query=query, sort="updated", order="desc")
             
-            # 最大 5 件程度に制限
             found = []
-            for i, issue in enumerate(issues):
-                if i >= 5:
+            # 最大 5 件程度に制限
+            count = 0
+            for issue in issues:
+                if count >= 5:
                     break
-                # Issue 本文またはコメントから最新のメンション箇所を特定
-                latest_mention = None
                 
-                # 1. 本文をチェック
-                issue_author = issue.user.login if issue.user else None
-                if f"@{my_username.lower()}" in (issue.body or "").lower() and issue_author != my_username:
-                    latest_mention = {
-                        "repo_name": repo_name,
-                        "number": issue.number,
-                        "comment_id": "body",
-                        "body": issue.body,
-                        "_created_dt": issue.created_at,
-                        "created_at": issue.created_at.isoformat() if issue.created_at else None,
-                        "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat(),
-                        "node_id": getattr(issue, "node_id", None),
-                        "url": issue.url,
-                        "html_url": issue.html_url,
-                        "user_login": issue_author,
-                        "author_association": getattr(issue, "author_association", None),
-                        "reactions": self._get_reactions_summary(issue)
-                    }
-
-                # 2. コメントをチェック
                 try:
-                    comments = issue.get_comments()
-                    for comment in comments:
-                        comment_author = comment.user.login.lower() if comment.user else None
-                        if f"@{my_username.lower()}" in (comment.body or "").lower() and comment_author != my_username.lower():
-                            if not latest_mention or comment.created_at > latest_mention["_created_dt"]:
-                                latest_mention = {
-                                    "repo_name": repo_name,
-                                    "number": issue.number,
-                                    "comment_id": str(comment.id),
-                                    "body": comment.body,
-                                    "_created_dt": comment.created_at,
-                                    "created_at": comment.created_at.isoformat() if comment.created_at else None,
-                                    "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat(),
-                                    "node_id": getattr(comment, "node_id", None),
-                                    "url": comment.url,
-                                    "html_url": comment.html_url,
-                                    "user_login": comment.user.login if comment.user else None,
-                                    "author_association": getattr(comment, "author_association", None),
-                                    "reactions": self._get_reactions_summary(comment)
-                                }
-                except Exception as ce:
-                    logger.warning(f"Failed to fetch comments for search match #{issue.number} in {repo_name}: {ce}")
+                    # Issue 本文またはコメントから最新のメンション箇所を特定
+                    latest_mention = None
+                    
+                    # 1. 本文をチェック
+                    issue_author = issue.user.login if issue.user else None
+                    if f"@{my_username.lower()}" in (issue.body or "").lower() and issue_author != my_username:
+                        latest_mention = {
+                            "repo_name": repo_name,
+                            "number": issue.number,
+                            "comment_id": "body",
+                            "body": issue.body,
+                            "_created_dt": issue.created_at,
+                            "created_at": issue.created_at.isoformat() if issue.created_at else None,
+                            "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat(),
+                            "node_id": getattr(issue, "node_id", None),
+                            "url": issue.url,
+                            "html_url": issue.html_url,
+                            "user_login": issue_author,
+                            "author_association": getattr(issue, "author_association", None),
+                            "reactions": self._get_reactions_summary(issue)
+                        }
 
-                if latest_mention:
-                    found.append(latest_mention)
-                else:
-                    # 見つからなかった場合は（検索自体にはヒットしているので）Issue 情報を最小限で返す
-                    found.append({
-                        "repo_name": repo_name,
-                        "number": issue.number,
-                        "comment_id": "search-match",
-                        "body": issue.body,
-                        "created_at": issue.updated_at
-                    })
+                    # 2. コメントをチェック
+                    try:
+                        comments = issue.get_comments()
+                        for comment in comments:
+                            comment_author = comment.user.login.lower() if comment.user else None
+                            if f"@{my_username.lower()}" in (comment.body or "").lower() and comment_author != my_username.lower():
+                                if not latest_mention or comment.created_at > latest_mention["_created_dt"]:
+                                    latest_mention = {
+                                        "repo_name": repo_name,
+                                        "number": issue.number,
+                                        "comment_id": str(comment.id),
+                                        "body": comment.body,
+                                        "_created_dt": comment.created_at,
+                                        "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                                        "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat(),
+                                        "node_id": getattr(comment, "node_id", None),
+                                        "url": comment.url,
+                                        "html_url": comment.html_url,
+                                        "user_login": comment.user.login if comment.user else None,
+                                        "author_association": getattr(comment, "author_association", None),
+                                        "reactions": self._get_reactions_summary(comment)
+                                    }
+                    except Exception as ce:
+                        logger.warning(f"Failed to fetch comments for search match #{issue.number} in {repo_name}: {ce}")
+
+                    if latest_mention:
+                        found.append(latest_mention)
+                    else:
+                        # 見つからなかった場合は（検索自体にはヒットしているので）すべての拡張詳細メタデータを補完して返す
+                        found.append({
+                            "repo_name": repo_name,
+                            "number": issue.number,
+                            "comment_id": "search-match",
+                            "body": issue.body,
+                            "_created_dt": issue.updated_at,
+                            "created_at": issue.created_at.isoformat() if issue.created_at else None,
+                            "updated_at": issue.updated_at.isoformat() if issue.updated_at else None,
+                            "node_id": getattr(issue, "node_id", None),
+                            "url": issue.url,
+                            "html_url": issue.html_url,
+                            "user_login": issue.user.login if issue.user else None,
+                            "author_association": getattr(issue, "author_association", None),
+                            "reactions": self._get_reactions_summary(issue)
+                        })
+                    
+                    count += 1
+                except IndexError as ie:
+                    logger.warning(f"IndexError processing issue in search loop: {ie}")
+                    continue
+                except Exception as ee:
+                    logger.warning(f"Unexpected error processing issue in search: {ee}")
+                    continue
             return found
         except Exception as e:
             logger.warning(f"Search failed for {repo_name}: {e}")
