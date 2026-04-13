@@ -33,9 +33,37 @@ class PersistenceManager:
                     issue_number INTEGER,
                     updated_at TEXT,
                     body TEXT,
-                    processed_at DATETIME
+                    processed_at DATETIME,
+                    node_id TEXT,
+                    url TEXT,
+                    html_url TEXT,
+                    user_login TEXT,
+                    created_at TEXT,
+                    author_association TEXT,
+                    reactions TEXT
                 )
             """)
+            
+            # マイグレーション: 不足しているカラムを追加
+            try:
+                cursor.execute("PRAGMA table_info(processed_mentions)")
+                existing_columns = [row[1] for row in cursor.fetchall()]
+                new_columns = [
+                    ("node_id", "TEXT"),
+                    ("url", "TEXT"),
+                    ("html_url", "TEXT"),
+                    ("user_login", "TEXT"),
+                    ("created_at", "TEXT"),
+                    ("author_association", "TEXT"),
+                    ("reactions", "TEXT")
+                ]
+                for col_name, col_type in new_columns:
+                    if col_name not in existing_columns:
+                        logger.info(f"Adding column {col_name} to processed_mentions table.")
+                        cursor.execute(f"ALTER TABLE processed_mentions ADD COLUMN {col_name} {col_type}")
+            except Exception as e:
+                logger.warning(f"Migration error during _init_db: {e}")
+
             conn.commit()
 
     def upsert_repository(self, repo_name: str):
@@ -50,30 +78,67 @@ class PersistenceManager:
             """, (repo_name, datetime.utcnow().isoformat()))
             conn.commit()
 
-    def is_mention_new_or_updated(self, mention_id: str, updated_at: str) -> bool:
-        """メンションが新規または更新されているか確認"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT updated_at FROM processed_mentions WHERE mention_id = ?", (mention_id,))
-            row = cursor.fetchone()
-            if not row:
-                return True # 新規
-            
-            # 保存されている updated_at と比較 (文字列比較)
-            return updated_at > row[0]
+    def is_mention_new_or_updated(self, mention_id: str, updated_at: str) -> str:
+        """メンションが新規または更新されているか確認 (NEW, UPDATED, UNCHANGED)"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT updated_at FROM processed_mentions WHERE mention_id = ?", (mention_id,))
+                row = cursor.fetchone()
+                if not row:
+                    return "NEW"
+                
+                stored_updated_at = row[0]
+                
+                # ISO 8601 文字列のパースと比較
+                def parse_iso(dt_str):
+                    if not dt_str: return datetime.min
+                    # 'Z' サフィックスをタイムゾーン形式に変換
+                    return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
 
-    def save_processed_mention(self, mention_id: str, repo_name: str, issue_number: int, updated_at: str, body: str):
+                try:
+                    new_dt = parse_iso(updated_at)
+                    stored_dt = parse_iso(stored_updated_at)
+                    
+                    if new_dt > stored_dt:
+                        return "UPDATED"
+                    else:
+                        return "UNCHANGED"
+                except (ValueError, TypeError):
+                    # パース失敗時はフォールバックとして文字列比較
+                    if updated_at > (stored_updated_at or ""):
+                        return "UPDATED"
+                    return "UNCHANGED"
+        except Exception as e:
+            logger.error(f"Error checking mention status: {e}")
+            return "NEW"
+
+    def save_processed_mention(self, mention_id: str, repo_name: str, issue_number: int, updated_at: str, body: str,
+                               node_id: str = None, url: str = None, html_url: str = None,
+                               user_login: str = None, created_at: str = None,
+                               author_association: str = None, reactions: str = None):
         """メンションを処理済みとして保存または更新"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO processed_mentions (mention_id, repo_name, issue_number, updated_at, body, processed_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO processed_mentions (
+                    mention_id, repo_name, issue_number, updated_at, body, processed_at,
+                    node_id, url, html_url, user_login, created_at, author_association, reactions
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(mention_id) DO UPDATE SET
                     updated_at = excluded.updated_at,
                     body = excluded.body,
-                    processed_at = excluded.processed_at
-            """, (mention_id, repo_name, issue_number, updated_at, body, datetime.utcnow().isoformat()))
+                    processed_at = excluded.processed_at,
+                    node_id = excluded.node_id,
+                    url = excluded.url,
+                    html_url = excluded.html_url,
+                    user_login = excluded.user_login,
+                    created_at = excluded.created_at,
+                    author_association = excluded.author_association,
+                    reactions = excluded.reactions
+            """, (mention_id, repo_name, issue_number, updated_at, body, datetime.utcnow().isoformat(),
+                  node_id, url, html_url, user_login, created_at, author_association, reactions))
             conn.commit()
 
     def get_watched_repositories(self) -> List[str]:

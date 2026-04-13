@@ -52,13 +52,22 @@ class WorkerPool:
         from src.core.workers.tasks import analysis_task
         logger.info(f"Queueing task {task_id} via {type(self.huey).__name__}...")
         try:
-            # Huey タスクとして投入
-            analysis_task(task_id, repo_name, issue_number, kwargs)
-            logger.info(f"Task {task_id} successfully queued.")
+            # Huey タスクとして投入 (IDを明示的に指定して追跡・取り消し可能にする)
+            analysis_task.task_id(task_id)(task_id, repo_name, issue_number, kwargs)
+            logger.info(f"Task {task_id} successfully queued with ID: {task_id}")
             return True
         except Exception as e:
             logger.error(f"Task enqueue FAILED: {e}")
             return False
+
+    def revoke_task(self, task_id: str):
+        """現在進行中または待機中のタスクをキャンセルする"""
+        logger.info(f"Revoking task {task_id}...")
+        try:
+            self.huey.revoke_by_id(task_id)
+            logger.info(f"Task {task_id} revocation signal sent.")
+        except Exception as e:
+            logger.error(f"Failed to revoke task {task_id}: {e}")
 
     async def check_health(self):
         """ワーカープロセスの生存確認を行い、死んでいれば再起動する"""

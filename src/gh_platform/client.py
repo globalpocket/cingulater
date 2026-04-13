@@ -114,6 +114,19 @@ class GitHubClientWrapper:
             raise GitHubRateLimitException(f"GitHub Rate Limit Reached: {e}", reset_at)
         raise e
 
+    def _get_reactions_summary(self, gh_object) -> str:
+        """リアクションのサマリーを取得してJSON文字列にする"""
+        try:
+            # PyGithubのget_reactions()を利用してカウントを集計
+            reactions = gh_object.get_reactions()
+            summary = {}
+            for r in reactions:
+                content = r.content # "+1", "-1", "laugh", etc.
+                summary[content] = summary.get(content, 0) + 1
+            return json.dumps(summary)
+        except Exception:
+            return "{}"
+
     def get_my_username(self) -> str:
         """認証されたユーザーのユーザー名を動的に取得する"""
         if self._my_username is None:
@@ -542,8 +555,15 @@ class GitHubClientWrapper:
                                 "number": issue.number,
                                 "comment_id": "body",
                                 "body": issue.body,
-                                "created_at": issue.created_at,
-                                "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat()
+                                "_created_dt": issue.created_at,
+                                "created_at": issue.created_at.isoformat() if issue.created_at else None,
+                                "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat(),
+                                "node_id": getattr(issue, "node_id", None),
+                                "url": issue.url,
+                                "html_url": issue.html_url,
+                                "user_login": issue_author,
+                                "author_association": getattr(issue, "author_association", None),
+                                "reactions": self._get_reactions_summary(issue)
                             }
                         
                         # 2. 次にすべてのコメントをチェック
@@ -553,14 +573,21 @@ class GitHubClientWrapper:
                             for comment in comments:
                                 comment_author = comment.user.login.lower() if comment.user else None
                                 if f"@{my_username.lower()}" in (comment.body or "").lower() and comment_author != my_username.lower():
-                                    if not latest_mention or comment.created_at > latest_mention["created_at"]:
+                                    if not latest_mention or comment.created_at > latest_mention["_created_dt"]:
                                         latest_mention = {
                                             "repo_name": issue_repo_name,
                                             "number": issue.number,
                                             "comment_id": str(comment.id),
                                             "body": comment.body,
-                                            "created_at": comment.created_at,
-                                            "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat()
+                                            "_created_dt": comment.created_at,
+                                            "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                                            "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat(),
+                                            "node_id": getattr(comment, "node_id", None),
+                                            "url": comment.url,
+                                            "html_url": comment.html_url,
+                                            "user_login": comment.user.login if comment.user else None,
+                                            "author_association": getattr(comment, "author_association", None),
+                                            "reactions": self._get_reactions_summary(comment)
                                         }
                         except Exception as ce:
                             logger.warning(f"Failed to scan comments for Issue #{issue_number} in {issue_repo_name}: {ce}")
@@ -575,14 +602,21 @@ class GitHubClientWrapper:
                                 for review in reviews:
                                     review_author = review.user.login.lower() if review.user else None
                                     if review.body and f"@{my_username.lower()}" in review.body.lower() and review_author != my_username.lower():
-                                        if not latest_mention or review.submitted_at > latest_mention["created_at"]:
+                                        if not latest_mention or review.submitted_at > latest_mention["_created_dt"]:
                                             latest_mention = {
                                                 "repo_name": issue_repo_name,
                                                 "number": issue.number,
                                                 "comment_id": f"review-{review.id}",
                                                 "body": review.body,
-                                                "created_at": review.submitted_at,
-                                                "updated_at": review.submitted_at.isoformat()
+                                                "_created_dt": review.submitted_at,
+                                                "created_at": review.submitted_at.isoformat() if review.submitted_at else None,
+                                                "updated_at": review.submitted_at.isoformat(),
+                                                "node_id": getattr(review, "node_id", None),
+                                                "url": getattr(review, "url", None), # Review might not have direct url
+                                                "html_url": getattr(review, "html_url", None),
+                                                "user_login": review.user.login if review.user else None,
+                                                "author_association": getattr(review, "author_association", None),
+                                                "reactions": self._get_reactions_summary(review)
                                             }
 
                                 # レビューインラインコメント
@@ -590,14 +624,21 @@ class GitHubClientWrapper:
                                 for r_comment in review_comments:
                                     r_author = r_comment.user.login.lower() if r_comment.user else None
                                     if f"@{my_username.lower()}" in (r_comment.body or "").lower() and r_author != my_username.lower():
-                                        if not latest_mention or r_comment.created_at > latest_mention["created_at"]:
+                                        if not latest_mention or r_comment.created_at > latest_mention["_created_dt"]:
                                             latest_mention = {
                                                 "repo_name": issue_repo_name,
                                                 "number": issue.number,
                                                 "comment_id": f"rc-{r_comment.id}",
                                                 "body": r_comment.body,
-                                                "created_at": r_comment.created_at,
-                                                "updated_at": r_comment.updated_at.isoformat() if r_comment.updated_at else r_comment.created_at.isoformat()
+                                                "_created_dt": r_comment.created_at,
+                                                "created_at": r_comment.created_at.isoformat() if r_comment.created_at else None,
+                                                "updated_at": r_comment.updated_at.isoformat() if r_comment.updated_at else r_comment.created_at.isoformat(),
+                                                "node_id": getattr(r_comment, "node_id", None),
+                                                "url": r_comment.url,
+                                                "html_url": r_comment.html_url,
+                                                "user_login": r_comment.user.login if r_comment.user else None,
+                                                "author_association": getattr(r_comment, "author_association", None),
+                                                "reactions": self._get_reactions_summary(r_comment)
                                             }
                             except Exception as pe:
                                 logger.warning(f"Failed to scan PR details for Issue #{issue_number} in {issue_repo_name}: {pe}")
@@ -659,8 +700,15 @@ class GitHubClientWrapper:
                         "number": issue.number,
                         "comment_id": "body",
                         "body": issue.body,
-                        "created_at": issue.created_at,
-                        "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat()
+                        "_created_dt": issue.created_at,
+                        "created_at": issue.created_at.isoformat() if issue.created_at else None,
+                        "updated_at": issue.updated_at.isoformat() if issue.updated_at else issue.created_at.isoformat(),
+                        "node_id": getattr(issue, "node_id", None),
+                        "url": issue.url,
+                        "html_url": issue.html_url,
+                        "user_login": issue_author,
+                        "author_association": getattr(issue, "author_association", None),
+                        "reactions": self._get_reactions_summary(issue)
                     }
 
                 # 2. コメントをチェック
@@ -669,14 +717,21 @@ class GitHubClientWrapper:
                     for comment in comments:
                         comment_author = comment.user.login.lower() if comment.user else None
                         if f"@{my_username.lower()}" in (comment.body or "").lower() and comment_author != my_username.lower():
-                            if not latest_mention or comment.created_at > latest_mention["created_at"]:
+                            if not latest_mention or comment.created_at > latest_mention["_created_dt"]:
                                 latest_mention = {
                                     "repo_name": repo_name,
                                     "number": issue.number,
                                     "comment_id": str(comment.id),
                                     "body": comment.body,
-                                    "created_at": comment.created_at,
-                                    "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat()
+                                    "_created_dt": comment.created_at,
+                                    "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                                    "updated_at": comment.updated_at.isoformat() if comment.updated_at else comment.created_at.isoformat(),
+                                    "node_id": getattr(comment, "node_id", None),
+                                    "url": comment.url,
+                                    "html_url": comment.html_url,
+                                    "user_login": comment.user.login if comment.user else None,
+                                    "author_association": getattr(comment, "author_association", None),
+                                    "reactions": self._get_reactions_summary(comment)
                                 }
                 except Exception as ce:
                     logger.warning(f"Failed to fetch comments for search match #{issue.number} in {repo_name}: {ce}")
