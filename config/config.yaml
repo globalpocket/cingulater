@@ -9,8 +9,9 @@ agent:
     manual_issue: 1
     review_comment: 2
     auto_wiki: 3
-  # repositories: # デフォルトの監視リポジトリ（現在は動的に取得されるためオプション）
-  #   - "globalpocket/brownie"
+  repositories:
+    - "globalpocket/brownie"
+    - "globalpocket/brownie-sampleproject"
   exclude_repositories: [] # 監視から完全に除外するリポジトリ (owner/repo 形式)
 llm:
   planner_endpoint: "http://localhost:8080/v1"

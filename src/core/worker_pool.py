@@ -12,6 +12,7 @@ class WorkerPool:
         self.project_root = project_root
         self.huey = huey
         self.consumer_proc: Optional[subprocess.Popen] = None
+        self.active_tasks = {} # task_id -> huey_task_id マッピング
 
     async def run(self):
         logger.info(f"WorkerPool: Active ({type(self.huey).__name__})")
@@ -52,9 +53,14 @@ class WorkerPool:
         from src.core.workers.tasks import analysis_task
         logger.info(f"Queueing task {task_id} via {type(self.huey).__name__}...")
         try:
-            # Huey タスクとして投入 (IDを明示的に指定して追跡・取り消し可能にする)
-            analysis_task.task_id(task_id)(task_id, repo_name, issue_number, kwargs)
-            logger.info(f"Task {task_id} successfully queued with ID: {task_id}")
+            # Huey タスクとして投入し、生成された ID を取得
+            h_result = analysis_task(task_id, repo_name, issue_number, kwargs)
+            h_id = h_result.id
+            
+            # マッピングを保存
+            self.active_tasks[task_id] = h_id
+            
+            logger.info(f"Task {task_id} successfully queued with Huey ID: {h_id}")
             return True
         except Exception as e:
             logger.error(f"Task enqueue FAILED: {e}")
@@ -64,8 +70,14 @@ class WorkerPool:
         """現在進行中または待機中のタスクをキャンセルする"""
         logger.info(f"Revoking task {task_id}...")
         try:
-            self.huey.revoke_by_id(task_id)
-            logger.info(f"Task {task_id} revocation signal sent.")
+            h_id = self.active_tasks.get(task_id)
+            if h_id:
+                self.huey.revoke_by_id(h_id)
+                logger.info(f"Task {task_id} (Huey ID: {h_id}) revocation signal sent.")
+            else:
+                # フォールバック: task_id そのものを ID と見なして試行
+                self.huey.revoke_by_id(task_id)
+                logger.debug(f"Task {task_id} not found in map, tried direct revoke.")
         except Exception as e:
             logger.error(f"Failed to revoke task {task_id}: {e}")
 

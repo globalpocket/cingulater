@@ -113,11 +113,23 @@ class PersistenceManager:
             logger.error(f"Error checking mention status: {e}")
             return "NEW"
 
-    def save_processed_mention(self, mention_id: str, repo_name: str, issue_number: int, updated_at: str, body: str,
-                               node_id: str = None, url: str = None, html_url: str = None,
-                               user_login: str = None, created_at: str = None,
-                               author_association: str = None, reactions: str = None):
-        """メンションを処理済みとして保存または更新"""
+    def save_processed_mention(self, mention_data: dict):
+        """メンション情報を辞書形式で受け取り、保存または更新する"""
+        mention_id = str(mention_data.get('comment_id', 'body'))
+        repo_name = mention_data.get('repo_name')
+        issue_number = mention_data.get('number')
+        updated_at = mention_data.get('updated_at')
+        body = mention_data.get('body', '')
+        
+        # 拡張メタデータ
+        node_id = mention_data.get('node_id')
+        url = mention_data.get('url')
+        html_url = mention_data.get('html_url')
+        user_login = mention_data.get('user_login')
+        created_at = mention_data.get('created_at')
+        author_association = mention_data.get('author_association')
+        reactions = mention_data.get('reactions')
+        
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""

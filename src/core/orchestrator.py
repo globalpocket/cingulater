@@ -174,10 +174,10 @@ class Orchestrator:
                 if target_repo in exclude_list:
                     continue
                 
-                mention_id = m.get('comment_id', 'body')
+                mention_id = str(m.get('comment_id', 'body'))
                 updated_at = m.get('updated_at', '1970-01-01T00:00:00Z')
                 
-                # 重複排除と編集検知のチェック (設計改善: DB による決定論的判定)
+                # 重複排除と編集検知のチェック
                 status = self.persistence.is_mention_new_or_updated(mention_id, updated_at)
                 if status == "UNCHANGED":
                     logger.debug(f"Skipping already processed mention {mention_id} for {target_repo}#{m['number']}")
@@ -185,23 +185,15 @@ class Orchestrator:
                 
                 task_id = f"{target_repo}#{m['number']}"
                 body = m.get('body', '').lower()
+                logger.info(f"Detected {status} mention: {task_id} (ID: {mention_id})")
                 
                 # 更新（指示の編集）の場合は既存タスクをキャンセル
                 if status == "UPDATED":
                     logger.info(f"Detected mention update for {mention_id}. Revoking current tasks for {task_id}.")
                     self.worker_pool.revoke_task(task_id)
 
-                # キュー投入前に DB を更新 (二重登録の隙間を最小化)
-                self.persistence.save_processed_mention(
-                    mention_id, target_repo, m['number'], updated_at, m.get('body', ''),
-                    node_id=m.get('node_id'),
-                    url=m.get('url'),
-                    html_url=m.get('html_url'),
-                    user_login=m.get('user_login'),
-                    created_at=m.get('created_at'),
-                    author_association=m.get('author_association'),
-                    reactions=m.get('reactions')
-                )
+                # キュー投入前に DB を更新
+                self.persistence.save_processed_mention(m)
                 
                 if "/approve" in body:
                     await self._resume_workflow(task_id, "Approve")
@@ -282,6 +274,7 @@ class Orchestrator:
 
     async def _execute_task(self, task_id: str, repo_name: str, issue_number: int, payload: dict = None):
         """Huey ワーカーから呼び出される実行実体（ワーカープロセス内）"""
+        logger.info(f"==> _execute_task STARTED for {task_id} (Issue #{issue_number})")
         checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
         
         # ワーカー実行時にその都度チェックポインターを開くことで接続切れを防ぐ
