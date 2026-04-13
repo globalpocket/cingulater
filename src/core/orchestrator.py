@@ -359,38 +359,52 @@ class Orchestrator:
                 
                 # 実行全体に 10 分のタイムアウトを設定
                 async def run_workflow():
+                    locally_reported = set() # 同一実行内の重複防止用ローカルメモリ
+
                     async for event in workflow_app.astream(input_data, config=config):
                         # 各イベント後の最新状態を取得
                         current_state = await workflow_app.aget_state(config)
-                        reported = current_state.values.get("reported_nodes", [])
+                        state_reported = current_state.values.get("reported_nodes", [])
+                        if not isinstance(state_reported, list):
+                            state_reported = []
+                        
+                        # ローカルの即時記録とDBの状態をマージ
+                        reported = set(state_reported).union(locally_reported)
 
                         for node_name, output in event.items():
                             if node_name == "intent_alignment" and "intent_draft" in output:
                                 if "intent_alignment" not in reported:
+                                    locally_reported.add("intent_alignment") # 直ちにローカルで記録
                                     draft = output["intent_draft"]
                                     await self.gh_client.post_comment(repo_name, issue_number, f"### 🔍 意図の確認と提案\n\n{draft}" + get_footer())
-                                    await workflow_app.aupdate_state(config, {"reported_nodes": ["intent_alignment"]})
+                                    await workflow_app.aupdate_state(config, {"reported_nodes": list(reported.union({"intent_alignment"}))})
                             
                             elif node_name == "core_analysis" and output.get("status") == "Phase1_Completed":
                                 if "core_analysis" not in reported:
+                                    locally_reported.add("core_analysis") # 直ちにローカルで記録
                                     await self.gh_client.post_comment(repo_name, issue_number, "### 📊 全方位分析完了\nリポジトリの解析が完了しました。" + get_footer())
-                                    await workflow_app.aupdate_state(config, {"reported_nodes": ["core_analysis"]})
+                                    await workflow_app.aupdate_state(config, {"reported_nodes": list(reported.union({"core_analysis"}))})
                 
                 await asyncio.wait_for(run_workflow(), timeout=600)
 
                 # 最終状態の報告
                 final_state = await workflow_app.aget_state(config)
                 final_status = final_state.values.get("status")
-                reported = final_state.values.get("reported_nodes", [])
+                state_reported = final_state.values.get("reported_nodes", [])
+                if not isinstance(state_reported, list):
+                    state_reported = []
                 
-                if final_status == "WaitingForClarification" and "WaitingForClarification" not in reported:
+                # ここでも最新の状態を確認して二重投稿を防止
+                final_reported = set(state_reported)
+                
+                if final_status == "WaitingForClarification" and "WaitingForClarification" not in final_reported:
                     plan = final_state.values.get("plan", "No plan.")
                     await self.gh_client.post_comment(repo_name, issue_number, f"### 🛠 実行計画（承認待ち）\n\n{plan}" + get_footer())
-                    await workflow_app.aupdate_state(config, {"reported_nodes": ["WaitingForClarification"]})
-                elif final_status == "Completed" and "Completed" not in reported:
+                    await workflow_app.aupdate_state(config, {"reported_nodes": list(final_reported.union({"WaitingForClarification"}))})
+                elif final_status == "Completed" and "Completed" not in final_reported:
                     summary = final_state.values.get("final_summary", "Done.")
                     await self.gh_client.post_comment(repo_name, issue_number, f"### ✅ 完了報告\n\n{summary}" + get_footer())
-                    await workflow_app.aupdate_state(config, {"reported_nodes": ["Completed"]})
+                    await workflow_app.aupdate_state(config, {"reported_nodes": list(final_reported.union({"Completed"}))})
 
             except asyncio.TimeoutError:
                 logger.error(f"Task execution TIMEOUT: {task_id}")
