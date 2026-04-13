@@ -91,5 +91,5 @@ def compile_workflow(checkpointer=None):
     builder = create_brownie_graph()
     return builder.compile(
         checkpointer=checkpointer,
-        interrupt_before=["governance"]
+        interrupt_before=["core_analysis", "governance"]
     )

@@ -129,6 +129,7 @@ class Orchestrator:
                 "repo_path": repo_path, "issue_number": issue_number,
                 "instruction": f"Title: {issue.get('title','')}\n\nBody:\n{issue.get('body','')}",
                 "status": "InQueue", "intent_confirmed": False, "history": [], "metadata": {},
+                "reported_nodes": [],
                 "trigger_comment_id": comment_id, "created_at": datetime.utcnow().isoformat()
             }
             await self._workflow_app.aupdate_state(config, initial_values)
@@ -149,29 +150,42 @@ class Orchestrator:
             state = await workflow_app.aget_state(config)
 
             try:
-                input_data = None
-                if not state.values and payload:
-                    input_data = payload
-                elif not state.values:
-                    return
-
+                # task_id を含めた入力データを構成
+                input_data = payload.copy() if payload else {}
+                input_data["task_id"] = task_id
+                input_data["repo_name"] = repo_name
+                input_data["issue_number"] = issue_number
+                
                 async for event in workflow_app.astream(input_data, config=config):
+                    # 各イベント後の最新状態を取得
+                    current_state = await workflow_app.aget_state(config)
+                    reported = current_state.values.get("reported_nodes", [])
+
                     for node_name, output in event.items():
                         if node_name == "intent_alignment" and "intent_draft" in output:
-                            draft = output["intent_draft"]
-                            await self.gh_client.post_comment(repo_name, issue_number, f"### 🔍 意図の確認と提案\n\n{draft}" + get_footer())
+                            if "intent_alignment" not in reported:
+                                draft = output["intent_draft"]
+                                await self.gh_client.post_comment(repo_name, issue_number, f"### 🔍 意図の確認と提案\n\n{draft}" + get_footer())
+                                await workflow_app.aupdate_state(config, {"reported_nodes": ["intent_alignment"]})
+                        
                         elif node_name == "core_analysis" and output.get("status") == "Phase1_Completed":
-                            await self.gh_client.post_comment(repo_name, issue_number, "### 📊 全方位分析完了\nリポジトリの解析が完了しました。" + get_footer())
+                            if "core_analysis" not in reported:
+                                await self.gh_client.post_comment(repo_name, issue_number, "### 📊 全方位分析完了\nリポジトリの解析が完了しました。" + get_footer())
+                                await workflow_app.aupdate_state(config, {"reported_nodes": ["core_analysis"]})
 
+                # 最終状態の報告
                 final_state = await workflow_app.aget_state(config)
                 final_status = final_state.values.get("status")
+                reported = final_state.values.get("reported_nodes", [])
                 
-                if final_status == "WaitingForClarification":
+                if final_status == "WaitingForClarification" and "WaitingForClarification" not in reported:
                     plan = final_state.values.get("plan", "No plan.")
                     await self.gh_client.post_comment(repo_name, issue_number, f"### 🛠 実行計画（承認待ち）\n\n{plan}" + get_footer())
-                elif final_status == "Completed":
+                    await workflow_app.aupdate_state(config, {"reported_nodes": ["WaitingForClarification"]})
+                elif final_status == "Completed" and "Completed" not in reported:
                     summary = final_state.values.get("final_summary", "Done.")
                     await self.gh_client.post_comment(repo_name, issue_number, f"### ✅ 完了報告\n\n{summary}" + get_footer())
+                    await workflow_app.aupdate_state(config, {"reported_nodes": ["Completed"]})
 
             except Exception as e:
                 logger.error(f"Task execution error: {e}", exc_info=True)

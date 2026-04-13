@@ -11,7 +11,7 @@ async def intent_alignment_node(state: TaskState) -> Dict[str, Any]:
     Phase 0: Intent Alignment
     ユーザーの意図を汲み取り、評価軸（Evaluation Axes）とJITツール選定を提示して合意を得る。
     """
-    print(f"--- Phase 0: Intent Alignment ({state['task_id']}) ---")
+    print(f"--- Phase 0: Intent Alignment ({state.get('task_id', 'unknown')}) ---")
     
     with open('config/config.yaml', 'r') as f:
         config = yaml.safe_load(f)
@@ -22,36 +22,45 @@ async def intent_alignment_node(state: TaskState) -> Dict[str, Any]:
     import os
     os.environ.setdefault("OPENAI_API_KEY", "EMPTY")
 
-    # OpenAI クライアントを明示的に作成して渡す（最も確実な方法）
-    client = AsyncOpenAI(
-        base_url='http://localhost:11434/v1',
-        api_key=os.getenv("OPENAI_API_KEY", "EMPTY")
-    )
-    model = OpenAIModel(planner_model_name, openai_client=client)
+    # Pydantic AI 1.x では環境変数から自動的に設定されるため、明示的に os.environ に反映
+    if planner_endpoint:
+        os.environ["OPENAI_BASE_URL"] = planner_endpoint
+    
+    # 完全に引数なしの標準的な初期化
+    model = OpenAIModel(planner_model_name)
 
     agent = Agent(
         model,
         output_type=IntentDraft,
         system_prompt=(
-            "あなたはシニアソフトウェアエンジニアです。"
-            "ユーザーの要求を分析し、意図の要約、成果物を評価するための軸、ユーザーへの確認コメント、"
-            "およびタスク解決に必要なJITロードMCPサーバーを選択してください。\n\n"
-            "【サーバー選択ガイドライン】\n"
-            "- 基本的なファイル操作(workspace_server)等は常に利用可能なので選択不要です。分析や可視化などに必要な特別ツールのみを選択してください。\n"
-            "- 最大で3〜5個に絞ってください。\n"
-            "- 候補: web_fetch, graph_memory, meta_search, design_pattern_oracle, arch_diagram, api_analyzer, security_analyzer, clone_detector, test_coverage, git_archeology, db_profiler, dep_audit, trace_analyzer"
+            "あなたは Brownie (ブラウニー) という、ユーザーをサポートする親切で優秀なエンジニアエージェントです。\n"
+            "ユーザーの要求を深く理解し、単に作業を始めるのではなく、一歩引いて『期待されていること』を言語化してください。\n\n"
+            "【会話のスタイル】\n"
+            "- 自然な日本語で、エンジニアとして対等かつサポートに徹する姿勢で話してください。\n"
+            "- ユーザーの『対話的に進めたい』という要望を尊重し、まず今回の目標と計画を提示して承認を求めてください。\n\n"
+            "【出力項目のガイドライン】\n"
+            "- 意図の要約: ユーザーの言葉をエンジニアリング的な視点で再定義したもの。 (e.g., GitHub Pages の設定と CI/CD の構築、等)\n"
+            "- 成果の評価軸: どのような状態になれば『成功』と言えるかの基準を 3つ程度。\n"
+            "- 確認コメント: 実装に入る前にユーザーに確認したい点や、挨拶を含む返信。"
         )
     )
     
     try:
         result = await agent.run(state['instruction'])
-        draft: IntentDraft = result.data
+        draft: IntentDraft = result.output
         
-        formatted_draft = f"{draft.draft_comment}\n\n■ 提案される評価軸:\n- " + "\n- ".join(draft.evaluation_axes) + f"\n\n■ 要求される拡張ツール:\n{draft.required_mcp_servers}"
+        formatted_draft = (
+            f"{draft.draft_comment}\n\n"
+            f"--- 📋 **Brownieの理解と提案** ---\n"
+            f"**🎯 目標:** {draft.intent_summary}\n\n"
+            f"**✅ 成功基準 (Evaluation Axes):**\n" + "\n".join([f"- {a}" for a in draft.evaluation_axes]) + "\n\n"
+            f"**🛠 使用予定の特殊ツール:**\n{draft.required_mcp_servers}\n\n"
+            f"内容に問題がなければ、承認の旨をお伝えください。確認後、詳細なリポジトリ分析を開始します！"
+        )
         
         return {
             "status": "Phase0_Alignment",
-            "intent_confirmed": False, # 初回は False でユーザー確認待ちを促す想定
+            "intent_confirmed": False,
             "intent_draft": formatted_draft,
             "evaluation_axes": draft.evaluation_axes,
             "required_mcp_servers": draft.required_mcp_servers,

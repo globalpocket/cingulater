@@ -45,5 +45,6 @@ class TaskState(TypedDict):
     pr_url: Optional[str]
     
     # 履歴とログ
+    reported_nodes: Annotated[List[str], operator.add]
     history: Annotated[List[Dict[str, Any]], operator.add]
     metadata: Dict[str, Any]
