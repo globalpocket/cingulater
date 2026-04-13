@@ -16,7 +16,7 @@ async def intent_alignment_node(state: TaskState) -> Dict[str, Any]:
     with open('config/config.yaml', 'r') as f:
         config = yaml.safe_load(f)
     
-    planner_model_name = config['llm']['models'].get('planner', 'gemma-4-26b-it-4bit')
+    planner_model_name = config['llm']['models'].get('planner', 'mlx-community/gemma-4-26b-a4b-it-4bit')
     planner_endpoint = config['llm']['planner_endpoint']
     
     import os

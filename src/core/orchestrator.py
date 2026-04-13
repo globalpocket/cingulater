@@ -35,7 +35,7 @@ class Orchestrator:
         self.gh_client = GitHubClientWrapper(os.getenv("GITHUB_TOKEN", ""), persistence=self.persistence)
         self.sandbox = SandboxManager(self.config['workspace']['sandbox_user_id'], 
                                      self.config['workspace']['sandbox_group_id'])
-        self.mcp_manager = MCPServerManager(self.project_root)
+        self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
 
         # 設定ファイルにあるリポジトリを初期登録
         initial_repos = self.config['agent'].get('repositories', [])

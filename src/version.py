@@ -1,7 +1,7 @@
 import subprocess
 import os
 
-VERSION = "v12.2-strict"
+VERSION = "0.1.0--alpha"
 
 def get_build_id():
     """現在のGitコミットハッシュを取得し、ビルドIDとして返す"""

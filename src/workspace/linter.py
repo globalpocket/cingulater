@@ -124,12 +124,11 @@ class LinterEngine:
             return any(f.endswith(exts) for _, _, fs in os.walk(target_path) for f in fs)
         return False
 
-    async def run_lint(self, path: str = ".") -> str:
-        """リンター (Ruff / ESLint) の実行"""
+    def get_lint_command(self, path: str = ".") -> Optional[str]:
+        """適用可能なリンターコマンドを特定して返す"""
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("lint_command")
         
-        # デフォルトのフォールバック
         if not cmd:
             if self._detect_py(target_path):
                 cmd = f"{self._get_tool_cmd('ruff')} check"
@@ -137,18 +136,27 @@ class LinterEngine:
                 cmd = "npx eslint"
         
         if not cmd:
+            return None
+            
+        # ターゲットのパスを追加して返す
+        # リポジトリ内での相対パスを使用
+        rel_path = os.path.relpath(target_path, self.repo_root)
+        return f"{cmd} {rel_path}"
+
+    async def run_lint(self, path: str = ".") -> str:
+        """リンター (Ruff / ESLint) の実行 (ホスト側)"""
+        cmd_str = self.get_lint_command(path)
+        if not cmd_str:
             return "No linter found for this path."
 
         try:
-            # 引数としてパスを渡す
-            full_cmd = cmd.split() + [target_path]
-            result = subprocess.run(full_cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd_str.split(), cwd=self.repo_root, capture_output=True, text=True)
             return (result.stdout + "\n" + result.stderr).strip() or "No issues found."
         except Exception as e:
             return f"Linter error: {e}"
 
-    async def run_format(self, path: str = ".") -> str:
-        """フォーマッター (Black / Prettier) の実行"""
+    def get_format_command(self, path: str = ".") -> Optional[str]:
+        """適用可能なフォーマットコマンドを特定して返す"""
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("format_command")
         
@@ -156,33 +164,50 @@ class LinterEngine:
             if self._detect_py(target_path):
                 cmd = f"{self._get_tool_cmd('black')}"
             elif self._detect_js(target_path):
-                cmd = "prettier --write"
+                cmd = "npx prettier --write"
         
         if not cmd:
+            return None
+        
+        rel_path = os.path.relpath(target_path, self.repo_root)
+        return f"{cmd} {rel_path}"
+
+    async def run_format(self, path: str = ".") -> str:
+        """フォーマッター (Black / Prettier) の実行 (ホスト側)"""
+        cmd_str = self.get_format_command(path)
+        if not cmd_str:
             return "No formatter found for this path."
 
         try:
-            full_cmd = cmd.split() + [target_path]
-            result = subprocess.run(full_cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd_str.split(), cwd=self.repo_root, capture_output=True, text=True)
             return f"Formatter output: {result.stdout.strip() or 'Success'}"
         except Exception as e:
             return f"Formatter error: {e}"
 
-    async def scan_security(self, path: str = ".") -> str:
-        """セキュリティスキャン (Bandit 等) の実行"""
+    def get_security_command(self, path: str = ".") -> Optional[str]:
+        """適用可能なセキュリティスキャンコマンドを特定して返す"""
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("security_command")
         
         if not cmd:
             if self._detect_py(target_path):
+                # Docker内などで実行しやすいよう相対パスを想定
                 cmd = f"{self._get_tool_cmd('bandit')} -r -f txt"
         
         if not cmd:
+            return None
+        
+        rel_path = os.path.relpath(target_path, self.repo_root)
+        return f"{cmd} {rel_path}"
+
+    async def scan_security(self, path: str = ".") -> str:
+        """セキュリティスキャン (Bandit 等) の実行 (ホスト側)"""
+        cmd_str = self.get_security_command(path)
+        if not cmd_str:
             return "No security scanner found for this path."
 
         try:
-            full_cmd = cmd.split() + [target_path]
-            result = subprocess.run(full_cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd_str.split(), cwd=self.repo_root, capture_output=True, text=True)
             if result.returncode == 0:
                 return "No security issues found."
             return f"Security Issues found:\n{result.stdout.strip()}"

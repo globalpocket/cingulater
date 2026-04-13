@@ -128,6 +128,28 @@ async def finish(ctx: RunContext[AgentDeps], summary: str) -> str:
     return "Task completed."
 
 @planner_agent.tool
+async def get_agent_context(ctx: RunContext[AgentDeps]) -> str:
+    """エージェントの現在のステータス、カレントディレクトリ、接続されているMCPサーバーの情報を取得します。
+    デバッグや「自分が今どこにいるか」を確認するために使用します。
+    """
+    workspace_root = ctx.deps.workspace_context.root_path if ctx.deps.workspace_context else "Not Set"
+    cwd = os.getcwd()
+    # MCPServerManager からクライアントの状態を確認
+    m = ctx.deps.mcp_manager
+    servers = {
+        "workspace_server": "Connected" if m.workspace_client else "Disconnected",
+        "knowledge_server": "Connected" if m.knowledge_client else "Disconnected",
+        "plugins": list(m.plugin_clients.keys())
+    }
+    return (
+        f"Current Context:\n"
+        f"- Workspace Root: {workspace_root}\n"
+        f"- Current Directory: {cwd}\n"
+        f"- Status: {ctx.deps.status}\n"
+        f"- MCP Servers: {servers}"
+    )
+
+@planner_agent.tool
 async def delegate_to_executor(ctx: RunContext[AgentDeps], blueprint: Blueprint) -> str:
     """
     専門家 (Executor) に Blueprint を渡し、具体的なコード実装案の作成を依頼します。
@@ -137,7 +159,7 @@ async def delegate_to_executor(ctx: RunContext[AgentDeps], blueprint: Blueprint)
     
     # Executor エージェントの実行 (Multi-Agent 構成)
     # Planner と同じ Deps を共有し、モデルのみ Executor 用のものを使用
-    executor_model_name = ctx.deps.config['llm']['models'].get('executor', 'Qwen2.5-Coder-7B-Instruct-4bit')
+    executor_model_name = ctx.deps.config['llm']['models'].get('executor', 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit')
     
     # 修正: 環境変数を設定して引数エラーを回避
     os.environ["OPENAI_BASE_URL"] = ctx.deps.config['llm']['executor_endpoint']
@@ -164,7 +186,7 @@ class CoderAgent:
         self.deps = AgentDeps(config, sandbox, gh_client, mcp_manager, workspace_context)
         
         # モデルの初期化 (Planner)
-        planner_model_name = config['llm']['models'].get('planner', 'gemma-4-26b-it-4bit')
+        planner_model_name = config['llm']['models'].get('planner', 'mlx-community/gemma-4-26b-a4b-it-4bit')
         
         # 修正: 環境変数を設定して引数エラーを回避
         os.environ["OPENAI_BASE_URL"] = config['llm']['planner_endpoint']

@@ -2,7 +2,9 @@ import docker
 import os
 import yaml
 import logging
+from typing import Dict, Any, Optional
 from .context import WorkspaceContext
+from .linter import LinterEngine
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +220,45 @@ class SandboxManager:
                 "stdout": "",
                 "stderr": str(e)
             }
+
+    async def lint_code(self, path: str = ".") -> str:
+        """リンターをサンドボックス内で実行する"""
+        if not self.context or not self.context.root_path:
+            return "Error: Workspace root is not set."
+            
+        linter = LinterEngine(self.context.root_path)
+        cmd = linter.get_lint_command(path)
+        if not cmd:
+            return "No linter found for this path."
+            
+        res = await self.run_command(cmd)
+        return f"Lint Results (Sandbox):\nStatus: {res['exit_code']}\nOutput: {res['stdout'] or res['stderr']}"
+
+    async def format_code(self, path: str = ".") -> str:
+        """フォーマッターをサンドボックス内で実行する"""
+        if not self.context or not self.context.root_path:
+            return "Error: Workspace root is not set."
+
+        linter = LinterEngine(self.context.root_path)
+        cmd = linter.get_format_command(path)
+        if not cmd:
+            return "No formatter found for this path."
+
+        res = await self.run_command(cmd)
+        return f"Format Results (Sandbox):\nStatus: {res['exit_code']}\nOutput: {res['stdout'] or res['stderr']}"
+
+    async def scan_security(self, path: str = ".") -> str:
+        """セキュリティスキャンをサンドボックス内で実行する"""
+        if not self.context or not self.context.root_path:
+            return "Error: Workspace root is not set."
+
+        linter = LinterEngine(self.context.root_path)
+        cmd = linter.get_security_command(path)
+        if not cmd:
+            return "No security scanner found for this path."
+
+        res = await self.run_command(cmd)
+        return f"Security Scan Results (Sandbox):\nStatus: {res['exit_code']}\nOutput: {res['stdout'] or res['stderr']}"
 
     def cleanup_orphans(self):
         """オーファンコンテナ・ボリュームの定期GC (設計書 8.4 浄化)"""

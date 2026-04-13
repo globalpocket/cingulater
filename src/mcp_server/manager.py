@@ -16,8 +16,9 @@ class MCPServerManager:
     コアサーバー（Workspace, Knowledge）と、タスクごとにJITロードされる解析用プラグインを管理する。
     AnyIO の TaskGroup を用いて、プロセスの確実なクリーンアップを保証する。
     """
-    def __init__(self, project_root: str):
+    def __init__(self, project_root: str, config_path: Optional[str] = None):
         self.project_root = project_root
+        self.config_path = config_path
         
         # コアサーバークライアント
         self.workspace_client: Optional[Client] = None
@@ -45,6 +46,7 @@ class MCPServerManager:
             **os.environ, 
             "BROWNIE_WORKSPACE_ROOT": repo_path, 
             "BROWNIE_REFERENCE_ROOT": reference_path,
+            "BROWNIE_CONFIG_PATH": self.config_path or "",
             "PYTHONPATH": "."
         }
 
@@ -73,6 +75,7 @@ class MCPServerManager:
             "BROWNIE_TARGET_REPO": repo_name, 
             "BROWNIE_REPO_PATH": repo_path, 
             "BROWNIE_MEMORY_PATH": memory_path,
+            "BROWNIE_CONFIG_PATH": self.config_path or "",
             "PYTHONPATH": "."
         }
 
@@ -124,6 +127,7 @@ class MCPServerManager:
         env = {
             **os.environ, 
             "BROWNIE_WORKSPACE_ROOT": self._repo_path, 
+            "BROWNIE_CONFIG_PATH": self.config_path or "",
             "PYTHONPATH": "."
         }
         
