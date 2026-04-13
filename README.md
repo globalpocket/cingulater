@@ -157,7 +157,7 @@ BROWNIE のフル機能を活用するには、以下の環境とプログラム
     executor: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
 
 
-    - **Local**: `mlx-community/gemma-4-26b-a4b-it-4bit` (Router / Planner), `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (Executor).
+    - **Local**: `mlx-community/gemma-4-26b-a4b-it-4bit` (Planner), `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (Executor).
     - **Cloud**: `Google Gemini` (デフォルトのバリデーションエンジン), OpenAI, Anthropic 等。
     - *※ [LiteLLM](https://github.com/BerriAI/litellm) によるマルチプロバイダー対応。*
 - **Essential CLI Tools**:
