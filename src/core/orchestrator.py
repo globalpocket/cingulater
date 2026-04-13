@@ -167,6 +167,26 @@ class Orchestrator:
                 )
                 logger.info(f"MLX Server ({role}) for {model_name} starting on port {port}... (Log: {log_file_path})")
 
+                # サーバーが準備完了になるまで待機（最大 60 秒）
+                logger.info(f"Waiting for MLX Server ({role}) to be ready on port {port}...")
+                start_time = asyncio.get_event_loop().time()
+                is_ready = False
+                while asyncio.get_event_loop().time() - start_time < 60:
+                    try:
+                        # 指数的なバックオフではなく、1秒間隔でチェック
+                        resp = await self.http_client.get(f"{endpoint}/models", timeout=2.0)
+                        if resp.status_code == 200:
+                            is_ready = True
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1)
+                
+                if is_ready:
+                    logger.info(f"MLX Server ({role}) is READY!")
+                else:
+                    logger.error(f"MLX Server ({role}) FAILED to become ready within 60s.")
+
     async def _poll_mentions(self):
         """メンション取得とキュー投入"""
         try:
