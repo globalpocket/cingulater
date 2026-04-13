@@ -187,6 +187,37 @@ class Orchestrator:
                 else:
                     logger.error(f"MLX Server ({role}) FAILED to become ready within 60s.")
 
+    async def _wait_for_llm_ready(self):
+        """ワーカープロセス用：LLM サーバーが準備完了になるまで待機する（起動処理は行わない）"""
+        logger.info("Worker is waiting for LLM servers (planner & executor) to be ready...")
+        
+        models_config = [
+            ("planner", self.config['llm']['planner_endpoint'], 8080),
+            ("executor", self.config['llm']['executor_endpoint'], 8081)
+        ]
+        
+        start_time = asyncio.get_event_loop().time()
+        timeout = 180  # 余裕を持って 3 分設定
+        
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            all_ready = True
+            for role, endpoint, port in models_config:
+                try:
+                    resp = await self.http_client.get(f"{endpoint}/models", timeout=2.0)
+                    if resp.status_code != 200:
+                        all_ready = False
+                except Exception:
+                    all_ready = False
+            
+            if all_ready:
+                logger.info("Worker confirmed LLM servers are READY!")
+                return True
+            
+            await asyncio.sleep(3)
+        
+        logger.error("Worker timed out waiting for LLM servers to be ready.")
+        return False
+
     async def _poll_mentions(self):
         """メンション取得とキュー投入"""
         try:
@@ -299,6 +330,10 @@ class Orchestrator:
     async def _execute_task(self, task_id: str, repo_name: str, issue_number: int, payload: dict = None):
         """Huey ワーカーから呼び出される実行実体（ワーカープロセス内）"""
         logger.info(f"==> _execute_task STARTED for {task_id} (Issue #{issue_number})")
+        
+        # ワーカーはサーバーの準備完了を待つ（起動はメインプロセスに任せる）
+        await self._wait_for_llm_ready()
+        
         checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
         
         # ワーカー実行時にその都度チェックポインターを開くことで接続切れを防ぐ
