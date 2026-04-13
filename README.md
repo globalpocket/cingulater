@@ -152,7 +152,12 @@ BROWNIE のフル機能を活用するには、以下の環境とプログラム
     - **[uv](https://github.com/astral-sh/uv)**: 高速なパッケージ・プロジェクト管理に使用。
     - **Node.js / npm**: JavaScript/TypeScript の静的解析 (`ESLint`, `Prettier`) に必要。
 - **LLM Models & Providers**:
-    - **Local**: `Llama 3.1 8B` (Planner), `Qwen 2.5 Coder 7B` (Executor).
+
+    planner: "mlx-community/gemma-4-26b-a4b-it-4bit"
+    executor: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+
+
+    - **Local**: `mlx-community/gemma-4-26b-a4b-it-4bit` (Router / Planner), `mlx-community/Qwen2.5-Coder-7B-Instruct-4bit` (Executor).
     - **Cloud**: `Google Gemini` (デフォルトのバリデーションエンジン), OpenAI, Anthropic 等。
     - *※ [LiteLLM](https://github.com/BerriAI/litellm) によるマルチプロバイダー対応。*
 - **Essential CLI Tools**:
