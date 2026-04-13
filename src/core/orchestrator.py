@@ -104,7 +104,7 @@ class Orchestrator:
                 elif "/reject" in body:
                     await self._resume_workflow(task_id, "Reject")
                 else:
-                    await self._queue_task(task_id, target_repo, m['number'], comment_id=str(m['comment_id']))
+                    await self._queue_task(task_id, target_repo, m['number'], comment_id=str(m['comment_id']), comment_body=m.get('body'))
         except Exception as e:
             logger.error(f"Polling error: {e}")
 
@@ -125,7 +125,7 @@ class Orchestrator:
             )
             await self.worker_pool.add_task(task_id, 1, task_id.split("#")[0], int(task_id.split("#")[1]))
 
-    async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: Optional[str] = None):
+    async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: Optional[str] = None, comment_body: Optional[str] = None):
         config = {"configurable": {"thread_id": task_id}}
         state = await self._workflow_app.aget_state(config)
         
@@ -138,8 +138,16 @@ class Orchestrator:
             
             # ユーザー待機中（Waiting...）または新規指示の場合は再投入
             logger.info(f"Re-queueing task {task_id} with new status/comment.")
-            await self._workflow_app.aupdate_state(config, {"resume_comment_id": comment_id, "status": "InQueue"}, as_node="intent_alignment")
-            payload_to_send = state.values
+            
+            new_state = {"resume_comment_id": comment_id, "status": "InQueue"}
+            if comment_body:
+                # ユーザーの追加コメントを指示にマージしてエージェントに伝える
+                existing_instruction = state.values.get("instruction", "")
+                new_state["instruction"] = existing_instruction + f"\n\n[ユーザーからの追加情報 - {datetime.utcnow().isoformat()}]:\n{comment_body}"
+            
+            await self._workflow_app.aupdate_state(config, new_state, as_node="intent_alignment")
+            payload_to_send = await self._workflow_app.aget_state(config)
+            payload_to_send = payload_to_send.values
         else:
             repo_path = os.path.join(self.project_root, "workspaces", repo_name.split("/")[-1])
             issue = await self.gh_client.get_issue(repo_name, issue_number)
