@@ -641,7 +641,9 @@ class GitHubClientWrapper:
             
             # 最大 5 件程度に制限
             found = []
-            for issue in issues[:5]:
+            for i, issue in enumerate(issues):
+                if i >= 5:
+                    break
                 # Issue 本文またはコメントから最新のメンション箇所を特定
                 latest_mention = None
                 

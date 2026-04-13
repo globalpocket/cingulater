@@ -13,6 +13,10 @@ from src.version import get_footer
 
 logger = logging.getLogger(__name__)
 
+class TaskAbortedException(Exception):
+    """ユーザーによって Issue がクローズされた場合に投げられる例外"""
+    pass
+
 # --- Blueprint 定義 (設計思想: 決定論的な JSON 連携) ---
 
 class BlueprintFile(BaseModel):
@@ -48,6 +52,26 @@ class AgentDeps:
         self.current_issue_number: Optional[int] = None
         self.status: str = "running"
         self.last_manual_comment: Optional[str] = None
+        self._last_open_check: float = 0
+
+    async def ensure_open(self):
+        """
+        現在の Issue がまだオープン状態か確認し、クローズされていれば TaskAbortedException を投げる。
+        API 負荷軽減のため、前回のチェックから 30 秒以内の場合はキャッシュを利用する。
+        """
+        import time
+        now = time.time()
+        if now - self._last_open_check < 30:
+            return
+
+        logger.debug(f"Checking if issue {self.current_repo_name}#{self.current_issue_number} is still open...")
+        issue = await self.gh_client.get_issue(self.current_repo_name, self.current_issue_number)
+        
+        if issue.get("state") != "open":
+            logger.warning(f"Task aborted: Issue {self.current_repo_name}#{self.current_issue_number} is CLOSED.")
+            raise TaskAbortedException(f"Issue {self.current_repo_name}#{self.current_issue_number} was closed by user.")
+        
+        self._last_open_check = now
 
 # --- Executor エージェント (専門的実行) ---
 
@@ -79,6 +103,7 @@ planner_agent = Agent(
 @planner_agent.tool
 async def post_comment(ctx: RunContext[AgentDeps], body: str) -> str:
     """GitHub の Issue または PR にコメントを投稿します。"""
+    await ctx.deps.ensure_open()
     await ctx.deps.gh_client.post_comment(
         ctx.deps.current_repo_name, 
         ctx.deps.current_issue_number, 
@@ -90,6 +115,7 @@ async def post_comment(ctx: RunContext[AgentDeps], body: str) -> str:
 @planner_agent.tool
 async def ask_user(ctx: RunContext[AgentDeps], question: str) -> str:
     """ユーザーに質問や確認を求め、回答が得られるまで処理を待機させます。"""
+    await ctx.deps.ensure_open()
     ctx.deps.status = "waiting_for_clarification"
     # LangGraph 側でこのステータスを検知して interrupt する
     return "Waiting for user clarification."
@@ -97,6 +123,7 @@ async def ask_user(ctx: RunContext[AgentDeps], question: str) -> str:
 @planner_agent.tool
 async def finish(ctx: RunContext[AgentDeps], summary: str) -> str:
     """タスクを正常に完了し、最終回答を投稿して終了します。"""
+    await ctx.deps.ensure_open()
     ctx.deps.status = "finished"
     return "Task completed."
 
@@ -105,6 +132,7 @@ async def delegate_to_executor(ctx: RunContext[AgentDeps], blueprint: Blueprint)
     """
     専門家 (Executor) に Blueprint を渡し、具体的なコード実装案の作成を依頼します。
     """
+    await ctx.deps.ensure_open()
     logger.info(f"Delegating to Executor with Blueprint for {len(blueprint.target_files)} files.")
     
     # Executor エージェントの実行 (Multi-Agent 構成)
@@ -180,6 +208,9 @@ class CoderAgent:
         logger.info(f"[{task_id}] Pydantic AI Planner starting...")
         
         try:
+            # 実行前にステータスを最終確認
+            await self.deps.ensure_open()
+            
             # 実行
             result = await planner_agent.run(
                 instruction, 

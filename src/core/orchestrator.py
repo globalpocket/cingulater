@@ -11,6 +11,7 @@ from datetime import datetime
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from src.core.worker_pool import WorkerPool
+from src.core.agent import CoderAgent, TaskAbortedException
 from src.gh_platform.client import GitHubClientWrapper, GitHubRateLimitException
 from src.workspace.sandbox import SandboxManager
 from src.mcp_server.manager import MCPServerManager
@@ -201,6 +202,14 @@ class Orchestrator:
 
     async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: Optional[str] = None, comment_body: Optional[str] = None):
         config = {"configurable": {"thread_id": task_id}}
+        
+        # 投入前に最新の Issue ステータスを確認 (設計改善: クローズ済みはスキップ)
+        issue_info = await self.gh_client.get_issue(repo_name, issue_number)
+        if issue_info.get("state") != "open":
+            logger.info(f"Skipping task {task_id} because the issue is CLOSED.")
+            # 必要であれば通知を既読にするなどの処理
+            return
+
         state = await self._workflow_app.aget_state(config)
         
         payload_to_send = None
@@ -254,28 +263,38 @@ class Orchestrator:
             state = await workflow_app.aget_state(config)
 
             try:
+                # 実行直前にもステータスを最終確認
+                issue_info = await self.gh_client.get_issue(repo_name, issue_number)
+                if issue_info.get("state") != "open":
+                    logger.warning(f"Aborting task {task_id} execution: Issue is already CLOSED.")
+                    return
+
                 # task_id を含めた入力データを構成
                 input_data = payload.copy() if payload else {}
                 input_data["task_id"] = task_id
                 input_data["repo_name"] = repo_name
                 input_data["issue_number"] = issue_number
                 
-                async for event in workflow_app.astream(input_data, config=config):
-                    # 各イベント後の最新状態を取得
-                    current_state = await workflow_app.aget_state(config)
-                    reported = current_state.values.get("reported_nodes", [])
+                # 実行全体に 10 分のタイムアウトを設定
+                async def run_workflow():
+                    async for event in workflow_app.astream(input_data, config=config):
+                        # 各イベント後の最新状態を取得
+                        current_state = await workflow_app.aget_state(config)
+                        reported = current_state.values.get("reported_nodes", [])
 
-                    for node_name, output in event.items():
-                        if node_name == "intent_alignment" and "intent_draft" in output:
-                            if "intent_alignment" not in reported:
-                                draft = output["intent_draft"]
-                                await self.gh_client.post_comment(repo_name, issue_number, f"### 🔍 意図の確認と提案\n\n{draft}" + get_footer())
-                                await workflow_app.aupdate_state(config, {"reported_nodes": ["intent_alignment"]})
-                        
-                        elif node_name == "core_analysis" and output.get("status") == "Phase1_Completed":
-                            if "core_analysis" not in reported:
-                                await self.gh_client.post_comment(repo_name, issue_number, "### 📊 全方位分析完了\nリポジトリの解析が完了しました。" + get_footer())
-                                await workflow_app.aupdate_state(config, {"reported_nodes": ["core_analysis"]})
+                        for node_name, output in event.items():
+                            if node_name == "intent_alignment" and "intent_draft" in output:
+                                if "intent_alignment" not in reported:
+                                    draft = output["intent_draft"]
+                                    await self.gh_client.post_comment(repo_name, issue_number, f"### 🔍 意図の確認と提案\n\n{draft}" + get_footer())
+                                    await workflow_app.aupdate_state(config, {"reported_nodes": ["intent_alignment"]})
+                            
+                            elif node_name == "core_analysis" and output.get("status") == "Phase1_Completed":
+                                if "core_analysis" not in reported:
+                                    await self.gh_client.post_comment(repo_name, issue_number, "### 📊 全方位分析完了\nリポジトリの解析が完了しました。" + get_footer())
+                                    await workflow_app.aupdate_state(config, {"reported_nodes": ["core_analysis"]})
+                
+                await asyncio.wait_for(run_workflow(), timeout=600)
 
                 # 最終状態の報告
                 final_state = await workflow_app.aget_state(config)
@@ -291,6 +310,14 @@ class Orchestrator:
                     await self.gh_client.post_comment(repo_name, issue_number, f"### ✅ 完了報告\n\n{summary}" + get_footer())
                     await workflow_app.aupdate_state(config, {"reported_nodes": ["Completed"]})
 
+            except asyncio.TimeoutError:
+                logger.error(f"Task execution TIMEOUT: {task_id}")
+                await self.gh_client.post_comment(repo_name, issue_number, "### ⚠️ タイムアウトによる中断\n処理時間が制限（10分）を超えたため、安全のために実行を中断しました。特定の処理でループが発生したか、LLM の応答が停止した可能性があります。" + get_footer())
+                await workflow_app.aupdate_state(config, {"status": "Failed"}, as_node="intent_alignment")
+            except TaskAbortedException as tae:
+                logger.warning(f"Task {task_id} aborted by gate: {tae}")
+                # ユーザーが意図的にクローズしたため、Failed ではなく Skipped またはそのまま終了
+                await workflow_app.aupdate_state(config, {"status": "Aborted"}, as_node="intent_alignment")
             except Exception as e:
                 logger.error(f"Task execution error: {e}", exc_info=True)
                 await workflow_app.aupdate_state(config, {"status": "Failed"}, as_node="intent_alignment")

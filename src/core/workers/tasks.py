@@ -33,9 +33,14 @@ def analysis_task(task_id, repo_name, issue_number, payload):
     logger.info(f"!!! WORKER RECEIVED REAL TASK: {task_id} !!!")
     orch = get_orchestrator()
     try:
-        # asyncio.run で非同期タスクを実行
-        asyncio.run(orch._execute_task(task_id, repo_name, issue_number, payload))
+        # asyncio.run で非同期タスクを実行 (10分のタイムアウトを設定)
+        asyncio.run(asyncio.wait_for(
+            orch._execute_task(task_id, repo_name, issue_number, payload),
+            timeout=600
+        ))
         logger.info(f"!!! WORKER COMPLETED EXECUTION FOR {task_id} !!!")
+    except asyncio.TimeoutError:
+        logger.error(f"Worker task TIMEOUT after 600s: {task_id}")
     except Exception as e:
         logger.error(f"Worker execution failed: {e}", exc_info=True)
 
