@@ -49,6 +49,13 @@ class Orchestrator:
         self._llm_startup_lock = asyncio.Lock()
         self.is_running = False
 
+        # ワークスペースのベースパスを解決 (設計書 8.1 参照)
+        ws_config = self.config.get('workspace', {})
+        base_dir = ws_config.get('base_dir', "~/.local/share/brownie/workspaces")
+        self.workspace_base = os.path.expanduser(base_dir)
+        os.makedirs(self.workspace_base, exist_ok=True)
+        logger.info(f"Workspace base directory set to: {self.workspace_base}")
+
     async def start(self):
         """オーケストレーター（メンション監視プロセス）の起動"""
         logger.info(f"Orchestrator starting. Build ID: {get_build_id()}")
@@ -217,7 +224,7 @@ class Orchestrator:
             updated_state = await self._workflow_app.aget_state(config)
             payload_to_send = updated_state.values
         else:
-            repo_path = os.path.join(self.project_root, "workspaces", repo_name.split("/")[-1])
+            repo_path = os.path.join(self.workspace_base, repo_name.split("/")[-1])
             issue = await self.gh_client.get_issue(repo_name, issue_number)
             initial_values = {
                 "task_id": task_id, "thread_id": task_id, "repo_name": repo_name,

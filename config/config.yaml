@@ -26,7 +26,7 @@ workspace:
   sandbox_user_id: 1000
   sandbox_group_id: 1000
   lfs_enabled: true
-  base_dir: "/tmp/brownie_workspace"
+  base_dir: "~/.local/share/brownie/workspaces"
 database:
   db_path: "~/.local/share/brownie/brownie.db"
   memory_path: "~/.local/share/brownie/vector_db"
