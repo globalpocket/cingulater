@@ -161,10 +161,24 @@ class Orchestrator:
                 try:
                     result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
                     pids = result.stdout.strip().split("\n")
+                    my_pid = str(os.getpid())
+                    worker_pid = str(self.worker_pool.huey_process.pid) if self.worker_pool.huey_process else None
+                    
                     for pid in pids:
-                        if pid.strip():
-                            logger.info(f"Killing stale process {pid} using port {port}")
-                            subprocess.run(["kill", "-9", pid], check=False)
+                        target_pid = pid.strip()
+                        if not target_pid:
+                            continue
+                        
+                        # 自分自身やワーカーを殺さないようにガード
+                        if target_pid == my_pid:
+                            logger.debug(f"Skipping self-kill for PID {target_pid} on port {port}")
+                            continue
+                        if worker_pid and target_pid == worker_pid:
+                            logger.debug(f"Skipping worker-kill for PID {target_pid} on port {port}")
+                            continue
+
+                        logger.info(f"Killing stale process {target_pid} using port {port}")
+                        subprocess.run(["kill", "-9", target_pid], check=False)
                 except Exception as e:
                     logger.warning(f"Failed to cleanup processes on port {port}: {e}")
 

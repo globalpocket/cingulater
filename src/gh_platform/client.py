@@ -262,7 +262,7 @@ class GitHubClientWrapper:
             
             def _fetch_notifications():
                 notifs = self.g.get_user().get_notifications(all=True, participating=True)
-                return [n for i, n in enumerate(notifs) if i < 50]
+                return [n for i, n in enumerate(notifs) if i < 100]
                 
             notifications = await asyncio.to_thread(_fetch_notifications)
             
