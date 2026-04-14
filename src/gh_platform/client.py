@@ -328,7 +328,7 @@ class GitHubClientWrapper:
 
             notifications = await asyncio.to_thread(_fetch_notifications)
 
-            tasks = []
+            results = []
             for n in notifications:
                 if n.subject.type not in ["Issue", "PullRequest"]:
                     continue
@@ -338,9 +338,12 @@ class GitHubClientWrapper:
                 if repo_name and issue_repo_name != repo_name:
                     continue
 
-                tasks.append(self._process_single_notification(n, my_username))
-
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+                # 逐次的に処理を実行 (並列処理の禁止)
+                try:
+                    res = await self._process_single_notification(n, my_username)
+                    results.append(res)
+                except Exception as e:
+                    logger.warning(f"Notification processing failed (sequential): {e}")
 
             final_mentions = []
             seen_issues = set()
