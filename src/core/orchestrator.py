@@ -26,7 +26,7 @@ class Orchestrator:
             self.config = yaml.safe_load(f)
         
         # magicvalues.yaml による例外的な上書き (設計書 11.2)
-        magic_path = os.path.join(os.path.dirname(config_path), "magicvalues.yaml")
+        magic_path = os.path.join(os.path.dirname(config_path or ""), "magicvalues.yaml")
         if os.path.exists(magic_path):
             try:
                 with open(magic_path, 'r') as f:
@@ -36,19 +36,8 @@ class Orchestrator:
                     logger.info(f"Magic values loaded and merged from {magic_path}")
             except Exception as e:
                 logger.warning(f"Failed to load magicvalues.yaml: {e}")
-        
-        self._post_init(config_path)
 
-    def _deep_merge(self, source, destination):
-        """辞書を再帰的にマージする"""
-        for key, value in source.items():
-            if isinstance(value, dict) and key in destination and isinstance(destination[key], dict):
-                self._deep_merge(value, destination[key])
-            else:
-                destination[key] = value
-
-    def _post_init(self, config_path: str):
-        """共通の初期化ロジック (設計書 3.2: リソース初期化)"""
+        # リソースの初期化 (設計書 3.2)
         self.project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
         # Persistence Manager の初期化
@@ -80,6 +69,14 @@ class Orchestrator:
         self.workspace_base = os.path.expanduser(base_dir)
         os.makedirs(self.workspace_base, exist_ok=True)
         logger.info(f"Workspace base directory set to: {self.workspace_base}")
+
+    def _deep_merge(self, source, destination):
+        """辞書を再帰的にマージする"""
+        for key, value in source.items():
+            if isinstance(value, dict) and key in destination and isinstance(destination[key], dict):
+                self._deep_merge(value, destination[key])
+            else:
+                destination[key] = value
 
     async def start(self):
         """オーケストレーター（メンション監視プロセス）の起動"""
