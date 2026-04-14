@@ -102,7 +102,7 @@ class BrownieApp:
                         "timestamp": time.time(),
                         "build": get_build_id()
                     }))
-                await asyncio.sleep(60)
+                await asyncio.sleep(30)
         finally:
             if os.path.exists(signal_file):
                 os.remove(signal_file)

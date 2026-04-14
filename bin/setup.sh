@@ -4,6 +4,13 @@ set -e
 # Brownie 統合セットアップスクリプト (設計書 11.1 - スマート版)
 echo "Starting Brownie Provisioning..."
 
+# macOS (Apple Silicon) のパスを考慮
+if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ -f "/opt/homebrew/bin/brew" ]] && ! command -v brew &> /dev/null; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    fi
+fi
+
 # ツール存在チェック関数
 # $1: コマンド名, $2: Macアプリ名 (省略可)
 check_tool() {
@@ -105,14 +112,35 @@ else
     UV_CMD="uv"
 fi
 
-echo "Syncing Python dependencies (including Pydantic)..."
+echo "Syncing Python dependencies (including Pydantic and MLX)..."
+# すべての依存関係（mlx-lm, outlines 等を含む）を pyproject.toml に集約したため、sync だけで完了する
 $UV_CMD sync
-$UV_CMD pip install mlx-lm outlines xgrammar
 
 # 4. ディレクトリ初期化
-echo "Initializing directories..."
-mkdir -p ~/.local/share/brownie/
-mkdir -p ~/.cache/brownie/
+echo "Initializing directories from config.yaml..."
+# 設定ファイルからパスの設定を動的に取得して初期化
+$UV_CMD run python -c "
+import yaml
+import os
+
+with open('config/config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+paths = [
+    config['database'].get('db_path'),
+    config['database'].get('memory_path'),
+    config['llm'].get('model_dir'),
+    config['workspace'].get('base_dir')
+]
+
+for p in paths:
+    if p:
+        expanded = os.path.expanduser(p)
+        dir_path = os.path.dirname(expanded) if '.' in os.path.basename(expanded) else expanded
+        print(f'Ensuring directory: {dir_path}')
+        os.makedirs(dir_path, exist_ok=True)
+"
+
 mkdir -p logs
 mkdir -p src/mcp_server/plugins/
 
@@ -193,9 +221,9 @@ if command -v docker-compose &> /dev/null || docker compose version &> /dev/null
     echo "Initializing Docker services..."
     # 'docker compose' (V2) を優先使用
     if docker compose version &> /dev/null; then
-        docker compose up -d chromadb
+        docker compose up -d chromadb redis
     else
-        docker-compose up -d chromadb
+        docker-compose up -d chromadb redis
     fi
 else
     echo "Warning: Docker not found. Skipping service initialization."

@@ -20,6 +20,16 @@ if sys.platform == 'darwin' and 'DOCKER_HOST' not in os.environ:
 
 # 仮想環境 (uv) の Python を強制使用する再実行ロジック
 venv_python = os.path.join(base_dir, ".venv", "bin", "python")
+
+# macOS のパス補完 (Docker や Homebrew バイナリの解決用)
+if sys.platform == 'darwin':
+    extra_paths = ["/opt/homebrew/bin", "/usr/local/bin"]
+    current_path = os.environ.get('PATH', '')
+    for p in extra_paths:
+        if p not in current_path:
+            current_path = f"{p}:{current_path}"
+    os.environ['PATH'] = current_path
+
 if os.path.exists(venv_python) and sys.executable != venv_python:
     os.execv(venv_python, [venv_python] + sys.argv)
 
@@ -101,16 +111,17 @@ def manage_docker_services(base_dir, action):
 
     try:
         if action == "start":
-            print("🐳 Starting related services (ChromaDB)...")
-            subprocess.run(cmd_base + ["up", "-d", "chromadb"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("🐳 Starting related services (ChromaDB, Redis)...")
+            subprocess.run(cmd_base + ["up", "-d", "chromadb", "redis"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif action == "stop":
-            print("🐳 Stopping related services (ChromaDB)...")
-            subprocess.run(cmd_base + ["stop", "chromadb"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("🐳 Stopping related services (ChromaDB, Redis)...")
+            subprocess.run(cmd_base + ["stop", "chromadb", "redis"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif action == "status":
             res = subprocess.run(cmd_base + ["ps", "--services", "--filter", "status=running"], cwd=base_dir, capture_output=True, text=True)
-            if "chromadb" in res.stdout:
-                return "ACTIVE"
-            return "STOPPED"
+            active_services = []
+            if "chromadb" in res.stdout: active_services.append("ChromaDB")
+            if "redis" in res.stdout: active_services.append("Redis")
+            return ", ".join(active_services) if active_services else "STOPPED"
     except Exception as e:
         if action != "status":
             print(f"⚠️ Failed to {action} ChromaDB: {e}")
@@ -261,8 +272,8 @@ def run_command(args):
             print("Brownie is STOPPED")
             
         # Docker サービスのステータスを追加で表示
-        chroma_status = manage_docker_services(base_dir, "status")
-        print(f"ChromaDB is {chroma_status}")
+        docker_status = manage_docker_services(base_dir, "status")
+        print(f"Docker Services: {docker_status}")
 
     elif args.action == "logs" or args.action == "log":
         log_file = os.path.join(base_dir, "logs", "brownie.log")

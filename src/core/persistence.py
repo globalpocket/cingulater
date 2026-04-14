@@ -10,13 +10,23 @@ class PersistenceManager:
     def __init__(self, db_path: str):
         self.db_path = os.path.expanduser(db_path)
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self._init_db()
+        try:
+            self._init_db()
+        except Exception as e:
+            logger.critical(f"Failed to initialize database at {self.db_path}: {e}")
+            raise
 
     def _init_db(self):
-        """データベースとテーブルの初期化"""
-        with sqlite3.connect(self.db_path) as conn:
+        """データベースとテーブルの初期化 (設計書 8.1 拡張: 自己修復型)"""
+        logger.info(f"Initializing database: {self.db_path}")
+        # タイムアウトを 30 秒に設定し、WAL モードを有効化することで並行性を高める
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        try:
+            # WAL モードへの切り替え
+            conn.execute("PRAGMA journal_mode=WAL;")
             cursor = conn.cursor()
-            # 監視対象リポジトリ管理テーブル
+            
+            # 1. 監視対象リポジトリ管理テーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS watched_repositories (
                     repo_name TEXT PRIMARY KEY,
@@ -25,7 +35,7 @@ class PersistenceManager:
                 )
             """)
             
-            # 処理済みメンション管理テーブル (重複排除・編集検知)
+            # 2. 処理済みメンション管理テーブル
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS processed_mentions (
                     mention_id TEXT PRIMARY KEY,
@@ -44,27 +54,36 @@ class PersistenceManager:
                 )
             """)
             
-            # マイグレーション: 不足しているカラムを追加
-            try:
-                cursor.execute("PRAGMA table_info(processed_mentions)")
-                existing_columns = [row[1] for row in cursor.fetchall()]
-                new_columns = [
-                    ("node_id", "TEXT"),
-                    ("url", "TEXT"),
-                    ("html_url", "TEXT"),
-                    ("user_login", "TEXT"),
-                    ("created_at", "TEXT"),
-                    ("author_association", "TEXT"),
-                    ("reactions", "TEXT")
-                ]
-                for col_name, col_type in new_columns:
-                    if col_name not in existing_columns:
-                        logger.info(f"Adding column {col_name} to processed_mentions table.")
-                        cursor.execute(f"ALTER TABLE processed_mentions ADD COLUMN {col_name} {col_type}")
-            except Exception as e:
-                logger.warning(f"Migration error during _init_db: {e}")
+            # 3. マイグレーションと存否の最終確認
+            cursor.execute("PRAGMA table_info(processed_mentions)")
+            existing_columns = [row[1] for row in cursor.fetchall()]
+            if not existing_columns:
+                # テーブルが作成されていない（0バイトファイルだった場合など）への警告
+                logger.error("Failed to create tables in database file.")
+                raise sqlite3.OperationalError("Tables not found after CREATE TABLE attempt.")
 
+            new_columns = [
+                ("node_id", "TEXT"),
+                ("url", "TEXT"),
+                ("html_url", "TEXT"),
+                ("user_login", "TEXT"),
+                ("created_at", "TEXT"),
+                ("author_association", "TEXT"),
+                ("reactions", "TEXT")
+            ]
+            for col_name, col_type in new_columns:
+                if col_name not in existing_columns:
+                    logger.info(f"Adding column {col_name} to processed_mentions table.")
+                    cursor.execute(f"ALTER TABLE processed_mentions ADD COLUMN {col_name} {col_type}")
+            
             conn.commit()
+            logger.info("Database initialization completed successfully.")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error during database initialization: {e}")
+            raise
+        finally:
+            conn.close()
 
     def upsert_repository(self, repo_name: str):
         """リポジトリを監視リストに追加または更新"""

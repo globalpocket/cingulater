@@ -3,6 +3,9 @@ set -e
 
 # Brownie 環境削除スクリプト (Unsetup)
 # 0. Docker サービスの停止とリソース削除 (ChromaDB 等)
+echo "Stopping any running Brownie processes..."
+./bin/brwn stop &> /dev/null || true
+
 if command -v docker-compose &> /dev/null || docker compose version &> /dev/null; then
     echo "Stopping Docker services and removing volumes..."
     if docker compose version &> /dev/null; then
@@ -10,6 +13,12 @@ if command -v docker-compose &> /dev/null || docker compose version &> /dev/null
     else
         docker-compose down -v || true
     fi
+fi
+
+# 1. uv コマンドのパス解決
+UV_CMD="$HOME/.local/bin/uv"
+if command -v uv &> /dev/null; then
+    UV_CMD="uv"
 fi
 
 # 1. 設定の読み込み (削除前に実施)
@@ -31,13 +40,39 @@ if [ -d ".venv" ]; then
 fi
 
 # 2. ローカルデータの削除 (データベース, ベクトルDB 等)
-DATA_DIR="$HOME/.local/share/brownie"
-if [ -d "$DATA_DIR" ]; then
-    echo "Removing local databases and memory from $DATA_DIR..."
-    # モデル以外のデータを選択的に削除
-    rm -f "$DATA_DIR/brownie.db"
-    rm -rf "$DATA_DIR/vector_db"
-fi
+echo "Resolving data paths from config.yaml for cleanup..."
+# 仮想環境が削除された後でも実行できるよう --with pyyaml を指定
+$UV_CMD run --with pyyaml python3 -c "
+import yaml
+import os
+import shutil
+
+if not os.path.exists('config/config.yaml'):
+    print('config/config.yaml not found. Skipping data cleanup.')
+    exit(0)
+
+with open('config/config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+# 削除対象: DB本体, ベクトルDB/Memory, ワークスペース, 管理ファイル(PID/Lock)
+to_delete = [
+    config['database'].get('db_path'),
+    config['database'].get('memory_path'),
+    config['workspace'].get('base_dir'),
+    os.path.join(os.path.dirname(config['database'].get('db_path', '')), 'brownie.pid'),
+    os.path.join(os.path.dirname(config['database'].get('db_path', '')), 'brownie.lock')
+]
+
+for p in to_delete:
+    if p and os.path.dirname(p): # パスが有効か確認
+        expanded = os.path.expanduser(p)
+        if os.path.exists(expanded):
+            print(f'Removing: {expanded}')
+            if os.path.isdir(expanded):
+                shutil.rmtree(expanded)
+            else:
+                os.remove(expanded)
+"
 
 # 3. キャッシュの削除 (Tree-sitter 文法ファイル等)
 CACHE_DIR="$HOME/.cache/brownie"

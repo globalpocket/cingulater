@@ -160,18 +160,28 @@ class Orchestrator:
                 log_file_path = os.path.join(self.project_root, "logs", f"mlx_{role}.log")
                 log_file = open(log_file_path, "a")
 
+                # サーバーモジュールの決定 (Gemma 4 や Vision モデルの場合は mlx-vlm を使用)
+                server_module = "mlx_lm.server"
+                logger.info(f"DEBUG: Evaluating model selection for: '{model_name}'")
+                if "gemma-4" in model_name.lower() or "vision" in model_name.lower():
+                    server_module = "mlx_vlm.server"
+                    logger.info(f"Using multimodal server ({server_module}) for {model_name}")
+                else:
+                    logger.info(f"DEBUG: Selected default server ({server_module}) for {model_name}")
+
                 subprocess.Popen(
-                    [venv_python, "-m", "mlx_lm.server", "--model", model_name, "--port", str(port)], 
+                    [venv_python, "-m", server_module, "--model", model_name, "--port", str(port)], 
                     stdout=log_file, stderr=log_file, 
                     start_new_session=True, env=env
                 )
-                logger.info(f"MLX Server ({role}) for {model_name} starting on port {port}... (Log: {log_file_path})")
+                logger.info(f"MLX Server ({role}) for {model_name} starting on port {port} using {server_module}... (Log: {log_file_path})")
 
-                # サーバーが準備完了になるまで待機（最大 60 秒）
-                logger.info(f"Waiting for MLX Server ({role}) to be ready on port {port}...")
+                # サーバーが準備完了になるまで待機
+                timeout_sec = self.config.get('llm', {}).get('timeout_sec', 180)
+                logger.info(f"Waiting for MLX Server ({role}) to be ready on port {port} (Max {timeout_sec}s)...")
                 start_time = asyncio.get_event_loop().time()
                 is_ready = False
-                while asyncio.get_event_loop().time() - start_time < 60:
+                while asyncio.get_event_loop().time() - start_time < timeout_sec:
                     try:
                         # 指数的なバックオフではなく、1秒間隔でチェック
                         resp = await self.http_client.get(f"{endpoint}/models", timeout=2.0)
