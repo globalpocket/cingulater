@@ -8,24 +8,7 @@ from src.utils.config_loader import get_config
 logger = logging.getLogger(__name__)
 
 
-class IntentDraft(BaseModel):
-    """
-    ユーザーの意図を整理した下書き
-    """
-
-    status: Literal["approved", "pending"] = Field(
-        description="ユーザーの指示が『承認済み・実行可能』か『まだ確認が必要』か"
-    )
-    intent_summary: str = Field(description="ユーザーの要求を1文で要約したもの")
-    evaluation_axes: List[str] = Field(
-        description="このタスクの成功を判断するための評価軸（3つ程度）"
-    )
-    required_mcp_servers: List[str] = Field(
-        description="実行に必要と思われる MCP サーバー名"
-    )
-    draft_comment: str = Field(
-        description="ユーザーに確認を求めるための丁寧な返信メッセージ。status='approved' の場合は内部的な要約として使用され、ユーザーには投稿されません。"
-    )
+from src.core.types import IntentDraft
 
 
 class IntentState(TypedDict):
