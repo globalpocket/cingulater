@@ -381,25 +381,42 @@ class Orchestrator:
             exclude_list = self.config["agent"].get("exclude_repositories", [])
             all_mentions = await self.gh_client.get_mentions_to_process()
 
+            # 1. メンションを Task ID (Issue) ごとに整理し、最新のもののみを残す (デデュープ)
+            latest_mentions_per_task = {}
             for m in all_mentions:
-                target_repo = m["repo_name"]
-                if target_repo in exclude_list:
+                task_id = f"{m['repo_name']}#{m['number']}"
+                if m["repo_name"] in exclude_list:
                     continue
 
-                mention_id = str(m.get("comment_id", "body"))
+                if task_id not in latest_mentions_per_task:
+                    latest_mentions_per_task[task_id] = m
+                else:
+                    # updated_at で比較して最新を保持
+                    cur_ts = m.get("updated_at", "")
+                    old_ts = latest_mentions_per_task[task_id].get("updated_at", "")
+                    if cur_ts > old_ts:
+                        latest_mentions_per_task[task_id] = m
+
+            # 2. 最新のメンションのみを処理
+            for task_id, m in latest_mentions_per_task.items():
+                target_repo = m["repo_name"]
+                mention_id = str(m.get("comment_id", f"body_{m['number']}"))
                 updated_at = m.get("updated_at", "1970-01-01T00:00:00Z")
 
-                # 重複排除と編集検知のチェック
+                # 重複排除と編集検知のチェック (Persistence)
                 status = self.persistence.is_mention_new_or_updated(
                     mention_id, updated_at
                 )
                 if status == "UNCHANGED":
+                    # 未読だが DB 上は処理済みの場合は、再検知を防ぐために既読化
                     logger.debug(
-                        f"Skipping already processed mention {mention_id} for {target_repo}#{m['number']}"
+                        f"Mention {mention_id} already in DB. Marking as read."
+                    )
+                    await self.gh_client.mark_issue_notifications_as_read(
+                        target_repo, m["number"]
                     )
                     continue
 
-                task_id = f"{target_repo}#{m['number']}"
                 body = m.get("body", "").lower()
                 logger.info(f"Detected {status} mention: {task_id} (ID: {mention_id})")
 
@@ -410,20 +427,28 @@ class Orchestrator:
                     )
                     self.worker_pool.revoke_task(task_id)
 
-                # キュー投入前に DB を更新
-                self.persistence.save_processed_mention(m)
-
+                # キュー投入（または再開）
+                success = False
                 if "/approve" in body:
                     await self._resume_workflow(task_id, "Approve")
+                    success = True
                 elif "/reject" in body:
                     await self._resume_workflow(task_id, "Reject")
+                    success = True
                 else:
-                    await self._queue_task(
+                    success = await self._queue_task(
                         task_id,
                         target_repo,
                         m["number"],
-                        comment_id=str(m["comment_id"]),
+                        comment_id=mention_id,
                         comment_body=m.get("body"),
+                    )
+
+                # 投入に成功した場合は、DB を更新し、GitHub 通知を既読にする
+                if success:
+                    self.persistence.save_processed_mention(m)
+                    await self.gh_client.mark_issue_notifications_as_read(
+                        target_repo, m["number"]
                     )
         except Exception as e:
             logger.error(f"Polling error: {e}")
@@ -458,6 +483,13 @@ class Orchestrator:
     ):
         config = {"configurable": {"thread_id": task_id}}
 
+        # 重複投入ガード: 同一 Task ID が既にアクティブな場合はスキップ
+        if task_id in self.worker_pool.active_tasks:
+            logger.info(
+                f"Task {task_id} is already ACTIVE. Skipping redundant queueing."
+            )
+            return True  # 既に存在するため「処理中」として扱う
+
         # 資源の安全性を確認 (Resource Guardian)
         from src.core.resource_manager import ResourceGuardian
 
@@ -466,7 +498,7 @@ class Orchestrator:
             logger.warning(
                 f"Resource Guardian: System memory is low. Delaying task queueing for {task_id} until next poll."
             )
-            return
+            return False
 
         # 投入前に最新の Issue ステータスを確認 (設計改善: クローズ済みはスキップ)
         issue_info = await self.gh_client.get_issue(repo_name, issue_number)
@@ -478,7 +510,7 @@ class Orchestrator:
             await self.gh_client.mark_issue_notifications_as_read(
                 repo_name, issue_number
             )
-            return
+            return True
 
         state = await self._workflow_app.aget_state(config)
 
@@ -499,7 +531,7 @@ class Orchestrator:
                     logger.debug(
                         f"Task {task_id} is in Failed state with no new instructions. Skipping automatic retry."
                     )
-                return
+                return True
 
             # ユーザー待機中（Waiting...）または新規指示の場合は再投入
             logger.info(
@@ -564,7 +596,7 @@ class Orchestrator:
             await self._workflow_app.aupdate_state(config, initial_values)
             payload_to_send = initial_values
 
-        await self.worker_pool.add_task(
+        return await self.worker_pool.add_task(
             task_id, 1, repo_name, issue_number, payload=payload_to_send
         )
 

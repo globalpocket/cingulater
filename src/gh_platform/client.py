@@ -384,7 +384,7 @@ class GitHubClientWrapper:
                 latest_mention = {
                     "repo_name": repo.full_name,
                     "number": issue.number,
-                    "comment_id": "body",
+                    "comment_id": f"body_{issue.number}",
                     "body": issue.body,
                     "_created_dt": issue.created_at,
                     "created_at": (
