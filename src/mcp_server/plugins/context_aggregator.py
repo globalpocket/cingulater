@@ -34,7 +34,7 @@ async def run_repomix_discovery(repo_path: str, exclude_patterns: Optional[List[
         cmd = [
             "npx", "-y", "repomix",
             "--output", output_file,
-            "--exclude", exclude_str,
+            "--ignore", exclude_str,
             "--include", "**/*"
         ]
         
