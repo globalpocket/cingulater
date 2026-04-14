@@ -159,12 +159,8 @@ async def delegate_to_executor(ctx: RunContext[AgentDeps], blueprint: Blueprint)
     
     # Executor エージェントの実行 (Multi-Agent 構成)
     # Planner と同じ Deps を共有し、モデルのみ Executor 用のものを使用
-    executor_model_name = ctx.deps.config['llm']['models'].get('executor', 'mlx-community/Qwen2.5-Coder-7B-Instruct-4bit')
-    
-    # 修正: 環境変数を設定して引数エラーを回避
-    os.environ["OPENAI_BASE_URL"] = ctx.deps.config['llm']['executor_endpoint']
-    os.environ["OPENAI_API_KEY"] = "EMPTY"
-    executor_model = OpenAIModel(executor_model_name)
+    from src.llm.robust_model import get_robust_model
+    executor_model = get_robust_model(executor_model_name, base_url=ctx.deps.config['llm']['executor_endpoint'])
     
     prompt = f"### STRICT BLUEPRINT ###\n{blueprint.model_dump_json(indent=2)}"
     result = await executor_agent.run(prompt, deps=ctx.deps, model=executor_model)
@@ -185,13 +181,9 @@ class CoderAgent:
                  workspace_context: Optional[WorkspaceContext] = None):
         self.deps = AgentDeps(config, sandbox, gh_client, mcp_manager, workspace_context)
         
-        # モデルの初期化 (Planner)
-        planner_model_name = config['llm']['models'].get('planner', 'mlx-community/gemma-4-26b-a4b-it-4bit')
-        
-        # 修正: 環境変数を設定して引数エラーを回避
-        os.environ["OPENAI_BASE_URL"] = config['llm']['planner_endpoint']
-        os.environ["OPENAI_API_KEY"] = "EMPTY"
-        self.planner_model = OpenAIModel(planner_model_name)
+        # 堅牢なモデルの取得
+        from src.llm.robust_model import get_robust_model
+        self.planner_model = get_robust_model(planner_model_name, base_url=config['llm']['planner_endpoint'])
         
         # システムプロンプトの読み込み
         self.system_prompt = self._load_instructions()

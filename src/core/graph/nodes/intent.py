@@ -19,15 +19,9 @@ async def intent_alignment_node(state: TaskState) -> Dict[str, Any]:
     planner_model_name = config['llm']['models'].get('planner', 'mlx-community/gemma-4-26b-a4b-it-4bit')
     planner_endpoint = config['llm']['planner_endpoint']
     
-    import os
-    os.environ.setdefault("OPENAI_API_KEY", "EMPTY")
-
-    # Pydantic AI 1.x では環境変数から自動的に設定されるため、明示的に os.environ に反映
-    if planner_endpoint:
-        os.environ["OPENAI_BASE_URL"] = planner_endpoint
-    
-    # 完全に引数なしの標準的な初期化
-    model = OpenAIModel(planner_model_name)
+    # 堅牢なモデルの取得
+    from src.llm.robust_model import get_robust_model
+    model = get_robust_model(planner_model_name, base_url=planner_endpoint)
 
     agent = Agent(
         model,
