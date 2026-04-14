@@ -169,7 +169,7 @@ class SandboxManager:
             f.write(content)
         return f"Successfully written to {path}."
 
-    async def run_command(self, command: str, image: str = "python:3.11-slim") -> Dict[str, Any]:
+    async def run_command(self, command: str, image: str = "python:3.11-slim", environment: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         サンドボックス（Dockerコンテナ）内でコマンドを実行する。
         """
@@ -191,6 +191,7 @@ class SandboxManager:
                 volumes=volumes,
                 working_dir="/workspace",
                 user=f"{self.user_id}:{self.group_id}",
+                environment=environment,
                 detach=False,
                 stdout=True,
                 stderr=True,
@@ -259,6 +260,24 @@ class SandboxManager:
 
         res = await self.run_command(cmd)
         return f"Security Scan Results (Sandbox):\nStatus: {res['exit_code']}\nOutput: {res['stdout'] or res['stderr']}"
+
+    async def run_semgrep(self, target: str = ".") -> Dict[str, Any]:
+        """Semgrep による静的解析をサンドボックス（Docker）内で実行する"""
+        if not self.context or not self.context.root_path:
+            return {"exit_code": -1, "logs": "Error: Workspace root is not set."}
+
+        # セマンティック解析を実行
+        # イメージは Semgrep 公式を使用
+        res = await self.run_command(
+            command="semgrep scan --config=auto --json .",
+            image="returntocorp/semgrep",
+            environment={"HOME": "/tmp"}
+        )
+        return {
+            "status": "success" if res["exit_code"] in (0, 1) else "failed",
+            "exit_code": res["exit_code"],
+            "logs": res["stdout"] or res["stderr"]
+        }
 
     def cleanup_orphans(self):
         """オーファンコンテナ・ボリュームの定期GC (設計書 8.4 浄化)"""
