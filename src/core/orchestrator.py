@@ -25,6 +25,30 @@ class Orchestrator:
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
         
+        # magicvalues.yaml による例外的な上書き (設計書 11.2)
+        magic_path = os.path.join(os.path.dirname(config_path), "magicvalues.yaml")
+        if os.path.exists(magic_path):
+            try:
+                with open(magic_path, 'r') as f:
+                    magic_config = yaml.safe_load(f)
+                if magic_config:
+                    self._deep_merge(magic_config, self.config)
+                    logger.info(f"Magic values loaded and merged from {magic_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load magicvalues.yaml: {e}")
+        
+        self._post_init(config_path)
+
+    def _deep_merge(self, source, destination):
+        """辞書を再帰的にマージする"""
+        for key, value in source.items():
+            if isinstance(value, dict) and key in destination and isinstance(destination[key], dict):
+                self._deep_merge(value, destination[key])
+            else:
+                destination[key] = value
+
+    def _post_init(self, config_path: str):
+        """共通の初期化ロジック (設計書 3.2: リソース初期化)"""
         self.project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
         # Persistence Manager の初期化

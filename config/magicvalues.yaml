@@ -1,0 +1,2 @@
+agent:
+  polling_interval_sec: 15

@@ -38,13 +38,13 @@ def github_retry(func):
                     self._init_client(self._token)
                     
                 return await func(self, *args, **kwargs)
-            except (GithubException, requests.exceptions.ConnectionError, urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected) as e:
+            except (GithubException, requests.exceptions.ConnectionError, urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected, ConnectionResetError) as e:
                 is_retryable = False
                 is_connection_error = False
                 
-                # 接続エラーの場合はクライアントをリフレッシュ
-                if isinstance(e, (requests.exceptions.ConnectionError, urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected)):
-                    logger.warning(f"Connection error detected ({type(e).__name__}). Refreshing GitHub client...")
+                # 接続エラー（RemoteDisconnected や ProtocolError）の場合はクライアントを強制リフレッシュ
+                if isinstance(e, (requests.exceptions.ConnectionError, urllib3.exceptions.ProtocolError, http.client.RemoteDisconnected, ConnectionResetError)):
+                    logger.warning(f"Connection error detected ({type(e).__name__}). Forcing GitHub client refresh...")
                     self._init_client(self._token)
                     is_retryable = True
                     is_connection_error = True
@@ -80,15 +80,34 @@ class GitHubClientWrapper:
         self._init_client(token)
 
     def _init_client(self, token: str):
-        """Githubクライアントの初期化"""
+        """Githubクライアントの初期化 (設計書 1.2: 接続安定性の確保)"""
+        # 既存のクライアントがある場合、明示的に閉じてコネクションプールを破棄する
+        if hasattr(self, "g") and self.g:
+            try:
+                self.g.close()
+                logger.debug("Closed existing GitHub client session.")
+            except:
+                pass
+
         self.auth = Auth.Token(token)
+
+        # urllib3 のリトライ設定を細かく調整 (Keep-alive 起因の切断対策)
+        from urllib3.util import Retry
+        retry_config = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[500, 502, 503, 504],
+            raise_on_status=False
+        )
+
         self.g = Github(
             auth=self.auth, 
             timeout=60, 
-            user_agent="Brownie/1.0 (globalpocket)"
+            user_agent="Brownie/1.0 (globalpocket)",
+            retry=retry_config
         )
         self._last_refresh_time = time.time()
-        logger.info("GitHub API client initialized.")
+        logger.info("GitHub API client initialized with robust connection pool.")
 
     async def _throttle(self, is_write: bool = False):
         """API呼び出しの流量を制御する"""
