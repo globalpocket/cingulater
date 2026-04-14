@@ -2,7 +2,8 @@ import logging
 from typing import TypedDict, List, Dict, Any, Optional
 from pydantic_ai import Agent
 from pydantic import BaseModel, Field
-from src.llm.robust_model import get_robust_model
+from src.llm.robust_model import get_robust_model, wait_for_llm_ready
+from src.utils.config_loader import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,17 @@ async def intent_alignment_node(state: IntentState) -> Dict[str, Any]:
     """
     logger.info("--- Intent Alignment Node ---")
     
-    # Planner モデルを使用して指示を整理
-    # NOTE: 本来は config から取得すべきだが、ここでは簡略化
+    # 設定の読み込み
+    config = get_config()
+    model_name = config['llm']['models']['planner']
+    endpoint = config['llm']['planner_endpoint']
+    
+    # サーバーの準備完了を待機
+    await wait_for_llm_ready(endpoint)
+    
     model = get_robust_model(
-        "mlx-community/gemma-4-26b-a4b-it-4bit",
-        base_url="http://localhost:8080/v1"
+        model_name,
+        base_url=endpoint
     )
     
     agent = Agent(

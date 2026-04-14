@@ -10,6 +10,7 @@ from pydantic_ai.ext.langchain import LangChainToolset
 from src.workspace.sandbox import SandboxManager
 from src.workspace.context import WorkspaceContext
 from src.version import get_footer
+from src.llm.robust_model import get_robust_model, wait_for_llm_ready
 
 logger = logging.getLogger(__name__)
 
@@ -157,10 +158,15 @@ async def delegate_to_executor(ctx: RunContext[AgentDeps], blueprint: Blueprint)
     await ctx.deps.ensure_open()
     logger.info(f"Delegating to Executor with Blueprint for {len(blueprint.target_files)} files.")
     
-    # Executor エージェントの実行 (Multi-Agent 構成)
     # Planner と同じ Deps を共有し、モデルのみ Executor 用のものを使用
     from src.llm.robust_model import get_robust_model
-    executor_model = get_robust_model(executor_model_name, base_url=ctx.deps.config['llm']['executor_endpoint'])
+    executor_model_name = ctx.deps.config['llm']['models']['executor']
+    executor_endpoint = ctx.deps.config['llm']['executor_endpoint']
+    
+    # サーバーの準備完了を待機
+    await wait_for_llm_ready(executor_endpoint)
+    
+    executor_model = get_robust_model(executor_model_name, base_url=executor_endpoint)
     
     prompt = f"### STRICT BLUEPRINT ###\n{blueprint.model_dump_json(indent=2)}"
     result = await executor_agent.run(prompt, deps=ctx.deps, model=executor_model)
@@ -182,8 +188,13 @@ class CoderAgent:
         self.deps = AgentDeps(config, sandbox, gh_client, mcp_manager, workspace_context)
         
         # 堅牢なモデルの取得
-        from src.llm.robust_model import get_robust_model
-        self.planner_model = get_robust_model(planner_model_name, base_url=config['llm']['planner_endpoint'])
+        planner_model_name = config['llm']['models']['planner']
+        planner_endpoint = config['llm']['planner_endpoint']
+        
+        # サーバーの準備完了を待機 (同期的なコンストラクタ内なので、ここでは情報を取得するのみとし)
+        # 実際の待機は run メソッドの冒頭で行う
+        self.planner_model = get_robust_model(planner_model_name, base_url=planner_endpoint)
+        self.planner_endpoint = planner_endpoint
         
         # システムプロンプトの読み込み
         self.system_prompt = self._load_instructions()
@@ -218,6 +229,10 @@ class CoderAgent:
         # MCP ツールの動的バインド (LangChain MCP Adapters 経由)
         mcp_tools = await self.deps.mcp_manager.get_langchain_tools()
         toolset = LangChainToolset(*mcp_tools)
+        
+        # 実行前にサーバーの準備完了を待機
+        from src.llm.robust_model import wait_for_llm_ready
+        await wait_for_llm_ready(self.planner_endpoint)
         
         logger.info(f"[{task_id}] Pydantic AI Planner starting...")
         

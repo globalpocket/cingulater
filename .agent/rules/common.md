@@ -1,37 +1,41 @@
-# BROWNIE Common Rules
+---
+trigger: always_on
+---
 
-1. **No Repetition**: Avoid repeating the same actions or tool calls without progress. If stuck, change your approach.
-2. **Research First**: Always read the existing code in [Reference Root] before making any changes in [Workspace Root].
-3. **No Unauthorized Pivoting (SECURITY)**: If a specific file or path is missing, DO NOT attempt to find alternatives or guess other files. This is a security vulnerability (path traversal/misdirection). Report the missing file immediately.
-4. **Error Reporting Obligation**: If ANY error occurs, you MUST:
-   - TRANSLATE the error into the target language.
-   - SUMMARIZE the cause briefly.
-   - REPORT it using `post_comment`.
-   - TERMINATE immediately with `Finish`.
-   - DO NOT suggest fixes or analyze further in this mode.
-5. **Path Specification**: Always use relative paths from the root of the workspace or reference directory.
-6. **Built-in Provenance**: Do not worry about Build IDs; the system will automatically append them.
-7. **Strict Adherence (NO MEDDLING)**: Execute ONLY the explicitly requested task. Do not make unsolicited changes, do not create or modify files unprompted, and do not try to "help" by guessing goals. If the instruction is vague (e.g., "continue"), only do what was clearly requested in the issue originally, or stop and ask for clarification using `post_comment` and `Finish`.
-8. **Terminology Definitions**: In the context of Issue body or comments, the word "Issue" refers to the GitHub Issue of this repository. The word "Wiki" refers to the GitHub Wiki of this repository. Do not confuse them with local files unless explicitly specified.
-9. **Verification of Current State**: Before concluding a comparison task, you should list files in the workspace (using `list_files` or `run_command`) to understand the current implementation state. 
-10. **Atomic Issue Creation**: Once a specific difference is registered as an Issue, do not repeat the same issue creation. Record your progress in `thought`. If you accidentally created duplicate or incorrect issues, you may use `close_issue` to clean up.
-11. **Directory Structure Awareness**: Always use `list_files(path=".", max_depth=1)` to verify the top-level structure before accessing subdirectories. Do not assume a directory (e.g., `workspace/`) exists at the root if it is actually nested (e.g., `src/workspace/`).
-12. **Relative Pathing**: All paths provided to tools must be relative to the project root. If you see an error like "Path not found", re-verify the structure using `list_files` and try with the correct prefix (e.g., `src/`).
-13. **Quality Guardrails (MANDATORY)**: 
-    - After modifying any code, you MUST run `lint_code` to detect typos or structural errors before running tests.
-    - Before finishing or committing, you MUST run `format_code` to ensure code style consistency.
-    - If you introduce sensitive logic, run `scan_security` to check for vulnerabilities.
-    - Use the feedback from these tools to self-correct your code.
-14. **GitHub Wiki Synchronization (MANDATORY)**: 
-    - If a task involves changing files in the `docs/` directory, you MUST synchronize these changes to the GitHub Wiki after committing/pushing to the main repository.
-    - **Methodology**:
-        1. Attempt `git subtree push --prefix docs wiki master`.
-        2. If consistent errors (e.g., "no new revisions found") occur, you MUST perform a manual sync: clone the wiki to a temporary directory, copy all `.md` files from `docs/` to the wiki root, commit, and push.
-15. **Communication Language (MANDATORY)**:
-    - 遵守状況: システムプロンプトおよびユーザー様との対話（Antigravity:貴方を含む）、全ての回答、タスクの概要、および GitHub コメントは .env ファイルの BROWNIE_LANGUAGE 設定で確認した言語でアウトプットを行います。
-16. **Pre-Push Documentation Refresh (MANDATORY)**:
-    - Before pushing any changes to Git, you MUST execute the `/blueprint` workflow to ensure that all documentation (Blueprints, README.md, and Home.md) is fully synchronized with the latest code state.
-17. **通信プロトコル (MANDATORY)**:
+# BROWNIE 共通ルール
+
+1. **反復の禁止**: 進展のないまま同じアクションやツール呼び出しを繰り返すことは避けてください。行き詰まった場合は、アプローチを変えてください。
+2. **事前調査の徹底**: `[Workspace Root]` に変更を加える前に、必ず `[Reference Root]` にある既存のコードを読んでください。
+3. **不正な方向転換の禁止 (セキュリティ)**: 指定されたファイルやパスが見つからない場合、代替を探したり他のファイルを推測したりしないでください。これはセキュリティ上の脆弱性（パストラバーサル/誤誘導）に繋がります。見つからないファイルについては直ちに報告してください。
+4. **エラー報告の義務**: いかなるエラーが発生した場合でも、以下の手順を**必ず**実行してください：
+   - エラーをターゲット言語に翻訳する。
+   - 原因を簡潔に要約する。
+   - `post_comment` を使用して報告する。
+   - `Finish` を使用して直ちに終了する。
+   - このモードでは、修正の提案やこれ以上の分析を行わない。
+5. **パスの指定**: 常にワークスペースまたはリファレンスディレクトリのルートからの相対パスを使用してください。
+6. **組み込みの来歴情報**: ビルドIDについて気にする必要はありません。システムが自動的に付与します。
+7. **厳格な遵守 (おせっかいの禁止)**: 明示的に要求されたタスク**のみ**を実行してください。求められていない変更を加えたり、指示なくファイルを作成・変更したり、目標を推測して「手助け」しようとしないでください。指示が曖昧な場合（例：「続ける」など）は、当初のIssueで明確に要求されていたことのみを行うか、作業を停止し、`post_comment` と `Finish` を使用して説明を求めてください。
+8. **用語の定義**: Issueの本文またはコメントの文脈において、「Issue」という言葉はこのリポジトリのGitHub Issueを指します。「Wiki」という言葉はこのリポジトリのGitHub Wikiを指します。明確に指定されていない限り、ローカルファイルと混同しないでください。
+9. **現在の状態の確認**: 比較タスクを完了する前に、（`list_files` または `run_command` を使用して）ワークスペース内のファイルをリストアップし、現在の実装状態を把握する必要があります。
+10. **アトミックなIssue作成**: 特定の差分を一度Issueとして登録したら、同じIssueの作成を繰り返さないでください。進捗状況は `thought` に記録してください。誤って重複したIssueや誤ったIssueを作成してしまった場合は、`close_issue` を使用して整理することができます。
+11. **ディレクトリ構造の認識**: サブディレクトリにアクセスする前に、必ず `list_files(path=".", max_depth=1)` を使用してトップレベルの構造を確認してください。ディレクトリ（例: `workspace/`）が実際にはネストされている場合（例: `src/workspace/`）、ルートに存在すると決めつけないでください。
+12. **相対パスの使用**: ツールに提供するすべてのパスは、プロジェクトルートからの相対パスである必要があります。「Path not found」のようなエラーが発生した場合は、`list_files` を使用して構造を再確認し、正しいプレフィックス（例: `src/`）を付けて再試行してください。
+13. **品質のガードレール (必須)**: 
+    - コードを変更した後は、テストを実行する前に、タイポや構造上のエラーを検出するために `lint_code` を**必ず**実行しなければなりません。
+    - 終了またはコミットする前に、コードスタイルの整合性を確保するために `format_code` を**必ず**実行しなければなりません。
+    - 機密性の高いロジックを導入した場合は、脆弱性をチェックするために `scan_security` を実行してください。
+    - これらのツールからのフィードバックを利用して、自らコードを修正してください。
+14. **GitHub Wiki の同期 (必須)**: 
+    - タスクに `docs/` ディレクトリ内のファイルの変更が含まれる場合、メインリポジトリへのコミット/プッシュ後に、これらの変更をGitHub Wikiに**必ず**同期しなければなりません。
+    - **手順**:
+        1. `git subtree push --prefix docs wiki master` を試行する。
+        2. 継続的なエラー（例: 「no new revisions found」）が発生した場合は、手動同期を**必ず**実行しなければなりません：wikiを一時ディレクトリにクローンし、`docs/` からwikiルートにすべての `.md` ファイルをコピーし、コミットしてプッシュします。
+15. **コミュニケーション言語 (必須)**:
+    - 遵守状況: システムプロンプトおよびユーザー様との対話（Antigravity:貴方を含む）、全ての回答、タスクの概要、および GitHub コメントは `.env` ファイルの `BROWNIE_LANGUAGE` 設定で確認した言語でアウトプットを行います。
+16. **プッシュ前のドキュメント更新 (必須)**:
+    - Gitに変更をプッシュする前に、すべてのドキュメント（Blueprints、README.md、および Home.md）が最新のコードの状態と完全に同期されていることを確認するために、`/blueprint` ワークフローを**必ず**実行しなければなりません。
+17. **通信プロトコル (必須)**:
     - ユーザーとの対話（コメント投稿）は以下の4つのパターンに限定されます。
         1. **メンション認識時**: システムが自動で行います。
         2. **エラー発生時**: システムが自動で行います。

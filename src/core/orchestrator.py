@@ -18,13 +18,14 @@ from src.workspace.sandbox import SandboxManager
 from src.mcp_server.manager import MCPServerManager
 from src.core.persistence import PersistenceManager
 from src.version import get_footer, get_build_id
+from src.utils.config_loader import get_config
+from src.llm.robust_model import wait_for_llm_ready
 
 logger = logging.getLogger(__name__)
 
 class Orchestrator:
     def __init__(self, config_path: str):
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        self.config = get_config(config_path)
         
         # magicvalues.yaml による例外的な上書き (設計書 11.2)
         magic_path = os.path.join(os.path.dirname(config_path or ""), "magicvalues.yaml")
@@ -211,7 +212,7 @@ class Orchestrator:
                     result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
                     pids = result.stdout.strip().split("\n")
                     my_pid = str(os.getpid())
-                    worker_pid = str(self.worker_pool.huey_process.pid) if self.worker_pool.huey_process else None
+                    worker_pid = str(self.worker_pool.consumer_proc.pid) if self.worker_pool.consumer_proc else None
                     
                     for pid in pids:
                         target_pid = pid.strip()
@@ -282,32 +283,16 @@ class Orchestrator:
                     logger.error(f"MLX Server ({role}) FAILED to become ready within 60s.")
 
     async def _wait_for_llm_ready(self):
-        """ワーカープロセス用：LLM サーバーが準備完了になるまで待機する（起動処理は行わない）"""
+        """ワーカープロセス用：LLM サーバーが準備完了になるまで待機する"""
         logger.info("Worker is waiting for LLM servers (planner & executor) to be ready...")
         
-        models_config = [
-            ("planner", self.config['llm']['planner_endpoint'], 8080),
-            ("executor", self.config['llm']['executor_endpoint'], 8081)
-        ]
+        planner_ready = await wait_for_llm_ready(self.config['llm']['planner_endpoint'])
+        executor_ready = await wait_for_llm_ready(self.config['llm']['executor_endpoint'])
         
-        start_time = asyncio.get_event_loop().time()
-        timeout = 180  # 余裕を持って 3 分設定
-        
-        while asyncio.get_event_loop().time() - start_time < timeout:
-            all_ready = True
-            for role, endpoint, port in models_config:
-                try:
-                    resp = await self.http_client.get(f"{endpoint}/models", timeout=2.0)
-                    if resp.status_code != 200:
-                        all_ready = False
-                except Exception:
-                    all_ready = False
-            
-            if all_ready:
-                logger.info("Worker confirmed LLM servers are READY!")
-                return True
-            
-            await asyncio.sleep(3)
+        if planner_ready and executor_ready:
+            logger.info("Worker confirmed ALL LLM servers are READY!")
+            return True
+        return False
         
         logger.error("Worker timed out waiting for LLM servers to be ready.")
         return False
@@ -406,11 +391,28 @@ class Orchestrator:
             logger.info(f"Re-queueing task {task_id} (Current Status: {status}) due to new comment or state change.")
             
             new_state = {"resume_comment_id": comment_id, "status": "InQueue"}
+            
+            # --- 報告フラグのリセットと指示の整理 ---
+            # 1. 報告済みフラグから intent_alignment を削除して、新しい提案を投稿できるようにする
+            reported = state.values.get("reported_nodes", [])
+            if "intent_alignment" in reported:
+                new_reported = [node for node in reported if node != "intent_alignment"]
+                new_state["reported_nodes"] = new_reported
+                logger.info(f"Reset 'intent_alignment' from reported_nodes to allow re-posting for {task_id}")
+            
+            # 2. 指示文のマージとクリーンアップ (過去の [USER UPDATE] 蓄積を抑制)
             if comment_body:
-                # ユーザーの追加コメントを指示にマージしてエージェントに伝える
                 existing_instruction = state.values.get("instruction", "")
                 timestamp = datetime.utcnow().isoformat()
-                new_state["instruction"] = existing_instruction + f"\n\n[USER UPDATE @ {timestamp}]:\n{comment_body}"
+                
+                # もし過去の [USER UPDATE] が多すぎる場合は、元の Body と最新の Update のみに絞る
+                if existing_instruction.count("[USER UPDATE @") > 2:
+                    # 最初（元のBody）と最後（前回のUpdate）を残すロジック（簡易版）
+                    parts = existing_instruction.split("[USER UPDATE @")
+                    base_instruction = parts[0].strip()
+                    new_state["instruction"] = base_instruction + f"\n\n[LATEST USER UPDATE @ {timestamp}]:\n{comment_body}"
+                else:
+                    new_state["instruction"] = existing_instruction + f"\n\n[USER UPDATE @ {timestamp}]:\n{comment_body}"
             
             await self._workflow_app.aupdate_state(config, new_state, as_node="intent_alignment")
             updated_state = await self._workflow_app.aget_state(config)

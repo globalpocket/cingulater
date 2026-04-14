@@ -2,6 +2,7 @@ import json
 import logging
 import httpx
 import os
+import asyncio
 from typing import Optional, Any
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -102,6 +103,38 @@ async def robust_response_hook(response: httpx.Response):
                 response._content = json.dumps(data).encode("utf-8")
         except Exception as e:
             logger.warning(f"Failed to apply robustness fixes to LLM response: {e}")
+
+async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
+    """
+    LLM サーバーが準備完了になるまで待機する
+    """
+    if not endpoint:
+        return
+        
+    # localhost を 127.0.0.1 に変換して IPv6 問題を回避
+    if "localhost" in endpoint:
+        endpoint = endpoint.replace("localhost", "127.0.0.1")
+        
+    url = f"{endpoint.rstrip('/')}/models"
+    logger.info(f"Waiting for LLM server at {url} (timeout: {timeout}s)...")
+    
+    start_time = asyncio.get_event_loop().time()
+    async with httpx.AsyncClient(trust_env=False) as client:
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            try:
+                resp = await client.get(url, timeout=2.0)
+                if resp.status_code == 200:
+                    logger.info(f"LLM server at {endpoint} is READY.")
+                    return True
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
+                pass
+            except Exception as e:
+                logger.debug(f"Wait check failed: {e}")
+                
+            await asyncio.sleep(5)
+            
+    logger.error(f"LLM server at {endpoint} failed to become ready within {timeout}s.")
+    return False
 
 def get_robust_model(model_name: str, base_url: Optional[str] = None) -> OpenAIModel:
     """
