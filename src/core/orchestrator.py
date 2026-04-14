@@ -673,29 +673,6 @@ class Orchestrator:
                                         },
                                     )
 
-                            elif (
-                                node_name == "core_analysis"
-                                and output.get("status") == "Phase1_Completed"
-                            ):
-                                if "core_analysis" not in reported:
-                                    locally_reported.add(
-                                        "core_analysis"
-                                    )  # 直ちにローカルで記録
-                                    await self.gh_client.post_comment(
-                                        repo_name,
-                                        issue_number,
-                                        "### 📊 全方位分析完了\nリポジトリの解析が完了しました。"
-                                        + get_footer(),
-                                    )
-                                    await workflow_app.aupdate_state(
-                                        config,
-                                        {
-                                            "reported_nodes": list(
-                                                reported.union({"core_analysis"})
-                                            )
-                                        },
-                                    )
-
                 await asyncio.wait_for(run_workflow(), timeout=600)
 
                 # 最終状態の報告
@@ -757,6 +734,14 @@ class Orchestrator:
                 )
             except Exception as e:
                 logger.error(f"Task execution error: {e}", exc_info=True)
+                # ルール 4 に基づき、エラー情報を簡潔に報告
+                error_msg = str(e)
+                await self.gh_client.post_comment(
+                    repo_name,
+                    issue_number,
+                    f"### ❌ 実行エラーが発生しました\n\n原因: {error_msg}\n内部的な問題により処理を継続できないか、リソースが不足しています。"
+                    + get_footer(),
+                )
                 await workflow_app.aupdate_state(
                     config, {"status": "Failed"}, as_node="intent_alignment"
                 )
