@@ -22,7 +22,7 @@ async def run_repomix_discovery(repo_path: str, exclude_patterns: Optional[List[
     if not os.path.exists(abs_repo_path):
         return f"Error: Repository path not found: {abs_repo_path}"
 
-    output_file = os.path.join(abs_repo_path, ".brownie_repomix.md")
+    output_file = os.path.join(abs_repo_path, ".brwn", ".brownie_repomix.md")
     
     if exclude_patterns is None:
         exclude_patterns = ["docs/**", "wiki/**", "*.md", ".git/**", ".brwn/**"]
