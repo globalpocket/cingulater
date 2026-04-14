@@ -7,6 +7,7 @@ import subprocess
 import httpx
 from typing import Optional
 import json
+import resource
 from datetime import datetime
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -46,6 +47,9 @@ class Orchestrator:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
 
+        # ファイルディスクリプタ制限の拡張試行
+        self._increase_max_files()
+
         # Persistence Manager の初期化
         db_path = self.config["database"]["db_path"]
         self.persistence = PersistenceManager(db_path)
@@ -80,6 +84,21 @@ class Orchestrator:
         self.workspace_base = os.path.expanduser(base_dir)
         os.makedirs(self.workspace_base, exist_ok=True)
         logger.info(f"Workspace base directory set to: {self.workspace_base}")
+
+    def _increase_max_files(self):
+        """ファイルディスクリプタ（ulimit -n）の制限を拡張する"""
+        try:
+            soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+            logger.info(f"Current File Limits: soft={soft}, hard={hard}")
+            
+            # macOS 等で極端に低い場合があるため、可能な限り引き上げる (4096 は安全圏)
+            target = min(hard, 8192)
+            if soft < target:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+                new_soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+                logger.info(f"Updated File Limit (soft): {new_soft}")
+        except Exception as e:
+            logger.warning(f"Failed to increase file limits: {e}")
 
     def _deep_merge(self, source, destination):
         """辞書を再帰的にマージする"""
@@ -310,21 +329,26 @@ class Orchestrator:
                         f"DEBUG: Selected default server ({server_module}) for {model_name}"
                     )
 
-                subprocess.Popen(
-                    [
-                        venv_python,
-                        "-m",
-                        server_module,
-                        "--model",
-                        model_name,
-                        "--port",
-                        str(port),
-                    ],
-                    stdout=log_file,
-                    stderr=log_file,
-                    start_new_session=True,
-                    env=env,
-                )
+                try:
+                    subprocess.Popen(
+                        [
+                            venv_python,
+                            "-m",
+                            server_module,
+                            "--model",
+                            model_name,
+                            "--port",
+                            str(port),
+                        ],
+                        stdout=log_file,
+                        stderr=log_file,
+                        start_new_session=True,
+                        env=env,
+                    )
+                finally:
+                    # 子プロセスに FD が引き継がれた後は、親プロセス側では閉じてよい
+                    log_file.close()
+
                 logger.info(
                     f"MLX Server ({role}) for {model_name} starting on port {port} using {server_module}... (Log: {log_file_path})"
                 )

@@ -16,11 +16,31 @@ class PersistenceManager:
             logger.critical(f"Failed to initialize database at {self.db_path}: {e}")
             raise
 
+    def _get_connection(self):
+        """リトライ機能付きのデータベース接続取得"""
+        import time
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                # タイムアウトを 30 秒に設定し、WAL モードを前提とした接続
+                return sqlite3.connect(self.db_path, timeout=30.0)
+            except sqlite3.OperationalError as e:
+                last_error = e
+                # 「unable to open database file」等のリソース起因エラーの場合にリトライ
+                if "unable to open" in str(e).lower() or "too many open files" in str(e).lower():
+                    logger.warning(f"Database connection attempt {attempt+1} failed: {e}. Retrying...")
+                    time.sleep(1.0)
+                    continue
+                raise
+        logger.error(f"Failed to connect to database after {max_retries} attempts: {last_error}")
+        raise last_error
+
     def _init_db(self):
         """データベースとテーブルの初期化 (設計書 8.1 拡張: 自己修復型)"""
         logger.info(f"Initializing database: {self.db_path}")
-        # タイムアウトを 30 秒に設定し、WAL モードを有効化することで並行性を高める
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        # 初期化時は直接 connect するか、_get_connection を使う
+        conn = self._get_connection()
         try:
             # WAL モードへの切り替え
             conn.execute("PRAGMA journal_mode=WAL;")
@@ -87,7 +107,7 @@ class PersistenceManager:
 
     def upsert_repository(self, repo_name: str):
         """リポジトリを監視リストに追加または更新"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO watched_repositories (repo_name, last_polled_at, is_active)
@@ -100,7 +120,7 @@ class PersistenceManager:
     def is_mention_new_or_updated(self, mention_id: str, updated_at: str) -> str:
         """メンションが新規または更新されているか確認 (NEW, UPDATED, UNCHANGED)"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT updated_at FROM processed_mentions WHERE mention_id = ?", (mention_id,))
                 row = cursor.fetchone()
@@ -149,7 +169,7 @@ class PersistenceManager:
         author_association = mention_data.get('author_association')
         reactions = mention_data.get('reactions')
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO processed_mentions (
@@ -174,14 +194,14 @@ class PersistenceManager:
 
     def get_watched_repositories(self) -> List[str]:
         """アクティブな監視対象リポジトリ一覧を取得"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT repo_name FROM watched_repositories WHERE is_active = 1")
             return [row[0] for row in cursor.fetchall()]
 
     def deactivate_repository(self, repo_name: str):
         """リポジトリの監視を一時停止"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("UPDATE watched_repositories SET is_active = 0 WHERE repo_name = ?", (repo_name,))
             conn.commit()
