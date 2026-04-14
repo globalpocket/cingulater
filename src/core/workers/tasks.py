@@ -12,8 +12,29 @@ sys.path.insert(0, os.getcwd())
 
 from src.core.workers.pool import huey
 from src.core.orchestrator import Orchestrator
+from src.core.resource_manager import ResourceGuardian
+import json
+import time
+import threading
 
 logger = logging.getLogger("brownie.worker")
+
+def _heartbeat_worker(stop_event, task_id):
+    """5秒ごとにリソース状況を Redis に書き込む Heartbeat スレッド"""
+    guardian = ResourceGuardian()
+    while not stop_event.is_set():
+        try:
+            metrics = guardian.get_worker_metrics()
+            metrics["task_id"] = task_id
+            metrics["timestamp"] = time.time()
+            
+            # Redis に書き込み (huey のコネクションを流用)
+            conn = huey.storage.conn
+            conn.set(f"brownie:heartbeat:{task_id}", json.dumps(metrics), ex=30)
+            logger.debug(f"Heartbeat sent for {task_id}")
+        except Exception as e:
+            logger.error(f"Heartbeat failed: {e}")
+        stop_event.wait(5)
 
 # ロギングの初期化（ワーカープロセス用）
 def setup_logging():
@@ -44,11 +65,16 @@ def get_orchestrator():
         _orchestrator = Orchestrator(config_path)
     return _orchestrator
 
-@huey.task()
+@huey.task(retries=0)
 def analysis_task(task_id, repo_name, issue_number, payload):
     msg = f"!!! WORKER RECEIVED REAL TASK: {task_id} (Repo: {repo_name}, Issue: {issue_number}) !!!"
     logger.info(msg)
     print(msg, file=sys.stderr) # 強制出力
+    
+    # Heartbeat 開始
+    stop_event = threading.Event()
+    hb_thread = threading.Thread(target=_heartbeat_worker, args=(stop_event, task_id), daemon=True)
+    hb_thread.start()
     
     try:
         orch = get_orchestrator()
@@ -65,11 +91,20 @@ def analysis_task(task_id, repo_name, issue_number, payload):
     except Exception as e:
         logger.exception(f"Worker execution failed with error: {e}")
         print(f"FATAL ERROR in worker: {e}", file=sys.stderr)
+    finally:
+        # Heartbeat 停止
+        stop_event.set()
+        hb_thread.join(timeout=2)
+        # Redis のエントリを削除
+        try:
+            huey.storage.conn.delete(f"brownie:heartbeat:{task_id}")
+        except:
+            pass
 
-@huey.task()
+@huey.task(retries=0)
 def execution_task(task_id, repo_name, issue_number, payload):
     analysis_task(task_id, repo_name, issue_number, payload)
 
-@huey.task()
+@huey.task(retries=0)
 def repair_task(task_id, repo_name, issue_number, payload):
     analysis_task(task_id, repo_name, issue_number, payload)

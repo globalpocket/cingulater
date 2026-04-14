@@ -275,6 +275,25 @@ def run_command(args):
         docker_status = manage_docker_services(base_dir, "status")
         print(f"Docker Services: {docker_status}")
 
+        # Worker の Heartbeat 情報（リソース使用量）を表示
+        try:
+            from src.core.workers.pool import huey
+            conn = huey.storage.conn
+            keys = conn.keys("brownie:heartbeat:*")
+            if keys:
+                print("\nActive Worker Metrics:")
+                for key in keys:
+                    data = conn.get(key)
+                    if data:
+                        hb = json.loads(data)
+                        task_id = hb.get("task_id", "Unknown")
+                        mem = hb.get("worker_rss_gb", 0.0)
+                        cpu = hb.get("cpu_pct", 0.0)
+                        elapsed = time.time() - hb.get("timestamp", 0)
+                        print(f"  - [{task_id}] Mem: {mem:.2f} GB, CPU: {cpu:.1f}%, Last Seen: {int(elapsed)}s ago")
+        except Exception:
+            pass
+
     elif args.action == "logs" or args.action == "log":
         log_file = os.path.join(base_dir, "logs", "brownie.log")
         if os.path.exists(log_file):

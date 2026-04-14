@@ -7,6 +7,7 @@ import time
 import subprocess
 import httpx
 from typing import Optional, Dict, Any, List
+import json
 from datetime import datetime
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -109,6 +110,10 @@ class Orchestrator:
                         # ワーカープロセスの生存確認と自動復旧
                         await self.worker_pool.check_health()
                         
+                        # リソース監視とストール検知（初回のみ起動）
+                        if not hasattr(self, 'resource_monitor_task') or self.resource_monitor_task.done():
+                            self.resource_monitor_task = asyncio.create_task(self._resource_monitor_loop())
+                        
                         await self._poll_mentions()
                         logger.debug("Polling cycle completed successfully.")
                         await asyncio.sleep(self.config['agent']['polling_interval_sec'])
@@ -137,6 +142,50 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Error in LLM health loop: {e}")
             await asyncio.sleep(60) # 1分ごとにチェック
+
+    async def _resource_monitor_loop(self):
+        """Worker のリソース状況を監視し、ストールを検知するループ"""
+        from src.core.resource_manager import ResourceGuardian
+        guardian = ResourceGuardian()
+        
+        while self.is_running:
+            try:
+                # Redis からすべての Heartbeat を取得
+                conn = self.worker_pool.huey.storage.conn
+                keys = conn.keys("brownie:heartbeat:*")
+                
+                for key in keys:
+                    data = conn.get(key)
+                    if not data: continue
+                    hb = json.loads(data)
+                    
+                    task_id = hb.get("task_id")
+                    last_seen = hb.get("timestamp", 0)
+                    cpu_usage = hb.get("cpu_pct", 0.0)
+                    
+                    # ストール判定 (5分以上進捗がなく、かつ CPU がアイドルの場合)
+                    if guardian.check_for_stall(last_seen, timeout_sec=300):
+                        logger.error(f"Intelligent Stall Detection: Task {task_id} looks HUNG (CPU: {cpu_usage}%). Revoking and restarting worker.")
+                        
+                        # 1. タスクを取り消し
+                        self.worker_pool.revoke_task(task_id)
+                        
+                        # 2. Worker を再起動 (古いプロセスを掃除)
+                        self.worker_pool.stop()
+                        await self.worker_pool.run()
+                        
+                        # 3. GitHub に通知
+                        repo, num = task_id.split("#")
+                        await self.gh_client.post_comment(repo, int(num), "### ⚠️ 異常検知による自動再起動\n処理が長時間停止し、CPU負荷も確認できなかったため、タスクを中断して Worker を再起動しました。")
+                        
+                        # 4. DB ステータスを更新
+                        config = {"configurable": {"thread_id": task_id}}
+                        await self._workflow_app.aupdate_state(config, {"status": "Failed"}, as_node="intent_alignment")
+                        
+            except Exception as e:
+                logger.error(f"Error in resource monitor loop: {e}")
+            
+            await asyncio.sleep(30) # 30秒ごとに監視
 
     async def _check_llm_health(self):
         """LLM サーバーの死活監視と自動起動"""
@@ -324,6 +373,13 @@ class Orchestrator:
     async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: Optional[str] = None, comment_body: Optional[str] = None):
         config = {"configurable": {"thread_id": task_id}}
         
+        # 資源の安全性を確認 (Resource Guardian)
+        from src.core.resource_manager import ResourceGuardian
+        guardian = ResourceGuardian()
+        if not guardian.is_resource_safe():
+            logger.warning(f"Resource Guardian: System memory is low. Delaying task queueing for {task_id} until next poll.")
+            return
+        
         # 投入前に最新の Issue ステータスを確認 (設計改善: クローズ済みはスキップ)
         issue_info = await self.gh_client.get_issue(repo_name, issue_number)
         if issue_info.get("state") != "open":
@@ -337,12 +393,17 @@ class Orchestrator:
         payload_to_send = None
         if state.values:
             status = state.values.get("status")
-            # 実行中（InProgress/InQueue）かつ指示が変わっていない場合はスキップ
-            if status in ['InProgress', 'InQueue'] and state.values.get("resume_comment_id") == comment_id:
+            # 実行中（InProgress/InQueue）または、失敗済み（Failed）かつ指示に更新がない場合はスキップ
+            is_active = status in ['InProgress', 'InQueue']
+            is_failed_no_update = (status == 'Failed' and state.values.get("resume_comment_id") == comment_id)
+            
+            if (is_active or is_failed_no_update) and state.values.get("resume_comment_id") == comment_id:
+                if status == 'Failed':
+                    logger.debug(f"Task {task_id} is in Failed state with no new instructions. Skipping automatic retry.")
                 return
             
             # ユーザー待機中（Waiting...）または新規指示の場合は再投入
-            logger.info(f"Re-queueing task {task_id} with new status/comment.")
+            logger.info(f"Re-queueing task {task_id} (Current Status: {status}) due to new comment or state change.")
             
             new_state = {"resume_comment_id": comment_id, "status": "InQueue"}
             if comment_body:
