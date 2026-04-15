@@ -15,7 +15,7 @@ from src.core.worker_pool import WorkerPool
 from src.core.agent import TaskAbortedException
 from src.gh_platform.client import GitHubClientWrapper
 from src.core.sandbox_manager import SandboxManager
-from src.mcp_server.manager import MCPServerManager
+from src.core.mcp_server_manager import MCPServerManager
 from src.core.persistence import PersistenceManager
 from src.version import get_footer, get_build_id
 from src.utils.config_loader import get_config
