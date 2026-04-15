@@ -30,7 +30,7 @@ class MCPServerManager:
         self.github_notifications_client: Optional[Client] = None
         self.repo_provision_client: Optional[Client] = None
         self.persistence_client: Optional[Client] = None
-        self.memory_client: Optional[Client] = None
+        self.history_client: Optional[Client] = None
         self.worker_client: Optional[Client] = None
         
         # JIT ロードされるプラグインサーバークライアント
@@ -259,24 +259,24 @@ class MCPServerManager:
         logger.info("Persistence MCP Server connected successfully.")
         return client
 
-    async def start_memory_server(self):
-        """Memory MCP Server (内製) を起動"""
-        logger.info("Starting Memory MCP Server...")
+    async def start_history_server(self):
+        """History MCP Server (内製) を起動"""
+        logger.info("Starting History MCP Server...")
         env = {
             **os.environ,
             "PYTHONPATH": "."
         }
         transport = StdioTransport(
             command=sys.executable,
-            args=["-m", "src.mcp_server.memory_server"],
+            args=["-m", "src.mcp_server.history_server"],
             env=env,
             cwd=self.project_root,
             keep_alive=False
         )
         client = Client(transport)
         await self._exit_stack.enter_async_context(client)
-        self.memory_client = client
-        logger.info("Memory MCP Server connected successfully.")
+        self.history_client = client
+        logger.info("History MCP Server connected successfully.")
         return client
 
     async def start_worker_server(self):
@@ -379,8 +379,8 @@ class MCPServerManager:
             clients.append(self.repo_provision_client)
         if self.persistence_client:
             clients.append(self.persistence_client)
-        if self.memory_client:
-            clients.append(self.memory_client)
+        if self.history_client:
+            clients.append(self.history_client)
         if self.worker_client:
             clients.append(self.worker_client)
             

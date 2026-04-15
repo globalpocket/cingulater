@@ -59,13 +59,13 @@ def _get_tracer():
 
 
 def _get_memory():
-    """MemoryManager のレイジー初期化"""
+    """HistoryServer のレイジー初期化"""
     global _memory
     if _memory is not None:
         return _memory
 
-    from src.mcp_server.memory_server import MemoryManager
-    _memory = MemoryManager(_memory_path)
+    from src.mcp_server.history_server import HistoryServer
+    _memory = HistoryServer(_memory_path)
     return _memory
 
 
@@ -83,7 +83,7 @@ async def semantic_search(query: str, limit: int = 5) -> str:
     """
     memory = _get_memory()
     if memory is None:
-        return json.dumps({"error": "MemoryManager が初期化されていません。"}, ensure_ascii=False)
+        return json.dumps({"error": "HistoryServer が初期化されていません。"}, ensure_ascii=False)
 
     # ChromaDB の内部 I/O はブロッキングのため、スレッドで実行
     results = await asyncio.to_thread(
@@ -93,7 +93,7 @@ async def semantic_search(query: str, limit: int = 5) -> str:
 
 
 def _sync_search_memory(memory, query: str, repo_name: str, limit: int):
-    """MemoryManager.search_memory の同期ラッパー（to_thread 用）"""
+    """HistoryServer.search_memory の同期ラッパー（to_thread 用）"""
     # search_memory は async def だが内部は同期的。直接 collection.query を呼ぶ
     results = memory.collection.query(
         query_texts=[query],

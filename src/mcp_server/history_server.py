@@ -8,12 +8,12 @@ from fastmcp import FastMCP
 
 # ロギングの設定
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-logger = logging.getLogger("memory_server")
+logger = logging.getLogger("history_server")
 
 # FastMCP サーバーの初期化
-mcp = FastMCP("Memory Server")
+mcp = FastMCP("History Server")
 
-class MemoryManager:
+class HistoryServer:
     """Vector DB (ChromaDB) へのアクセスを管理するクラス"""
     def __init__(self, persist_directory: Optional[str] = None):
         host = os.getenv("CHROMADB_HOST", "localhost")
@@ -84,7 +84,7 @@ _service = None
 def get_service():
     global _service
     if _service is None:
-        _service = MemoryService()
+        _service = HistoryServer()
     return _service
 
 @mcp.tool()
