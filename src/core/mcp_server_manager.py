@@ -26,6 +26,9 @@ class MCPServerManager:
         self.planner_client: Optional[Client] = None
         self.writer_client: Optional[Client] = None
         self.resource_monitor_client: Optional[Client] = None
+        self.github_sdk_client: Optional[Client] = None
+        self.github_notifications_client: Optional[Client] = None
+        self.repo_provision_client: Optional[Client] = None
         
         # JIT ロードされるプラグインサーバークライアント
         self.plugin_clients: Dict[str, Client] = {}
@@ -39,77 +42,11 @@ class MCPServerManager:
         self._memory_path: str = ""
         self._repo_name: str = ""
         
-        # GitHub / Git 関連クライアント
-        self.gh_notif_client: Optional[Client] = None
-        self.gh_standard_client: Optional[Client] = None
-        self.repo_provision_client: Optional[Client] = None
-
-    async def start_github_related_servers(self, token: str):
-        """GitHub 操作に関連する 3 つの MCP サーバーを全て起動する"""
-        logger.info("Starting GitHub/Git related MCP servers...")
-        # 1. GitHub Notifications (npx)
-        await self.start_github_notif_server(token)
-        # 2. GitHub Standard (npx)
-        await self.start_github_standard_server(token)
-        # 3. Repository Provision (Custom Python)
-        await self.start_repository_provision_server()
-
-    async def start_github_notif_server(self, token: str):
-        """mcollina/mcp-github-notifications を起動"""
-        logger.info("Starting GitHub Notifications MCP Server (npx)...")
-        env = {
-            **os.environ,
-            "GITHUB_TOKEN": token
-        }
-        transport = StdioTransport(
-            command="npx",
-            args=["-y", "github-notifications-mcp-server"],
-            env=env,
-            cwd=self.project_root,
-        )
-        client = Client(transport)
-        await self._exit_stack.enter_async_context(client)
-        self.gh_notif_client = client
-        logger.info("GitHub Notifications MCP Server connected.")
-        return client
-
-    async def start_github_standard_server(self, token: str):
-        """@modelcontextprotocol/server-github を起動"""
-        logger.info("Starting GitHub Standard MCP Server (npx)...")
-        env = {
-            **os.environ,
-            "GITHUB_TOKEN": token
-        }
-        transport = StdioTransport(
-            command="npx",
-            args=["-y", "@modelcontextprotocol/server-github"],
-            env=env,
-            cwd=self.project_root,
-        )
-        client = Client(transport)
-        await self._exit_stack.enter_async_context(client)
-        self.gh_standard_client = client
-        logger.info("GitHub Standard MCP Server connected.")
-        return client
-
-    async def start_repository_provision_server(self):
-        """Repository Provision MCP Server (Custom) を起動"""
-        logger.info("Starting Repository Provision MCP Server...")
-        env = {
-            **os.environ,
-            "PYTHONPATH": "."
-        }
-        transport = StdioTransport(
-            command=sys.executable,
-            args=["-m", "src.mcp_server.repository_provision_server"],
-            env=env,
-            cwd=self.project_root,
-        )
-        client = Client(transport)
-        await self._exit_stack.enter_async_context(client)
-        self.repo_provision_client = client
-        logger.info("Repository Provision MCP Server connected.")
-        return client
+        # GitHub / Git 関連クライアント (既設)
+        self.github_sdk_client = None
+        self.github_notifications_client = None
+        self.repo_provision_client = None
+    
 
     async def start_workspace_server(self, repo_path: str, reference_path: str, user_id: int, group_id: int):
         """Workspace MCP Server を起動し、クライアントを返す（コア）"""
@@ -228,6 +165,70 @@ class MCPServerManager:
         logger.info("Resource Monitor MCP Server connected successfully.")
         return client
 
+    async def start_github_sdk_server(self):
+        """GitHub SDK MCP Server (@modelcontextprotocol/server-github) を起動"""
+        logger.info("Starting GitHub SDK MCP Server...")
+        token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+        env = {
+            **os.environ,
+            "GITHUB_PERSONAL_ACCESS_TOKEN": token or "",
+            "GITHUB_TOKEN": token or ""
+        }
+        transport = StdioTransport(
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-github"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.github_sdk_client = client
+        logger.info("GitHub SDK MCP Server connected successfully.")
+        return client
+
+    async def start_github_notifications_server(self):
+        """GitHub Notifications MCP Server (mcollina/github-notifications-mcp-server) を起動"""
+        logger.info("Starting GitHub Notifications MCP Server...")
+        token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+        env = {
+            **os.environ,
+            "GITHUB_PERSONAL_ACCESS_TOKEN": token or "",
+            "GITHUB_TOKEN": token or ""
+        }
+        transport = StdioTransport(
+            command="npx",
+            args=["-y", "github-notifications-mcp-server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.github_notifications_client = client
+        logger.info("GitHub Notifications MCP Server connected successfully.")
+        return client
+
+    async def start_repo_provision_server(self):
+        """Repository Provision MCP Server (内製) を起動"""
+        logger.info("Starting Repository Provision MCP Server...")
+        env = {
+            **os.environ,
+            "PYTHONPATH": "."
+        }
+        transport = StdioTransport(
+            command=sys.executable,
+            args=["-m", "src.mcp_server.repository_provision_server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.repo_provision_client = client
+        logger.info("Repository Provision MCP Server connected successfully.")
+        return client
+
     async def provision_servers(self, server_names: List[str]):
         """
         要求されたJITロードMCPサーバー群をオンデマンドで起動する。
@@ -298,6 +299,14 @@ class MCPServerManager:
             clients.append(self.planner_client)
         if self.writer_client:
             clients.append(self.writer_client)
+        if self.resource_monitor_client:
+            clients.append(self.resource_monitor_client)
+        if self.github_sdk_client:
+            clients.append(self.github_sdk_client)
+        if self.github_notifications_client:
+            clients.append(self.github_notifications_client)
+        if self.repo_provision_client:
+            clients.append(self.repo_provision_client)
             
         clients.extend(self.plugin_clients.values())
         

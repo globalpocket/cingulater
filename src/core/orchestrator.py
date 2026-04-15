@@ -132,8 +132,9 @@ class Orchestrator:
         # 実行全体を MCPServerManager のコンテキストで包む
         async with self.mcp_manager:
             # GitHub / Git 関連サーバーの起動
-            token = os.getenv("GITHUB_TOKEN", "")
-            await self.mcp_manager.start_github_related_servers(token)
+            await self.mcp_manager.start_github_sdk_server()
+            await self.mcp_manager.start_github_notifications_server()
+            await self.mcp_manager.start_repo_provision_server()
 
             # Resource Monitor Server の起動
             await self.mcp_manager.start_resource_monitor_server()

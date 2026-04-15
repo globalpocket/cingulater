@@ -28,7 +28,7 @@ class GitHubClientWrapper:
         if self._my_username:
             return self._my_username
         
-        client = self.mcp_manager.gh_standard_client
+        client = self.mcp_manager.github_sdk_client
         if not client:
             return "unknown"
             
@@ -52,7 +52,7 @@ class GitHubClientWrapper:
 
     async def get_all_accessible_repositories(self) -> List[str]:
         """アクセス可能なリポジトリ一覧を取得する"""
-        client = self.mcp_manager.gh_standard_client
+        client = self.mcp_manager.github_sdk_client
         if not client: return []
         try:
             # 簡略化のため、実際にはページネーションなどが必要
@@ -65,7 +65,7 @@ class GitHubClientWrapper:
 
     async def post_comment(self, repo_name: str, issue_number: int, body: str):
         """コメントを投稿する"""
-        client = self.mcp_manager.gh_standard_client
+        client = self.mcp_manager.github_sdk_client
         if not client: return
         owner, repo = repo_name.split("/")
         try:
@@ -76,7 +76,7 @@ class GitHubClientWrapper:
 
     async def create_pull_request(self, repo_name: str, title: str, body: str, head: str, base: str):
         """PRを作成する"""
-        client = self.mcp_manager.gh_standard_client
+        client = self.mcp_manager.github_sdk_client
         if not client: return None
         owner, repo = repo_name.split("/")
         try:
@@ -87,12 +87,12 @@ class GitHubClientWrapper:
 
     async def get_mentions_to_process(self, repo_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """通知用 MCP サーバーを使用してメンションを取得する"""
-        client = self.mcp_manager.gh_notif_client
+        client = self.mcp_manager.github_notifications_client
         if not client: return []
         
         try:
-            # github-notifications-mcp-server のツールを想定
-            notifications = await client.call_tool("list_notifications")
+            # github-notifications-mcp-server のツール名に合わせる
+            notifications = await client.call_tool("list-notifications")
             if not notifications: return []
             
             # 結果のフィルタリングとパース (既存ロジックのエッセンスを継承)
@@ -118,7 +118,7 @@ class GitHubClientWrapper:
 
     async def get_issue(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
         """Issueの詳細を取得する"""
-        client = self.mcp_manager.gh_standard_client
+        client = self.mcp_manager.github_sdk_client
         if not client: return {}
         owner, repo = repo_name.split("/")
         try:
@@ -130,11 +130,11 @@ class GitHubClientWrapper:
 
     async def mark_issue_notifications_as_read(self, repo_name: str, issue_number: int):
         """通知を既読にする"""
-        client = self.mcp_manager.gh_notif_client
+        client = self.mcp_manager.github_notifications_client
         if not client: return
         try:
-            # 実際にはリポジトリとIssue番号で通知を特定して既読化するツールを呼ぶ
-            await client.call_tool("mark_as_read", repo_name=repo_name, issue_number=issue_number)
+            # mcollina/github-notifications-mcp-server のツール名に合わせる
+            await client.call_tool("mark-thread-read", thread_id=str(notification_id))
         except Exception as e:
             logger.debug(f"Failed to mark notification as read via MCP: {e}")
 
