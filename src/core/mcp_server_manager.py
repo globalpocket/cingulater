@@ -1,10 +1,10 @@
+import logging
 import os
 import sys
-import logging
-import asyncio
-import anyio
-from typing import Optional, Dict, Any, List
 from contextlib import AsyncExitStack
+from typing import Any, Dict, List, Optional
+
+import anyio
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport
 
@@ -32,6 +32,8 @@ class MCPServerManager:
         self.persistence_client: Optional[Client] = None
         self.history_client: Optional[Client] = None
         self.worker_client: Optional[Client] = None
+        self.intent_interpreter_client: Optional[Client] = None
+        self.governance_client: Optional[Client] = None
         
         # JIT ロードされるプラグインサーバークライアント
         self.plugin_clients: Dict[str, Client] = {}
@@ -299,6 +301,46 @@ class MCPServerManager:
         logger.info("Worker MCP Server connected successfully.")
         return client
 
+    async def start_intent_interpreter_server(self):
+        """Intent Interpreter MCP Server (内製) を起動"""
+        logger.info("Starting Intent Interpreter MCP Server...")
+        env = {
+            **os.environ,
+            "PYTHONPATH": "."
+        }
+        transport = StdioTransport(
+            command=sys.executable,
+            args=["-m", "src.mcp_server.intent_interpreter_server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.intent_interpreter_client = client
+        logger.info("Intent Interpreter MCP Server connected successfully.")
+        return client
+
+    async def start_governance_server(self):
+        """Governance MCP Server (内製) を起動"""
+        logger.info("Starting Governance MCP Server...")
+        env = {
+            **os.environ,
+            "PYTHONPATH": "."
+        }
+        transport = StdioTransport(
+            command=sys.executable,
+            args=["-m", "src.mcp_server.governance_server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.governance_client = client
+        logger.info("Governance MCP Server connected successfully.")
+        return client
+
     async def provision_servers(self, server_names: List[str]):
         """
         要求されたJITロードMCPサーバー群をオンデマンドで起動する。
@@ -383,6 +425,10 @@ class MCPServerManager:
             clients.append(self.history_client)
         if self.worker_client:
             clients.append(self.worker_client)
+        if self.intent_interpreter_client:
+            clients.append(self.intent_interpreter_client)
+        if self.governance_client:
+            clients.append(self.governance_client)
             
         clients.extend(self.plugin_clients.values())
         

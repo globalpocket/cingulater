@@ -1,21 +1,21 @@
 import asyncio
-import os
-import sys
-import logging
-import yaml
-import subprocess
-import httpx
-from typing import Optional
 import json
+import logging
+import os
 import resource
+import subprocess
+import sys
 from datetime import datetime
+from typing import Optional
 
-from src.core.state_manager import StateManager
-from src.core.agent import TaskAbortedException, GitHubClientWrapper, wait_for_llm_ready
-from src.core.sandbox_manager import SandboxManager
+import httpx
+import yaml
+
+from src.core.agent import GitHubClientWrapper, TaskAbortedException, wait_for_llm_ready
 from src.core.mcp_server_manager import MCPServerManager
-from src.utils.config_loader import get_footer, get_build_id, get_config
-
+from src.core.sandbox_manager import SandboxManager
+from src.core.state_manager import StateManager
+from src.utils.config_loader import get_build_id, get_config, get_footer
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,10 @@ class Orchestrator:
             # Worker Server の起動
             worker_client = await self.mcp_manager.start_worker_server()
             await worker_client.call_tool("start_worker")
+
+            # Intent Interpreter & Governance サーバーの起動
+            await self.mcp_manager.start_intent_interpreter_server()
+            await self.mcp_manager.start_governance_server()
 
             # 設定ファイルにあるリポジトリを初期登録 (MCP 経由)
             initial_repos = self.config["agent"].get("repositories", [])
