@@ -1,11 +1,13 @@
 import logging
 import os
 import sys
+import json
 from typing import Dict, Any, List, Literal
+from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
-from src.utils.llm import get_robust_model, wait_for_llm_ready
+from src.utils.llm import wait_for_llm_ready
+from src.core.workflow_manager import WorkflowLoader
 
 # --- 型定義 (Core から分散) ---
 
@@ -40,53 +42,76 @@ logger = logging.getLogger("intent_interpreter_server")
 
 mcp = FastMCP("IntentInterpreter")
 
+# 動的ワークフローローダーの初期化
+# ルート直下の workflows ディレクトリをスキャン
+project_root = Path(os.getcwd())
+loader = WorkflowLoader(project_root)
+# 初期化時にワークフローをロードしておく
+workflow_registry = loader.load_all()
+
 @mcp.tool()
 async def interpret_intent(
     instruction: str, model_name: str, endpoint: str
 ) -> Dict[str, Any]:
     """
     ユーザーの指示を分析し、実行フェーズに進むべきか確認が必要かを判断します。
+    (動的ワークフロー 'intent_alignment' を使用して実行します)
     """
-    logger.info(f"Interpreting intent: {instruction[:100]}...")
+    logger.info(f"Interpreting intent via dynamic workflow: {instruction[:100]}...")
 
     # LLM の準備を待機
     ready = await wait_for_llm_ready(endpoint)
     if not ready:
         return {"error": "LLM server not ready", "status": "pending"}
 
-    model = get_robust_model(model_name, base_url=endpoint)
-
-    agent = Agent(
-        model,
-        result_type=IntentDraft,  # Note: pydantic-ai 最新版では result_type
-        system_prompt=(
-            "あなたは Brownie AI の意図調整フェーズを担当するエージェントです。\n"
-            "ユーザーからの指示を分析し、自律的に『実行（Phase 1）』へ移るべきかどうかを"
-            "判定してください。\n\n"
-            "### 判定基準 ###\n"
-            "1. **【承認・お任せ (approved)】**: \n"
-            "   - ユーザーが『進めて』『OK』『承認』『お任せ』、あるいは"
-            "『直ちに開始せよ』等の意図を示した場合。\n"
-            "   - **重要**: 不足している技術的な詳細はあなたが自ら決定します。"
-            "質問してはいけません。\n"
-            "   - `status` を 'approved' に設定してください。\n\n"
-            "2. **【確認が必要 (pending)】**: \n"
-            "   - 全く新しい大きなタスクで、まだ方針を合意していない場合。\n"
-            "   - 指示が極めて曖昧で、何をしていいか分からない場合。\n"
-            "   - `status` を 'pending' にし、`draft_comment` に丁寧な確認メッセージを"
-            "記述してください。"
-        ),
-    )
+    # ワークフローの取得
+    workflow_tool = workflow_registry.get("intent_alignment")
+    if not workflow_tool:
+        logger.error("Workflow 'intent_alignment' not found in registry.")
+        return {
+            "status": "pending",
+            "intent_summary": "Workflow error",
+            "draft_comment": "エラー：意図解析ワークフローが見つかりませんでした。構成を確認してください。",
+            "evaluation_axes": [],
+            "required_mcp_servers": []
+        }
 
     try:
-        result = await agent.run(instruction)
-        return result.data.model_dump()
+        # ワークフローの実行
+        # DynamicWorkflowState が返される
+        state_result = await workflow_tool(
+            input_data=instruction,
+            model_name=model_name,
+            endpoint=endpoint
+        )
+        
+        # 最終ノード 'node3_draft_reply' の出力を取得
+        results = state_result.get("results", {})
+        final_output = results.get("node3_draft_reply", "")
+        
+        if not final_output:
+            raise ValueError("Final node output is empty.")
+
+        # JSON を抽出 (AI が Markdown ブロックを作ってしまう可能性を考慮)
+        clean_json = str(final_output).strip()
+        if "```json" in clean_json:
+            clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+        elif "```" in clean_json:
+            clean_json = clean_json.split("```")[-1].split("```")[0].strip()
+
+        logger.debug(f"Raw workflow output: {final_output}")
+        data = json.loads(clean_json)
+        
+        # Pydantic モデルでバリデーション
+        draft = IntentDraft.model_validate(data)
+        return draft.model_dump()
+
     except Exception as e:
-        logger.error(f"Intent interpretation failed: {e}")
+        logger.error(f"Intent interpretation via workflow failed: {e}")
         return {
             "status": "pending",
             "intent_summary": "Error during analysis",
-            "draft_comment": f"申し訳ありません、意図の解析中にエラーが発生しました: {str(e)}",
+            "draft_comment": f"申し訳ありません、動的ワークフローによる解析中にエラーが発生しました: {str(e)}",
             "evaluation_axes": [],
             "required_mcp_servers": []
         }

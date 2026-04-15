@@ -1,0 +1,17 @@
+name: intent_alignment
+description: "ユーザーの指示を分析し、意図を確定させるフェーズ0のワークフロー"
+
+start_node: node1_analyze
+
+nodes:
+  node1_analyze:
+    prompt_file: node_analyze.md
+    next: node2_decide_tools
+
+  node2_decide_tools:
+    prompt_file: node_decide_tools.md
+    next: node3_draft_reply
+
+  node3_draft_reply:
+    prompt_file: node_draft_reply.md
+    next: END
