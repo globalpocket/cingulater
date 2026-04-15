@@ -15,7 +15,7 @@ from fastmcp import FastMCP
 from pydantic_ai import Agent
 
 from src.core.types import Blueprint
-from src.llm.robust_model import get_robust_model, wait_for_llm_ready
+from src.core.agent import get_robust_model, wait_for_llm_ready
 
 logger = logging.getLogger(__name__)
 

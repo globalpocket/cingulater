@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
 from src.core.types import Blueprint, BlueprintFile
-from src.llm.robust_model import get_robust_model, wait_for_llm_ready
+from src.core.agent import get_robust_model, wait_for_llm_ready
 
 logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@ import logging
 from typing import TypedDict, List, Dict, Any, Optional, Literal
 from pydantic_ai import Agent
 from pydantic import BaseModel, Field
-from src.llm.robust_model import get_robust_model, wait_for_llm_ready
+from src.core.agent import get_robust_model, wait_for_llm_ready
 from src.utils.config_loader import get_config
 
 logger = logging.getLogger(__name__)
