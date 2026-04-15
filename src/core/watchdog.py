@@ -11,7 +11,7 @@ import glob
 from typing import Optional
 
 # プロジェクトルートをパスに追加
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(base_dir)
 
 # ログディレクトリの作成
@@ -211,6 +211,6 @@ if __name__ == "__main__":
         else:
             sys.exit(1)
 
-    script_path = os.path.join(os.path.dirname(__file__), "main.py")
+    script_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "main.py"))
     dog = Watchdog(script_path, "/tmp/brownie_survival.signal")
     dog.start()
