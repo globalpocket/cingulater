@@ -216,3 +216,6 @@ logs/
 
 # Brownie Context Data
 .brwn/
+
+# Temporary files (standard)
+.tmp/
