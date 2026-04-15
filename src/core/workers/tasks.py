@@ -1,20 +1,22 @@
-import logging
 import asyncio
+import json
+import logging
 import os
 import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
 from dotenv import load_dotenv
 
-# .env を確実にロード
+# Environment setup
 load_dotenv()
-
-# 自身のパスを最優先に設定
 sys.path.insert(0, os.getcwd())
 
+from src.core.trigger_manager import WorkflowTriggerManager
 from src.core.workers.pool import huey
-from src.core.orchestrator import Orchestrator
-import json
-import time
-import threading
+from src.core.workflow_manager import WorkflowLoader
 
 logger = logging.getLogger("brownie.worker")
 
@@ -68,13 +70,14 @@ def get_orchestrator():
         config_path = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
         # トークンチェックも行う
         if not os.getenv("GITHUB_TOKEN"):
-             logger.error("FATAL: GITHUB_TOKEN is not found in worker process even after load_dotenv()")
+             logger.error("FATAL: GITHUB_TOKEN not found in worker process.")
+        from src.core.orchestrator import Orchestrator
         _orchestrator = Orchestrator(config_path)
     return _orchestrator
 
 @huey.task(retries=0)
 def analysis_task(task_id, repo_name, issue_number, payload):
-    msg = f"!!! WORKER RECEIVED REAL TASK: {task_id} (Repo: {repo_name}, Issue: {issue_number}) !!!"
+    msg = f"!!! TASK RECEIVED: {task_id} (#{issue_number}) !!!"
     logger.info(msg)
     print(msg, file=sys.stderr) # 強制出力
     
@@ -125,3 +128,83 @@ def execution_task(task_id, repo_name, issue_number, payload):
 @huey.task(retries=0)
 def repair_task(task_id, repo_name, issue_number, payload):
     analysis_task(task_id, repo_name, issue_number, payload)
+
+# --- Dynamic Workflow Trigger Engine ---
+
+@huey.task()
+def execute_workflow_task(workflow_name: str, input_data: Any = None):
+    """
+    指定された動的ワークフローを実行する Huey タスク。
+    """
+    logger.info(f"🚀 Executing dynamic workflow: {workflow_name}")
+    try:
+        orch = get_orchestrator()
+        # ワークフローローダーの初期化
+        loader = WorkflowLoader(Path(orch.project_root))
+        # ワークスペースがあればそれも考慮する (現状は Core 優先)
+        tools = loader.load_all(config=orch.config)
+        
+        if workflow_name not in tools:
+            logger.error(f"Workflow '{workflow_name}' not found by loader.")
+            return
+
+        workflow_func = tools[workflow_name]
+        
+        async def _run():
+            # LLM サーバーの準備を待つ
+            await orch._wait_for_llm_ready()
+            
+            # MCP サーバー群のコンテキスト（LLM 推論に必要）
+            async with orch.mcp_manager:
+                # 必要なサーバーはワークフローの性質に依存するが、
+                # インタープリター等はデフォルトで起動しておく
+                await orch.mcp_manager.start_intent_interpreter_server()
+                
+                logger.info(f"Running workflow function for {workflow_name}...")
+                result = await workflow_func(input_data=input_data)
+                res_str = str(result)[:200]
+                logger.info(f"✅ Workflow '{workflow_name}' finished. Result: {res_str}...")
+
+        asyncio.run(_run())
+    except Exception as e:
+        logger.error(f"Error in execute_workflow_task for {workflow_name}: {e}")
+
+@huey.periodic_task(huey.crontab(minute='*'))
+def master_trigger_dispatcher():
+    """
+    1分ごとに起動し、登録されたワークフローのトリガーをチェックして、周期が来たものを発火させる。
+    """
+    now = datetime.now()
+    logger.debug(f"⏰ Master trigger dispatcher running at {now.isoformat()}")
+    
+    try:
+        orch = get_orchestrator()
+        # ワークフローメタデータの読み込み
+        loader = WorkflowLoader(Path(orch.project_root))
+        # メタデータのみが必要なので、ダミーの config で高速ロード
+        # (ただしトリガー定義をパースするために WorkflowLoader を使用)
+        loader.load_all() 
+        
+        trigger_manager = WorkflowTriggerManager()
+        due_workflows = trigger_manager.get_due_workflows(loader.registry._tools, now)
+        
+        if not due_workflows:
+            return
+
+        for job in due_workflows:
+            name = job["workflow_name"]
+            schedule = job["schedule"]
+            logger.info(f"🔔 Trigger matched: '{name}' (Schedule: {schedule}).")
+            
+            # 入力データの構成 (User Request 仕様)
+            input_data = {
+                "trigger_type": "cron",
+                "schedule": schedule,
+                "executed_at": now.isoformat()
+            }
+            
+            # Huey タスクを投入
+            execute_workflow_task(name, input_data=input_data)
+            
+    except Exception as e:
+        logger.error(f"Error in master_trigger_dispatcher: {e}")

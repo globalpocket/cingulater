@@ -49,6 +49,7 @@ dependencies = [
     "redis>=7.4.0",
     "mlx-lm>=0.13.0",
     "mlx-vlm>=0.4.3",
+    "croniter>=2.0.0",
 ]
 
 [build-system]
