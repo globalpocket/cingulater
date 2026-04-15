@@ -58,6 +58,7 @@ BROWNIE は以下の統合されたコンポーネントで構成されていま
 - **🧠 Orchestrator**: システムの司令塔。GitHub のポーリング、**Huey (Redis)** へのタスク投入、リソースの初期化、そして全体の状態管理を司ります。
 - **🛡 SandboxManager**: Docker を基盤とした安全な実行環境。YAML サニタイザにより、特権実行や不正なマウントを構造的に遮断し、安全なコード実行を保証します。
 - **💾 StateManager**: **LangGraph (SQLite Checkpointer)** を使用した高信頼な状態管理。OS クラッシュ時でもタスクの整合性を維持し、再起動後のリカバリーを可能にします。
+- **⚙️ WorkflowManager**: ワークフローとプロンプトの読み込み・管理を行うレジストリ。
 - **🛠️ MCPServerManager**: 推論・知覚・実行を支える **「MCP サーバー群のライフサイクル管理と統合インターフェース」**を担当します。
 - **🔌 MCP Servers**:
   - **📋 Code Planner Server**: 設計担当。Pydantic AI エージェントがタスクを分析し、厳格な設計図 (Blueprint) を生成します。
