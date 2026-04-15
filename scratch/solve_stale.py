@@ -2,7 +2,7 @@ import asyncio
 import os
 import sys
 from src.gh_platform.client import GitHubClientWrapper
-from src.core.state import StateManager
+from src.core.state_manager import StateManager
 
 async def solve_stale_task():
     sys.path.append(os.getcwd())

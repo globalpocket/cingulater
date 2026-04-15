@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from src.core.graph.state import TaskState
+from src.core.state_manager import TaskState
 from src.core.graph.nodes.intent import intent_alignment_node
 from src.core.graph.nodes.analysis import core_analysis_node
 from src.core.graph.nodes.handshake import dynamic_handshake_node

@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from src.core.graph.state import TaskState
+from src.core.state_manager import TaskState
 from src.core.workers.tasks import execution_task
 
 

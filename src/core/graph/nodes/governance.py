@@ -1,6 +1,6 @@
 from typing import Dict, Any, Optional
 import os
-from src.core.graph.state import TaskState
+from src.core.state_manager import TaskState
 from src.core.workers.tasks import repair_task
 from src.gh_platform.client import GitHubClientWrapper
 from src.version import get_footer

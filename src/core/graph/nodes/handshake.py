@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from src.core.graph.state import TaskState
+from src.core.state_manager import TaskState
 
 async def dynamic_handshake_node(state: TaskState) -> Dict[str, Any]:
     """

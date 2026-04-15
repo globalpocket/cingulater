@@ -10,7 +10,7 @@ import json
 import resource
 from datetime import datetime
 
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from src.core.state_manager import StateManager
 from src.core.worker_pool import WorkerPool
 from src.core.agent import TaskAbortedException
 from src.gh_platform.client import GitHubClientWrapper
@@ -64,15 +64,17 @@ class Orchestrator:
         )
         self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
 
+        # State Manager の初期化
+        checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
+        self.state_manager = StateManager(checkpoint_path)
+
         # 設定ファイルにあるリポジトリを初期登録
         initial_repos = self.config["agent"].get("repositories", [])
         for repo in initial_repos:
             self.persistence.upsert_repository(repo)
 
         # ワークフローの準備 (checkpoint なしで一度準備)
-        from src.core.graph.builder import compile_workflow
-
-        self._workflow_app = compile_workflow()
+        self._workflow_app = self.state_manager.workflow_app
 
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._llm_startup_lock = asyncio.Lock()
@@ -132,10 +134,8 @@ class Orchestrator:
         asyncio.create_task(self._llm_health_loop())
 
         # メインプロセスではチェックポインターを維持し続ける
-        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
-            from src.core.graph.builder import compile_workflow
-
-            self._workflow_app = compile_workflow(checkpointer=checkpointer)
+        async with self.state_manager as sm:
+            self._workflow_app = sm.workflow_app
 
             try:
                 self.is_running = True
@@ -228,9 +228,8 @@ class Orchestrator:
                         )
 
                         # 4. DB ステータスを更新
-                        config = {"configurable": {"thread_id": task_id}}
-                        await self._workflow_app.aupdate_state(
-                            config, {"status": "Failed"}, as_node="intent_alignment"
+                        await self.state_manager.update_state(
+                            task_id, {"status": "Failed"}, as_node="intent_alignment"
                         )
 
             except Exception as e:
@@ -478,18 +477,10 @@ class Orchestrator:
             logger.error(f"Polling error: {e}")
 
     async def _resume_workflow(self, task_id: str, decision: str):
-        # データベースパスの取得
-        checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
-
         # チェックポインターを明示的に起動して状態を更新
-        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
-            from src.core.graph.builder import compile_workflow
-
-            workflow_app = compile_workflow(checkpointer=checkpointer)
-
-            config = {"configurable": {"thread_id": task_id}}
-            await workflow_app.aupdate_state(
-                config,
+        async with self.state_manager:
+            await self.state_manager.update_state(
+                task_id,
                 {"governance_decision": decision, "status": "InQueue"},
                 as_node="intent_alignment",
             )
@@ -536,7 +527,7 @@ class Orchestrator:
             )
             return True
 
-        state = await self._workflow_app.aget_state(config)
+        state = await self.state_manager.get_state(task_id)
 
         payload_to_send = None
         if state.values:
@@ -594,10 +585,10 @@ class Orchestrator:
                         + f"\n\n[USER UPDATE @ {timestamp}]:\n{comment_body}"
                     )
 
-            await self._workflow_app.aupdate_state(
-                config, new_state, as_node="intent_alignment"
+            await self.state_manager.update_state(
+                task_id, new_state, as_node="intent_alignment"
             )
-            updated_state = await self._workflow_app.aget_state(config)
+            updated_state = await self.state_manager.get_state(task_id)
             payload_to_send = updated_state.values
         else:
             repo_path = os.path.join(self.workspace_base, repo_name.split("/")[-1])
@@ -617,7 +608,7 @@ class Orchestrator:
                 "trigger_comment_id": comment_id,
                 "created_at": datetime.utcnow().isoformat(),
             }
-            await self._workflow_app.aupdate_state(config, initial_values)
+            await self.state_manager.update_state(task_id, initial_values)
             payload_to_send = initial_values
 
         return await self.worker_pool.add_task(
@@ -633,17 +624,8 @@ class Orchestrator:
         # ワーカーはサーバーの準備完了を待つ（起動はメインプロセスに任せる）
         await self._wait_for_llm_ready()
 
-        checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
-
         # ワーカー実行時にその都度チェックポインターを開くことで接続切れを防ぐ
-        async with AsyncSqliteSaver.from_conn_string(checkpoint_path) as checkpointer:
-            from src.core.graph.builder import compile_workflow
-
-            workflow_app = compile_workflow(checkpointer=checkpointer)
-
-            config = {"configurable": {"thread_id": task_id}}
-            await workflow_app.aget_state(config)
-
+        async with self.state_manager:
             try:
                 # 実行直前にもステータスを最終確認
                 issue_info = await self.gh_client.get_issue(repo_name, issue_number)
@@ -663,9 +645,9 @@ class Orchestrator:
                 async def run_workflow():
                     locally_reported = set()  # 同一実行内の重複防止用ローカルメモリ
 
-                    async for event in workflow_app.astream(input_data, config=config):
+                    async for event in self.state_manager.astream(task_id, input_data):
                         # 各イベント後の最新状態を取得
-                        current_state = await workflow_app.aget_state(config)
+                        current_state = await self.state_manager.get_state(task_id)
                         state_reported = current_state.values.get("reported_nodes", [])
                         if not isinstance(state_reported, list):
                             state_reported = []
@@ -688,8 +670,8 @@ class Orchestrator:
                                         f"### 🔍 意図の確認と提案\n\n{draft}"
                                         + get_footer(),
                                     )
-                                    await workflow_app.aupdate_state(
-                                        config,
+                                    await self.state_manager.update_state(
+                                        task_id,
                                         {
                                             "reported_nodes": list(
                                                 reported.union({"intent_alignment"})
@@ -700,7 +682,7 @@ class Orchestrator:
                 await asyncio.wait_for(run_workflow(), timeout=600)
 
                 # 最終状態の報告
-                final_state = await workflow_app.aget_state(config)
+                final_state = await self.state_manager.get_state(task_id)
                 final_status = final_state.values.get("status")
                 state_reported = final_state.values.get("reported_nodes", [])
                 if not isinstance(state_reported, list):
@@ -719,8 +701,8 @@ class Orchestrator:
                         issue_number,
                         f"### 🛠 実行計画（承認待ち）\n\n{plan}" + get_footer(),
                     )
-                    await workflow_app.aupdate_state(
-                        config,
+                    await self.state_manager.update_state(
+                        task_id,
                         {
                             "reported_nodes": list(
                                 final_reported.union({"WaitingForClarification"})
@@ -734,8 +716,8 @@ class Orchestrator:
                         issue_number,
                         f"### ✅ 完了報告\n\n{summary}" + get_footer(),
                     )
-                    await workflow_app.aupdate_state(
-                        config,
+                    await self.state_manager.update_state(
+                        task_id,
                         {"reported_nodes": list(final_reported.union({"Completed"}))},
                     )
 
@@ -753,8 +735,8 @@ class Orchestrator:
             except TaskAbortedException as tae:
                 logger.warning(f"Task {task_id} aborted by gate: {tae}")
                 # ユーザーが意図的にクローズしたため、Failed ではなく Skipped またはそのまま終了
-                await workflow_app.aupdate_state(
-                    config, {"status": "Aborted"}, as_node="intent_alignment"
+                await self.state_manager.update_state(
+                    task_id, {"status": "Aborted"}, as_node="intent_alignment"
                 )
             except Exception as e:
                 logger.error(f"Task execution error: {e}", exc_info=True)
@@ -766,6 +748,6 @@ class Orchestrator:
                     f"### ❌ 実行エラーが発生しました\n\n原因: {error_msg}\n内部的な問題により処理を継続できないか、リソースが不足しています。"
                     + get_footer(),
                 )
-                await workflow_app.aupdate_state(
-                    config, {"status": "Failed"}, as_node="intent_alignment"
+                await self.state_manager.update_state(
+                    task_id, {"status": "Failed"}, as_node="intent_alignment"
                 )
