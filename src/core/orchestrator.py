@@ -129,20 +129,24 @@ class Orchestrator:
 
         logger.info("BOOT SEQUENCE COMPLETED. Entering polling loop.")
 
-        self.is_running = True
-        # LLM サーバーの自動起動監視を開始
-        asyncio.create_task(self._llm_health_loop())
+        # 実行全体を MCPServerManager のコンテキストで包む
+        async with self.mcp_manager:
+            # Resource Monitor Server の起動
+            await self.mcp_manager.start_resource_monitor_server()
 
-        # メインプロセスではチェックポインターを維持し続ける
-        async with self.state_manager as sm:
-            self._workflow_app = sm.workflow_app
+            self.is_running = True
+            # LLM サーバーの自動起動監視を開始
+            asyncio.create_task(self._llm_health_loop())
 
-            try:
-                self.is_running = True
-                while self.is_running:
-                    try:
-                        # ワーカープロセスの生存確認と自動復旧
-                        await self.worker_pool.check_health()
+            # メインプロセスではチェックポインターを維持し続ける
+            async with self.state_manager as sm:
+                self._workflow_app = sm.workflow_app
+
+                try:
+                    while self.is_running:
+                        try:
+                            # ワーカープロセスの生存確認と自動復旧
+                            await self.worker_pool.check_health()
 
                         # リソース監視とストール検知（初回のみ起動）
                         if (
@@ -186,9 +190,10 @@ class Orchestrator:
 
     async def _resource_monitor_loop(self):
         """Worker のリソース状況を監視し、ストールを検知するループ"""
-        from src.core.resource_manager import ResourceGuardian
-
-        guardian = ResourceGuardian()
+        client = self.mcp_manager.resource_monitor_client
+        if not client:
+            logger.error("Resource Monitor Client is not initialized.")
+            return
 
         while self.is_running:
             try:
@@ -207,7 +212,17 @@ class Orchestrator:
                     cpu_usage = hb.get("cpu_pct", 0.0)
 
                     # ストール判定 (5分以上進捗がなく、かつ CPU がアイドルの場合)
-                    if guardian.check_for_stall(last_seen, timeout_sec=300):
+                    # MCP 経由で判定。Worker プロセスのメトリクスは Redis にある hb['cpu_pct'] 等を使うため、
+                    # ここでは単純な timeout 判定＋システム状況（または Worker PID が分かればそのPID）での stall 判定を行う。
+                    # 元の ResourceGuardian.check_for_stall を踏襲し、MCP 側の check_stall ツールを呼ぶ。
+                    is_stalled = await client.call_tool(
+                        "check_stall", 
+                        last_heartbeat=last_seen, 
+                        timeout_sec=300,
+                        pid=hb.get("pid") # Heartbeat に PID が含まれていることを期待
+                    )
+                    
+                    if is_stalled:
                         logger.error(
                             f"Intelligent Stall Detection: Task {task_id} looks HUNG (CPU: {cpu_usage}%). Revoking and restarting worker."
                         )
@@ -505,15 +520,17 @@ class Orchestrator:
             )
             return True  # 既に存在するため「処理中」として扱う
 
-        # 資源の安全性を確認 (Resource Guardian)
-        from src.core.resource_manager import ResourceGuardian
-
-        guardian = ResourceGuardian()
-        if not guardian.is_resource_safe():
-            logger.warning(
-                f"Resource Guardian: System memory is low. Delaying task queueing for {task_id} until next poll."
-            )
-            return False
+        # 資源の安全性を確認 (Resource Guardian MCP)
+        client = self.mcp_manager.resource_monitor_client
+        if client:
+            is_safe = await client.call_tool("is_system_safe", min_available_gb=4.0)
+            if not is_safe:
+                logger.warning(
+                    f"Resource Guardian: System memory is low. Delaying task queueing for {task_id} until next poll."
+                )
+                return False
+        else:
+            logger.warning("Resource Monitor Client not ready. Proceeding with caution.")
 
         # 投入前に最新の Issue ステータスを確認 (設計改善: クローズ済みはスキップ)
         issue_info = await self.gh_client.get_issue(repo_name, issue_number)

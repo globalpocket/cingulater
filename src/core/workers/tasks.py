@@ -12,19 +12,24 @@ sys.path.insert(0, os.getcwd())
 
 from src.core.workers.pool import huey
 from src.core.orchestrator import Orchestrator
-from src.core.resource_manager import ResourceGuardian
 import json
 import time
 import threading
 
 logger = logging.getLogger("brownie.worker")
 
-def _heartbeat_worker(stop_event, task_id):
-    """5秒ごとにリソース状況を Redis に書き込む Heartbeat スレッド"""
-    guardian = ResourceGuardian()
-    while not stop_event.is_set():
+async def _async_heartbeat(orch, task_id):
+    """5秒ごとにリソース状況を MCP 経由で取得し Redis に書き込む非同期ループ"""
+    client = orch.mcp_manager.resource_monitor_client
+    if not client:
+        logger.error("Resource Monitor Client not ready for heartbeat.")
+        return
+
+    while True:
         try:
-            metrics = guardian.get_worker_metrics()
+            # MCP サーバーはワーカープロセスのサブプロセスとして動いているため、
+            # 指定なし (os.getppid()) でワーカー本体の PID が取得される
+            metrics = await client.call_tool("get_process_resources")
             metrics["task_id"] = task_id
             metrics["timestamp"] = time.time()
             
@@ -32,9 +37,11 @@ def _heartbeat_worker(stop_event, task_id):
             conn = huey.storage.conn
             conn.set(f"brownie:heartbeat:{task_id}", json.dumps(metrics), ex=30)
             logger.debug(f"Heartbeat sent for {task_id}")
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             logger.error(f"Heartbeat failed: {e}")
-        stop_event.wait(5)
+        await asyncio.sleep(5)
 
 # ロギングの初期化（ワーカープロセス用）
 def setup_logging():
@@ -71,20 +78,33 @@ def analysis_task(task_id, repo_name, issue_number, payload):
     logger.info(msg)
     print(msg, file=sys.stderr) # 強制出力
     
-    # Heartbeat 開始
-    stop_event = threading.Event()
-    hb_thread = threading.Thread(target=_heartbeat_worker, args=(stop_event, task_id), daemon=True)
-    hb_thread.start()
-    
     try:
         orch = get_orchestrator()
         logger.info(f"Orchestrator initialized in worker for {task_id}.")
         
-        # asyncio.run で非同期タスクを実行 (10分のタイムアウトを設定)
-        asyncio.run(asyncio.wait_for(
-            orch._execute_task(task_id, repo_name, issue_number, payload),
-            timeout=600
-        ))
+        async def run_worker_with_mcp():
+            # MCP サーバーのライフサイクル管理
+            async with orch.mcp_manager:
+                await orch.mcp_manager.start_resource_monitor_server()
+                
+                # Heartbeat 開始
+                hb_task = asyncio.create_task(_async_heartbeat(orch, task_id))
+                
+                try:
+                    # 実際のタスク実行
+                    await asyncio.wait_for(
+                        orch._execute_task(task_id, repo_name, issue_number, payload),
+                        timeout=600
+                    )
+                finally:
+                    hb_task.cancel()
+                    try:
+                        await hb_task
+                    except asyncio.CancelledError:
+                        pass
+        
+        # asyncio.run で非同期マシンの全容を実行
+        asyncio.run(run_worker_with_mcp())
         logger.info(f"!!! WORKER COMPLETED EXECUTION FOR {task_id} !!!")
     except asyncio.TimeoutError:
         logger.error(f"Worker task TIMEOUT after 600s: {task_id}")
@@ -92,9 +112,6 @@ def analysis_task(task_id, repo_name, issue_number, payload):
         logger.exception(f"Worker execution failed with error: {e}")
         print(f"FATAL ERROR in worker: {e}", file=sys.stderr)
     finally:
-        # Heartbeat 停止
-        stop_event.set()
-        hb_thread.join(timeout=2)
         # Redis のエントリを削除
         try:
             huey.storage.conn.delete(f"brownie:heartbeat:{task_id}")

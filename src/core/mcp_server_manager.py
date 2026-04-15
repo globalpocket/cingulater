@@ -25,6 +25,7 @@ class MCPServerManager:
         self.knowledge_client: Optional[Client] = None
         self.planner_client: Optional[Client] = None
         self.writer_client: Optional[Client] = None
+        self.resource_monitor_client: Optional[Client] = None
         
         # JIT ロードされるプラグインサーバークライアント
         self.plugin_clients: Dict[str, Client] = {}
@@ -133,6 +134,26 @@ class MCPServerManager:
         await self._exit_stack.enter_async_context(client)
         self.writer_client = client
         logger.info("Code Writer MCP Server connected successfully.")
+        return client
+
+    async def start_resource_monitor_server(self):
+        """Resource Monitor MCP Server を起動し、クライアントを返す"""
+        logger.info("Starting Resource Monitor MCP Server...")
+        env = {
+            **os.environ,
+            "PYTHONPATH": "."
+        }
+        transport = StdioTransport(
+            command=sys.executable,
+            args=["-m", "src.mcp_server.resource_monitor_server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.resource_monitor_client = client
+        logger.info("Resource Monitor MCP Server connected successfully.")
         return client
 
     async def provision_servers(self, server_names: List[str]):
