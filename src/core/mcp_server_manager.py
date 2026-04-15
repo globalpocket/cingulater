@@ -29,6 +29,7 @@ class MCPServerManager:
         self.github_sdk_client: Optional[Client] = None
         self.github_notifications_client: Optional[Client] = None
         self.repo_provision_client: Optional[Client] = None
+        self.persistence_client: Optional[Client] = None
         
         # JIT ロードされるプラグインサーバークライアント
         self.plugin_clients: Dict[str, Client] = {}
@@ -229,6 +230,33 @@ class MCPServerManager:
         logger.info("Repository Provision MCP Server connected successfully.")
         return client
 
+    async def start_persistence_server(self):
+        """Persistence MCP Server (内製) を起動"""
+        logger.info("Starting Persistence MCP Server...")
+        db_path = ""
+        if self.config_path:
+            from src.utils.config_loader import get_config
+            cfg = get_config(self.config_path)
+            db_path = cfg.get("database", {}).get("db_path", "")
+
+        env = {
+            **os.environ,
+            "BROWNIE_PERSISTENCE_DB": db_path,
+            "PYTHONPATH": "."
+        }
+        transport = StdioTransport(
+            command=sys.executable,
+            args=["-m", "src.mcp_server.persistence_server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.persistence_client = client
+        logger.info("Persistence MCP Server connected successfully.")
+        return client
+
     async def provision_servers(self, server_names: List[str]):
         """
         要求されたJITロードMCPサーバー群をオンデマンドで起動する。
@@ -307,6 +335,8 @@ class MCPServerManager:
             clients.append(self.github_notifications_client)
         if self.repo_provision_client:
             clients.append(self.repo_provision_client)
+        if self.persistence_client:
+            clients.append(self.persistence_client)
             
         clients.extend(self.plugin_clients.values())
         

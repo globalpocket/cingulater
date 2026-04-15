@@ -2,7 +2,6 @@ import logging
 import asyncio
 from typing import Optional, List, Dict, Any
 from src.core.mcp_server_manager import MCPServerManager
-from src.core.persistence import PersistenceManager
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +16,9 @@ class GitHubClientWrapper:
     GitHub 操作を MCP サーバーに委任するブリッジ。
     直接の API 呼び出し (httpx, PyGithub) を排除する。
     """
-    def __init__(self, token: str, mcp_manager: MCPServerManager, persistence: Optional[PersistenceManager] = None):
+    def __init__(self, token: str, mcp_manager: MCPServerManager):
         self._token = token
         self.mcp_manager = mcp_manager
-        self.persistence = persistence
         self._my_username: Optional[str] = None
 
     async def get_my_username_async(self) -> str:
@@ -129,14 +127,8 @@ class GitHubClientWrapper:
             return {}
 
     async def mark_issue_notifications_as_read(self, repo_name: str, issue_number: int):
-        """通知を既読にする"""
-        client = self.mcp_manager.github_notifications_client
-        if not client: return
-        try:
-            # mcollina/github-notifications-mcp-server のツール名に合わせる
-            await client.call_tool("mark-thread-read", thread_id=str(notification_id))
-        except Exception as e:
-            logger.debug(f"Failed to mark notification as read via MCP: {e}")
+        """通知を既読にする（将来的な拡張用）"""
+        pass
 
     async def ensure_repo_cloned(self, repo_name: str, repo_path: str, branch_name: Optional[str] = None):
         """Repository Provision MCP サーバーを使用してリポジトリを最新化する"""

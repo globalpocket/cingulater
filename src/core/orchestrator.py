@@ -16,7 +16,6 @@ from src.core.agent import TaskAbortedException
 from src.gh_platform.client import GitHubClientWrapper
 from src.core.sandbox_manager import SandboxManager
 from src.core.mcp_server_manager import MCPServerManager
-from src.core.persistence import PersistenceManager
 from src.version import get_footer, get_build_id
 from src.utils.config_loader import get_config
 from src.llm.robust_model import wait_for_llm_ready
@@ -50,14 +49,11 @@ class Orchestrator:
         # ファイルディスクリプタ制限の拡張試行
         self._increase_max_files()
 
-        # Persistence Manager の初期化
-        db_path = self.config["database"]["db_path"]
-        self.persistence = PersistenceManager(db_path)
-
+        # MCP Manager の初期化
         self.worker_pool = WorkerPool(self.project_root)
         self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
         self.gh_client = GitHubClientWrapper(
-            os.getenv("GITHUB_TOKEN", ""), mcp_manager=self.mcp_manager, persistence=self.persistence
+            os.getenv("GITHUB_TOKEN", ""), mcp_manager=self.mcp_manager
         )
         self.sandbox = SandboxManager(
             self.config["workspace"]["sandbox_user_id"],
@@ -67,11 +63,6 @@ class Orchestrator:
         # State Manager の初期化
         checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
         self.state_manager = StateManager(checkpoint_path)
-
-        # 設定ファイルにあるリポジトリを初期登録
-        initial_repos = self.config["agent"].get("repositories", [])
-        for repo in initial_repos:
-            self.persistence.upsert_repository(repo)
 
         # ワークフローの準備 (checkpoint なしで一度準備)
         self._workflow_app = self.state_manager.workflow_app
@@ -138,6 +129,14 @@ class Orchestrator:
 
             # Resource Monitor Server の起動
             await self.mcp_manager.start_resource_monitor_server()
+
+            # Persistence Server の起動
+            persistence_client = await self.mcp_manager.start_persistence_server()
+
+            # 設定ファイルにあるリポジトリを初期登録 (MCP 経由)
+            initial_repos = self.config["agent"].get("repositories", [])
+            for repo in initial_repos:
+                await persistence_client.call_tool("upsert_repository", repo_name=repo)
 
             self.is_running = True
             # LLM サーバーの自動起動監視を開始
@@ -446,9 +445,12 @@ class Orchestrator:
                 mention_id = str(m.get("comment_id", f"body_{m['number']}"))
                 updated_at = m.get("updated_at", "1970-01-01T00:00:00Z")
 
-                # 重複排除と編集検知のチェック (Persistence)
-                status = self.persistence.is_mention_new_or_updated(
-                    mention_id, updated_at
+                # 重複排除と編集検知のチェック (Persistence MCP Tool)
+                persistence_client = self.mcp_manager.persistence_client
+                status = await persistence_client.call_tool(
+                    "check_mention_status",
+                    mention_id=mention_id,
+                    updated_at=updated_at
                 )
                 if status == "UNCHANGED":
                     # 未読だが DB 上は処理済みの場合は、再検知を防ぐために既読化
@@ -489,7 +491,7 @@ class Orchestrator:
 
                 # 投入に成功した場合は、DB を更新し、GitHub 通知を既読にする
                 if success:
-                    self.persistence.save_processed_mention(m)
+                    await self.mcp_manager.persistence_client.call_tool("register_processed_mention", mention_data=m)
                     await self.gh_client.mark_issue_notifications_as_read(
                         target_repo, m["number"]
                     )
