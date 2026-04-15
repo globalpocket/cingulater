@@ -55,14 +55,14 @@ class Orchestrator:
         self.persistence = PersistenceManager(db_path)
 
         self.worker_pool = WorkerPool(self.project_root)
+        self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
         self.gh_client = GitHubClientWrapper(
-            os.getenv("GITHUB_TOKEN", ""), persistence=self.persistence
+            os.getenv("GITHUB_TOKEN", ""), mcp_manager=self.mcp_manager, persistence=self.persistence
         )
         self.sandbox = SandboxManager(
             self.config["workspace"]["sandbox_user_id"],
             self.config["workspace"]["sandbox_group_id"],
         )
-        self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
 
         # State Manager の初期化
         checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
@@ -131,6 +131,10 @@ class Orchestrator:
 
         # 実行全体を MCPServerManager のコンテキストで包む
         async with self.mcp_manager:
+            # GitHub / Git 関連サーバーの起動
+            token = os.getenv("GITHUB_TOKEN", "")
+            await self.mcp_manager.start_github_related_servers(token)
+
             # Resource Monitor Server の起動
             await self.mcp_manager.start_resource_monitor_server()
 

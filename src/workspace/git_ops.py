@@ -101,3 +101,36 @@ class GitOperations:
             return
         self._run_git(["commit", "-m", message])
         self._run_git(["push", "origin", branch, "--force"]) # トピックブランチなので強制プッシュで上書き可とする
+
+    def ensure_repo_cloned(self, repo_name: str, token: str, branch_name: Optional[str] = None):
+        """リポジトリを最新化する（クローンまたはフェッチ・リセット）"""
+        if not os.path.exists(os.path.join(self.repo_path, ".git")):
+            logger.info(f"Cloning repository: {repo_name} into {self.repo_path}")
+            os.makedirs(self.repo_path, exist_ok=True)
+            url = f"https://x-access-token:{token}@github.com/{repo_name}.git"
+            # クローンをカレントディレクトリ（repo_path）に対して実行
+            subprocess.run(["git", "clone", url, "."], cwd=self.repo_path, check=True)
+        
+        # 最新情報の取得
+        self._run_git(["fetch", "origin"])
+        
+        # ターゲットブランチの決定（ブランチ指定がない場合はデフォルトブランチなどを想定するが、
+        # ここでは既存のロジックを踏襲し、引数があればそれを使用する）
+        target = branch_name
+        if not target:
+            # デフォルトブランチを取得
+            try:
+                target = self._run_git(["symbolic-ref", "refs/remotes/origin/HEAD"]).split("/")[-1]
+            except Exception:
+                target = "main" # フォールバック
+
+        logger.info(f"Syncing to branch: {target}")
+        
+        try:
+            self._run_git(["checkout", target])
+        except Exception:
+            # ローカルにない場合は origin から作成
+            self._run_git(["checkout", "-b", target, f"origin/{target}"])
+            
+        self._run_git(["reset", "--hard", f"origin/{target}"])
+        self.sync_lfs()
