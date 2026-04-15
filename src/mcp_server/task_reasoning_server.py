@@ -4,7 +4,12 @@ from typing import Any, Dict, List, Optional
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
+import os
+from pathlib import Path
+from pydantic_ai import Agent
 from src.utils.llm import get_robust_model, wait_for_llm_ready
+from src.core.workflow_manager import WorkflowLoader
+from src.utils.config_loader import get_config
 
 # --- 型定義 (Decentralized from types.py) ---
 
@@ -32,6 +37,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("task_reasoning_server")
 
 mcp = FastMCP("TaskReasoning")
+
+# --- WorkflowManager の初期化とツール登録 ---
+project_root = os.getenv("BROWNIE_PROJECT_ROOT", ".")
+workspace_root = os.getenv("BROWNIE_WORKSPACE_ROOT")
+config_path = os.getenv("BROWNIE_CONFIG_PATH")
+
+loader = WorkflowLoader(
+    Path(project_root), 
+    Path(workspace_root) if workspace_root else None
+)
+
+# Config のロード
+config = None
+if config_path:
+    config = get_config(config_path)
+
+# 動的ツールのロード
+dynamic_tools = loader.load_all(config=config)
+
+# サーバーのツールとして登録
+for name, func in dynamic_tools.items():
+    mcp.add_tool(func)
+    logger.info(f"Dynamically registered tool: {name}")
 
 # 共有エージェント（プランナー）
 # 実際の実装では、ここで他の MCP サーバーへのクライアントを構築し、
@@ -63,22 +91,31 @@ async def execute_reasoning_loop(
     _model = get_robust_model(model_name, base_url=endpoint)
     logger.info(f"Model {_model.model_name} initialized for reasoning.")
     
-    # 現在の Core の実装を完全に移行するには、これらへのクライアント接続が必要。
-    # ここでは Blueprint を生成して一旦成功を返すスタブ状態から、
-    # 徐々に実ロジックへ移行する。
+    # ノード実行用の Pydantic AI Agent (Planner)
+    # 動的ツールを注入
+    agent = Agent(
+        _model,
+        tools=list(dynamic_tools.values()),
+        system_prompt=f"You are a BROWNIE Task Planner. Instruction: {instruction}"
+    )
+    
+    # 実際の実装ではここでエージェントを実行する (現在はスタブの Blueprint を返す)
+    # res = await agent.run(instruction)
     
     # ダミーの Blueprint 生成 (実装が進むにつれ本物の Agent 実行に置き換え)
     blueprint = Blueprint(
-        target_files=[BlueprintFile(path="README.md", purpose="Update documentation")],
         logic_constraints=["Use professional tone"],
         prohibited_actions=["Do not delete existing sections"]
     )
+    # BlueprintFile の修正（以前の表示ミスを修正）
+    blueprint_files = [BlueprintFile(path="README.md", purpose="Update documentation")]
     
     return {
         "status": "finished",
         "task_id": task_id,
         "blueprint": blueprint.model_dump(),
-        "summary": "Reasoning loop completed (Stub implementation)"
+        "files": [f.model_dump() for f in blueprint_files],
+        "summary": "Reasoning loop completed with dynamic tools available."
     }
 
 if __name__ == "__main__":

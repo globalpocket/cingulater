@@ -312,6 +312,8 @@ class MCPServerManager:
         logger.info(f"Starting {server_name} MCP Server ({module_path})...")
         env = {
             **os.environ,
+            "BROWNIE_PROJECT_ROOT": self.project_root,
+            "BROWNIE_WORKSPACE_ROOT": self._repo_path or "",
             "PYTHONPATH": "."
         }
         transport = StdioTransport(
@@ -336,6 +338,7 @@ class MCPServerManager:
         self.worker_controller_client = await self._start_server("src/mcp_server/worker_controller_server.py")
 
     async def start_task_reasoning_server(self):
+        # 共通の初期化が完了していることを確認
         self.task_reasoning_client = await self._start_server("src/mcp_server/task_reasoning_server.py")
 
     async def provision_servers(self, server_names: List[str]):

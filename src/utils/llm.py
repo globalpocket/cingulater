@@ -6,7 +6,8 @@ import time
 from typing import Optional
 
 import httpx
-from pydantic_ai.models.openai import OpenAIModel, OpenAIProvider
+from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.providers.openai import OpenAIProvider
 
 logger = logging.getLogger("brownie.llm_utils")
 

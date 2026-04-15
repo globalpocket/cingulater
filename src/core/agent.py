@@ -1,8 +1,10 @@
 import logging
 from typing import Any, Dict, List, Optional, Union
+from pathlib import Path
 
 from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager, WorkspaceContext
+from src.core.workflow_manager import WorkflowLoader
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +155,13 @@ class CoderAgent:
                  workspace_context: Optional[WorkspaceContext] = None):
         self.deps = AgentDeps(config, sandbox, gh_client, mcp_manager, workspace_context)
         self.config = config
+        
+        # WorkflowManager の初期化
+        project_root = Path(mcp_manager.project_root)
+        workspace_root = Path(workspace_context.repo_path) if workspace_context else None
+        self.workflow_loader = WorkflowLoader(project_root, workspace_root)
+        # 動的ツールのロード (MCPツールとの重複チェックはサーバー側と二重になるが同期のため実行)
+        self.workflow_loader.load_all(config=config)
 
     async def run(self, task_id: str, repo_name: str, issue_number: int, **kwargs) -> Union[bool, str]:
         """TaskReasoning MCP を介して推論ループを実行"""
