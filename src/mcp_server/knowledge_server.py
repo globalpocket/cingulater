@@ -64,7 +64,7 @@ def _get_memory():
     if _memory is not None:
         return _memory
 
-    from src.memory.vector_db import MemoryManager
+    from src.mcp_server.memory_server import MemoryManager
     _memory = MemoryManager(_memory_path)
     return _memory
 

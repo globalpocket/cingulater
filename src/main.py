@@ -16,7 +16,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from src.core.orchestrator import Orchestrator  # noqa: E402
 from src.core.agent import CoderAgent  # noqa: E402
 from src.core.sandbox_manager import SandboxManager  # noqa: E402
-from src.version import get_build_id  # noqa: E402
+from src.utils.config_loader import get_build_id  # noqa: E402
 
 # 1. ログ設定
 from logging.handlers import RotatingFileHandler  # noqa: E402

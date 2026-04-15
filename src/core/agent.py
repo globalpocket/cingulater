@@ -8,8 +8,126 @@ from pydantic_ai.ext.langchain import LangChainToolset
 from src.core.types import Blueprint, BlueprintFile
 
 from src.core.sandbox_manager import SandboxManager, WorkspaceContext
-from src.version import get_footer
+from src.utils.config_loader import get_footer
 from src.llm.robust_model import get_robust_model, wait_for_llm_ready
+from src.core.mcp_server_manager import MCPServerManager
+
+class GitHubRateLimitException(Exception):
+    """GitHubのレートリミットに達したことを示す例外"""
+    def __init__(self, message: str, reset_at: float):
+        super().__init__(message)
+        self.reset_at = reset_at
+
+class GitHubClientWrapper:
+    """
+    GitHub 操作を MCP サーバーに委任するブリッジ。
+    直接の API 呼び出し (httpx, PyGithub) を排除する。
+    """
+    def __init__(self, token: str, mcp_manager: MCPServerManager):
+        self._token = token
+        self.mcp_manager = mcp_manager
+        self._my_username: Optional[str] = None
+
+    async def get_my_username_async(self) -> str:
+        """認証されたユーザーのユーザー名を取得する"""
+        if self._my_username:
+            return self._my_username
+        
+        client = self.mcp_manager.github_sdk_client
+        if not client:
+            return "unknown"
+            
+        try:
+            res = await client.call_tool("get_me")
+            if isinstance(res, dict):
+                self._my_username = res.get("login", "unknown")
+            else:
+                import json
+                try:
+                    data = json.loads(res) if isinstance(res, str) else {}
+                    self._my_username = data.get("login", "unknown")
+                except:
+                    self._my_username = str(res)
+        except Exception as e:
+            logger.error(f"Failed to get username via MCP: {e}")
+            return "unknown"
+        return self._my_username
+
+    async def get_all_accessible_repositories(self) -> List[str]:
+        client = self.mcp_manager.github_sdk_client
+        if not client: return []
+        try:
+            res = await client.call_tool("search_repositories", query="user:@me")
+            return [repo["full_name"] for repo in res.get("repositories", [])]
+        except Exception as e:
+            logger.error(f"Failed to list repositories via MCP: {e}")
+            return []
+
+    async def post_comment(self, repo_name: str, issue_number: int, body: str):
+        client = self.mcp_manager.github_sdk_client
+        if not client: return
+        owner, repo = repo_name.split("/")
+        try:
+            await client.call_tool("add_issue_comment", owner=owner, repo=repo, issue_number=issue_number, body=body)
+        except Exception as e:
+            logger.error(f"Failed to post comment via MCP: {e}")
+
+    async def create_pull_request(self, repo_name: str, title: str, body: str, head: str, base: str):
+        client = self.mcp_manager.github_sdk_client
+        if not client: return None
+        owner, repo = repo_name.split("/")
+        try:
+            return await client.call_tool("create_pull_request", owner=owner, repo=repo, title=title, head=head, base=base, body=body)
+        except Exception as e:
+            logger.error(f"Failed to create PR via MCP: {e}")
+            return None
+
+    async def get_mentions_to_process(self, repo_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        client = self.mcp_manager.github_notifications_client
+        if not client: return []
+        try:
+            notifications = await client.call_tool("list-notifications")
+            if not notifications: return []
+            results = []
+            for n in notifications:
+                if n.get("reason") in ["mention", "author", "assignee"]:
+                    results.append({
+                        "repo_name": n["repository"]["full_name"],
+                        "number": int(n["subject"]["url"].split("/")[-1]),
+                        "comment_id": "notification_" + n["id"],
+                        "body": n["subject"]["title"],
+                        "updated_at": n["updated_at"]
+                    })
+            return results
+        except Exception as e:
+            logger.error(f"Failed to get notifications via MCP: {e}")
+            return []
+
+    async def get_issue(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
+        client = self.mcp_manager.github_sdk_client
+        if not client: return {}
+        owner, repo = repo_name.split("/")
+        try:
+            res = await client.call_tool("issue_read", method="get", owner=owner, repo=repo, issue_number=issue_number)
+            return {"title": res.get("title"), "body": res.get("body"), "state": res.get("state")}
+        except Exception as e:
+            logger.error(f"Failed to get issue via MCP: {e}")
+            return {}
+
+    async def ensure_repo_cloned(self, repo_name: str, repo_path: str, branch_name: Optional[str] = None):
+        client = self.mcp_manager.repo_provision_client
+        if not client: return
+        try:
+            await client.call_tool(
+                "provision_repository",
+                repo_name=repo_name,
+                repo_path=repo_path,
+                token=self._token,
+                branch_name=branch_name
+            )
+        except Exception as e:
+            logger.error(f"Failed to provision repository via MCP: {e}")
+            raise
 
 logger = logging.getLogger(__name__)
 

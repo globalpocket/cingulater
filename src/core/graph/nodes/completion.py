@@ -1,8 +1,8 @@
 from typing import Dict, Any
 import os
 from src.core.state_manager import TaskState
-from src.gh_platform.client import GitHubClientWrapper
-from src.version import get_footer
+from src.core.agent import GitHubClientWrapper
+from src.utils.config_loader import get_footer
 
 async def completion_node(state: TaskState) -> Dict[str, Any]:
     """

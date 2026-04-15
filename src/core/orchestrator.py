@@ -11,13 +11,11 @@ import resource
 from datetime import datetime
 
 from src.core.state_manager import StateManager
-from src.core.worker_pool import WorkerPool
 from src.core.agent import TaskAbortedException
-from src.gh_platform.client import GitHubClientWrapper
+from src.core.agent import TaskAbortedException, GitHubClientWrapper
 from src.core.sandbox_manager import SandboxManager
 from src.core.mcp_server_manager import MCPServerManager
-from src.version import get_footer, get_build_id
-from src.utils.config_loader import get_config
+from src.utils.config_loader import get_footer, get_build_id, get_config
 from src.llm.robust_model import wait_for_llm_ready
 
 logger = logging.getLogger(__name__)
@@ -52,7 +50,6 @@ class Orchestrator:
         self._increase_max_files()
 
         # MCP Manager の初期化
-        self.worker_pool = WorkerPool(self.project_root)
         self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
         self.gh_client = GitHubClientWrapper(
             os.getenv("GITHUB_TOKEN", ""), mcp_manager=self.mcp_manager
@@ -117,8 +114,8 @@ class Orchestrator:
         global global_orchestrator
         global_orchestrator = self
 
-        logger.info("Starting WorkerPool...")
-        await self.worker_pool.run()
+        logger.info("Initializing Worker via MCP...")
+        # (Worker Server は start() 内の await self.mcp_manager コンテキストで起動)
 
         logger.info("BOOT SEQUENCE COMPLETED. Entering polling loop.")
 
@@ -134,6 +131,10 @@ class Orchestrator:
 
             # Persistence Server の起動
             persistence_client = await self.mcp_manager.start_persistence_server()
+
+            # Worker Server の起動
+            worker_client = await self.mcp_manager.start_worker_server()
+            await worker_client.call_tool("start_worker")
 
             # 設定ファイルにあるリポジトリを初期登録 (MCP 経由)
             initial_repos = self.config["agent"].get("repositories", [])
@@ -508,9 +509,14 @@ class Orchestrator:
                 {"governance_decision": decision, "status": "InQueue"},
                 as_node="intent_alignment",
             )
-            await self.worker_pool.add_task(
-                task_id, 1, task_id.split("#")[0], int(task_id.split("#")[1])
-            )
+            worker_client = self.mcp_manager.worker_client
+            if worker_client:
+                await worker_client.call_tool(
+                    "enqueue_task",
+                    task_id=task_id,
+                    repo_name=task_id.split("#")[0],
+                    issue_number=int(task_id.split("#")[1])
+                )
 
     async def _queue_task(
         self,
@@ -523,11 +529,14 @@ class Orchestrator:
 
 
         # 重複投入ガード: 同一 Task ID が既にアクティブな場合はスキップ
-        if task_id in self.worker_pool.active_tasks:
-            logger.info(
-                f"Task {task_id} is already ACTIVE. Skipping redundant queueing."
-            )
-            return True  # 既に存在するため「処理中」として扱う
+        worker_client = self.mcp_manager.worker_client
+        if worker_client:
+            worker_status = await worker_client.call_tool("get_worker_status")
+            if task_id in worker_status.get("active_tasks", []):
+                logger.info(
+                    f"Task {task_id} is already ACTIVE in Worker. Skipping redundant queueing."
+                )
+                return True
 
         # 資源の安全性を確認 (Resource Guardian MCP)
         client = self.mcp_manager.resource_monitor_client
@@ -637,9 +646,17 @@ class Orchestrator:
             await self.state_manager.update_state(task_id, initial_values)
             payload_to_send = initial_values
 
-        return await self.worker_pool.add_task(
-            task_id, 1, repo_name, issue_number, payload=payload_to_send
-        )
+        worker_client = self.mcp_manager.worker_client
+        if worker_client:
+            await worker_client.call_tool(
+                "enqueue_task",
+                task_id=task_id,
+                repo_name=repo_name,
+                issue_number=issue_number,
+                payload=payload_to_send
+            )
+            return True
+        return False
 
     async def _execute_task(
         self, task_id: str, repo_name: str, issue_number: int, payload: dict = None
