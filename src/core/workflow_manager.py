@@ -191,6 +191,14 @@ class WorkflowLoader:
 
         return self.registry.get_tool_dict()
 
+    def reload(self, mcp_tool_names: List[str] = None, config: Optional[Dict[str, Any]] = None):
+        """
+        レジストリをクリアしてワークフローを再読み込みします。
+        """
+        logger.info("Reloading workflows and refreshing registry...")
+        self.registry = WorkflowRegistry(self.project_root, self.workspace_root)
+        return self.load_all(mcp_tool_names=mcp_tool_names, config=config)
+
     def _scan_dir(self, directory: Path, scope: str, pattern: str, config: Optional[Dict[str, Any]] = None):
         if not directory.exists() or not directory.is_dir():
             return

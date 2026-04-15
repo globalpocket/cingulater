@@ -50,6 +50,14 @@ loader = WorkflowLoader(project_root)
 workflow_registry = loader.load_all()
 
 @mcp.tool()
+async def reload_workflows() -> str:
+    """登録されている動的ワークフローを再読み込みし、最新の状態に更新します。"""
+    global workflow_registry
+    workflow_registry = loader.reload()
+    logger.info(f"Workflows reloaded. Current count: {len(workflow_registry)}")
+    return f"Workflows reloaded. {len(workflow_registry)} workflows found."
+
+@mcp.tool()
 async def interpret_intent(
     instruction: str, model_name: str, endpoint: str
 ) -> Dict[str, Any]:

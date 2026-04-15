@@ -23,8 +23,10 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
 
 import os
 import sys
-
 import logging
+import yaml as pyyaml
+from typing import List, Dict, Any, Optional
+from pathlib import Path
 
 from fastmcp import FastMCP
 
@@ -174,6 +176,61 @@ async def scan_security(path: str = ".") -> str:
     """
     sandbox = _get_sandbox()
     return await sandbox.scan_security(path)
+
+
+# ============================================================
+# MCP Tool: create_dynamic_workflow (Meta-Agent 機能)
+# ============================================================
+@mcp.tool()
+async def create_dynamic_workflow(
+    workflow_name: str,
+    description: str,
+    steps: List[Dict[str, str]],
+    triggers: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """新しい動的ワークフロー（YAML + Markdown）を生成して保存します。
+    BROWNIE が自律的に自身の機能を拡張（メタ・エージェント）するために使用します。
+
+    Args:
+        workflow_name: ワークフローの一意識別子（スネークケース、例: 'code_review'）
+        description: このワークフローが何をするものかの説明
+        steps: 各ステップの定義リスト。各要素は 'node_name', 'prompt_content', 'next' を持つ。
+        triggers: スケジュール実行等のトリガー定義リスト（例: [{'type': 'cron', 'value': '* * * * *'}])
+    """
+    sandbox = _get_sandbox()
+    
+    # 書き出し先ディレクトリ（ワークスペース相対パス）
+    wf_dir_rel = ".brwn/workflows"
+    
+    # 1. ワークフロー YAML の構築
+    nodes_def = {}
+    for step in steps:
+        node_name = step["node_name"]
+        prompt_file_name = f"node_{node_name}.md"
+        nodes_def[node_name] = {
+            "prompt_file": prompt_file_name,
+            "next": step.get("next", "END")
+        }
+        
+        # 2. 各ステップの Markdown プロンプトを書き出し
+        md_content = step.get("prompt_content", "")
+        md_path = f"{wf_dir_rel}/{prompt_file_name}"
+        await sandbox.write_file(md_path, md_content)
+    
+    workflow_def = {
+        "description": description,
+        "triggers": triggers or [],
+        "start_node": steps[0]["node_name"] if steps else "NONE",
+        "nodes": nodes_def
+    }
+    
+    # 3. YAML ファイルの書き出し
+    yaml_content = pyyaml.dump(workflow_def, allow_unicode=True, sort_keys=False)
+    yaml_path = f"{wf_dir_rel}/{workflow_name}.yaml"
+    await sandbox.write_file(yaml_path, yaml_content)
+    
+    logger.info(f"Meta-Agent: Created workflow '{workflow_name}'")
+    return f"Successfully created dynamic workflow: {workflow_name} ({yaml_path})"
 
 
 # ============================================================

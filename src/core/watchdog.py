@@ -42,7 +42,13 @@ class Watchdog:
         self.is_running = True
         
         # --- 追加: ホットリロード用の監視設定 ---
-        self.watch_dirs = [os.path.join(base_dir, "src"), os.path.join(base_dir, "config")]
+        self.watch_dirs = [
+            os.path.join(base_dir, "src"),
+            os.path.join(base_dir, "config"),
+            os.path.join(base_dir, "workflows"),
+            os.path.join(base_dir, ".brwn", "workflows")
+        ]
+        self.p_root = base_dir
         self.file_mtimes = self._get_all_mtimes()
         # ----------------------------------------
 
@@ -74,7 +80,7 @@ class Watchdog:
         for d in self.watch_dirs:
             for root, _, files in os.walk(d):
                 for f in files:
-                    if f.endswith(('.py', '.yaml', '.yml')):
+                    if f.endswith(('.py', '.yaml', '.yml', '.md')):
                         p = os.path.join(root, f)
                         try:
                             mtimes[p] = os.path.getmtime(p)
