@@ -14,7 +14,7 @@ from src.core.state_manager import StateManager
 from src.core.worker_pool import WorkerPool
 from src.core.agent import TaskAbortedException
 from src.gh_platform.client import GitHubClientWrapper
-from src.workspace.sandbox import SandboxManager
+from src.core.sandbox_manager import SandboxManager
 from src.mcp_server.manager import MCPServerManager
 from src.core.persistence import PersistenceManager
 from src.version import get_footer, get_build_id
@@ -496,7 +496,7 @@ class Orchestrator:
         comment_id: Optional[str] = None,
         comment_body: Optional[str] = None,
     ):
-        config = {"configurable": {"thread_id": task_id}}
+
 
         # 重複投入ガード: 同一 Task ID が既にアクティブな場合はスキップ
         if task_id in self.worker_pool.active_tasks:
@@ -729,8 +729,8 @@ class Orchestrator:
                     "### ⚠️ タイムアウトによる中断\n処理時間が制限（10分）を超えたため、安全のために実行を中断しました。特定の処理でループが発生したか、LLM の応答が停止した可能性があります。"
                     + get_footer(),
                 )
-                await workflow_app.aupdate_state(
-                    config, {"status": "Failed"}, as_node="intent_alignment"
+                await self.state_manager.update_state(
+                    task_id, {"status": "Failed"}, as_node="intent_alignment"
                 )
             except TaskAbortedException as tae:
                 logger.warning(f"Task {task_id} aborted by gate: {tae}")

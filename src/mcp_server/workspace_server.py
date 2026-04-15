@@ -23,7 +23,7 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
 
 import os
 import sys
-import json
+
 import logging
 
 from fastmcp import FastMCP
@@ -202,7 +202,7 @@ def _init_from_args():
     repo_path = os.path.realpath(repo_path)
     reference_path = os.path.realpath(reference_path)
 
-    from src.workspace.sandbox import SandboxManager
+    from src.core.sandbox_manager import SandboxManager
     _sandbox = SandboxManager(user_id, group_id)
     _sandbox.set_workspace_root(repo_path)
     _sandbox.set_reference_root(reference_path)

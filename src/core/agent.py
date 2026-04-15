@@ -1,14 +1,11 @@
 import os
 import logging
-import asyncio
-from typing import Dict, Any, List, Optional, Union, Literal
+from typing import Dict, Any, List, Optional, Union
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.ext.langchain import LangChainToolset
 
-from src.workspace.sandbox import SandboxManager
-from src.workspace.context import WorkspaceContext
+from src.core.sandbox_manager import SandboxManager, WorkspaceContext
 from src.version import get_footer
 from src.llm.robust_model import get_robust_model, wait_for_llm_ready
 
@@ -75,9 +72,6 @@ class AgentDeps:
         self._last_open_check = now
 
 # --- Executor エージェント (専門的実行) ---
-
-import os
-os.environ.setdefault("OPENAI_API_KEY", "EMPTY")
 
 executor_agent = Agent(
     # 型定義は行わず、指示に従って Markdown を返す
