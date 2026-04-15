@@ -59,6 +59,7 @@ BROWNIE は以下の統合されたコンポーネントで構成されていま
 - **💾 StateManager**: **LangGraph (SQLite Checkpointer)** を使用した高信頼な状態管理。OS クラッシュ時でもタスクの整合性を維持し、再起動後のリカバリーを可能にします。
 - **🛠️ MCPServerManager**: 推論・知覚・実行を支える **「MCP サーバー群のライフサイクル管理と統合インターフェース」**を担当します。
 - **🔌 MCP Servers**:
+  - **🩺 Resource Monitor Server**: システムのメモリとCPUリソース、およびプロセスの状態を監視し、AI実行の安全性を判断・確保を担います。
   - **📋 Code Planner Server**: 設計担当。Pydantic AI エージェントがタスクを分析し、厳格な設計図 (Blueprint) を生成します。
   - **✍️ Code Writer Server**: 実装担当。Blueprint に基づき、決定論的に高品質なソースコードを生成します。
   - **📖 Knowledge Server**: AST 解析、RAG、シンボル検索を提供し、AI に「深いコード理解」を与えます。
