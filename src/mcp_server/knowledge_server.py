@@ -50,7 +50,7 @@ def _get_tracer():
     if _tracer is not None:
         return _tracer
 
-    from src.workspace.analyzer.flow import FlowTracer
+    from src.core.analyzer.flow import FlowTracer
     db_path = os.path.join(_repo_path, ".brwn", "index.db")
     if not os.path.exists(db_path):
         return None
@@ -65,7 +65,7 @@ def _get_memory():
         return _memory
 
     from src.mcp_server.history_server import HistoryServer
-    _memory = HistoryServer(_memory_path)
+    _memory = HistoryServer()
     return _memory
 
 
