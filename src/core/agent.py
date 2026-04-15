@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.ext.langchain import LangChainToolset
 
+from src.core.types import Blueprint, BlueprintFile
+
 from src.core.sandbox_manager import SandboxManager, WorkspaceContext
 from src.version import get_footer
 from src.llm.robust_model import get_robust_model, wait_for_llm_ready
@@ -15,21 +17,7 @@ class TaskAbortedException(Exception):
     """ユーザーによって Issue がクローズされた場合に投げられる例外"""
     pass
 
-# --- Blueprint 定義 (設計思想: 決定論的な JSON 連携) ---
-
-class BlueprintFile(BaseModel):
-    path: str = Field(..., description="修正または作成対象のファイルパス")
-    purpose: str = Field(..., description="そのファイルに対する変更の目的")
-
-class Blueprint(BaseModel):
-    """
-    Planner から Executor へ渡される厳格な設計図。
-    Vector通信（文脈の垂れ流し）を廃止し、この構造体のみで指示を完結させます。
-    """
-    target_files: List[BlueprintFile] = Field(..., description="操作対象ファイルの一覧")
-    logic_constraints: List[str] = Field(..., description="実装すべきロジックの制約条件")
-    prohibited_actions: List[str] = Field(..., description="禁止事項・変更不可な箇所")
-    context_snippets: Optional[List[Dict[str, str]]] = Field(None, description="参考にするコード片 (file, snippet)")
+# Note: Blueprint と BlueprintFile は src.core.types に移動しました。
 
 # --- エージェントの依存関係 (Deps) 定義 ---
 
@@ -71,100 +59,9 @@ class AgentDeps:
         
         self._last_open_check = now
 
-# --- Executor エージェント (専門的実行) ---
 
-executor_agent = Agent(
-    # 型定義は行わず、指示に従って Markdown を返す
-    'openai:dummy', # 実行時に model が上書きされる
-    deps_type=AgentDeps,
-    system_prompt=(
-        "あなたは高度なソフトウェアエンジニア（Executor）です。\n"
-        "Planner から渡される「Strict Blueprint（厳密な設計図）」は絶対のルールです。\n"
-        "設計図に記載されていない独自の解釈、機能追加、リファクタリングは厳禁です。\n"
-        "回答は実装コード案のみとし、ツール呼び出しは一切行わず、純粋な Markdown で返してください。"
-    )
-)
-
-# --- Planner エージェント ---
-
-planner_agent = Agent(
-    'openai:dummy', # 実行時に model が上書きされる
-    deps_type=AgentDeps,
-    output_type=Union[Blueprint, str], # Blueprint または ユーザーへの回答メッセージ
-)
-
-# --- ツールの移植とバインディング ---
-
-@planner_agent.tool
-async def post_comment(ctx: RunContext[AgentDeps], body: str) -> str:
-    """GitHub の Issue または PR にコメントを投稿します。"""
-    await ctx.deps.ensure_open()
-    await ctx.deps.gh_client.post_comment(
-        ctx.deps.current_repo_name, 
-        ctx.deps.current_issue_number, 
-        body + get_footer()
-    )
-    ctx.deps.last_manual_comment = body
-    return "Successfully posted comment."
-
-@planner_agent.tool
-async def ask_user(ctx: RunContext[AgentDeps], question: str) -> str:
-    """ユーザーに質問や確認を求め、回答が得られるまで処理を待機させます。"""
-    await ctx.deps.ensure_open()
-    ctx.deps.status = "waiting_for_clarification"
-    # LangGraph 側でこのステータスを検知して interrupt する
-    return "Waiting for user clarification."
-
-@planner_agent.tool
-async def finish(ctx: RunContext[AgentDeps], summary: str) -> str:
-    """タスクを正常に完了し、最終回答を投稿して終了します。"""
-    await ctx.deps.ensure_open()
-    ctx.deps.status = "finished"
-    return "Task completed."
-
-@planner_agent.tool
-async def get_agent_context(ctx: RunContext[AgentDeps]) -> str:
-    """エージェントの現在のステータス、カレントディレクトリ、接続されているMCPサーバーの情報を取得します。
-    デバッグや「自分が今どこにいるか」を確認するために使用します。
-    """
-    workspace_root = ctx.deps.workspace_context.root_path if ctx.deps.workspace_context else "Not Set"
-    cwd = os.getcwd()
-    # MCPServerManager からクライアントの状態を確認
-    m = ctx.deps.mcp_manager
-    servers = {
-        "workspace_server": "Connected" if m.workspace_client else "Disconnected",
-        "knowledge_server": "Connected" if m.knowledge_client else "Disconnected",
-        "plugins": list(m.plugin_clients.keys())
-    }
-    return (
-        f"Current Context:\n"
-        f"- Workspace Root: {workspace_root}\n"
-        f"- Current Directory: {cwd}\n"
-        f"- Status: {ctx.deps.status}\n"
-        f"- MCP Servers: {servers}"
-    )
-
-@planner_agent.tool
-async def delegate_to_executor(ctx: RunContext[AgentDeps], blueprint: Blueprint) -> str:
-    """
-    専門家 (Executor) に Blueprint を渡し、具体的なコード実装案の作成を依頼します。
-    """
-    await ctx.deps.ensure_open()
-    logger.info(f"Delegating to Executor with Blueprint for {len(blueprint.target_files)} files.")
-    
-    # Planner と同じ Deps を共有し、モデルのみ Executor 用のものを使用
-    from src.llm.robust_model import get_robust_model
-    executor_model_name = ctx.deps.config['llm']['models']['executor']
-    executor_endpoint = ctx.deps.config['llm']['executor_endpoint']
-    
-    # サーバーの準備完了を待機
-    await wait_for_llm_ready(executor_endpoint)
-    
-    executor_model = get_robust_model(executor_model_name, base_url=executor_endpoint)
-    
-    prompt = f"### STRICT BLUEPRINT ###\n{blueprint.model_dump_json(indent=2)}"
-    result = await executor_agent.run(prompt, deps=ctx.deps, model=executor_model)
-    return result.data
+# NOTE: executor_agent, planner_agent, および delegate_to_executor は 
+# src/mcp_server/code_planner_server.py および code_writer_server.py へ移行されました。
 
 # --- CoderAgent (Facade) ---
 

@@ -35,3 +35,19 @@ class RingiDocument(BaseModel):
     impact_analysis: str = Field(..., description="影響範囲の分析")
     proposed_fix: str = Field(..., description="具体的な修正案")
     risk_assessment: str = Field(..., description="リスク評価")
+
+# --- Blueprint 定義 (設計思想: 決定論的な JSON 連携) ---
+
+class BlueprintFile(BaseModel):
+    path: str = Field(..., description="修正または作成対象のファイルパス")
+    purpose: str = Field(..., description="そのファイルに対する変更の目的")
+
+class Blueprint(BaseModel):
+    """
+    Planner から Executor へ渡される厳格な設計図。
+    Vector通信（文脈の垂れ流し）を廃止し、この構造体のみで指示を完結させます。
+    """
+    target_files: List[BlueprintFile] = Field(..., description="操作対象ファイルの一覧")
+    logic_constraints: List[str] = Field(..., description="実装すべきロジックの制約条件")
+    prohibited_actions: List[str] = Field(..., description="禁止事項・変更不可な箇所")
+    context_snippets: Optional[List[Dict[str, str]]] = Field(None, description="参考にするコード片 (file, snippet)")

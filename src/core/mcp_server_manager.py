@@ -23,6 +23,8 @@ class MCPServerManager:
         # コアサーバークライアント
         self.workspace_client: Optional[Client] = None
         self.knowledge_client: Optional[Client] = None
+        self.planner_client: Optional[Client] = None
+        self.writer_client: Optional[Client] = None
         
         # JIT ロードされるプラグインサーバークライアント
         self.plugin_clients: Dict[str, Client] = {}
@@ -93,6 +95,46 @@ class MCPServerManager:
         logger.info(f"Knowledge MCP Server connected successfully for {repo_name}")
         return client
 
+    async def start_planner_server(self):
+        """Code Planner MCP Server を起動し、クライアントを返す"""
+        logger.info("Starting Code Planner MCP Server...")
+        env = {
+            **os.environ,
+            "PYTHONPATH": "."
+        }
+        transport = StdioTransport(
+            command=sys.executable,
+            args=["-m", "src.mcp_server.code_planner_server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.planner_client = client
+        logger.info("Code Planner MCP Server connected successfully.")
+        return client
+
+    async def start_writer_server(self):
+        """Code Writer MCP Server を起動し、クライアントを返す"""
+        logger.info("Starting Code Writer MCP Server...")
+        env = {
+            **os.environ,
+            "PYTHONPATH": "."
+        }
+        transport = StdioTransport(
+            command=sys.executable,
+            args=["-m", "src.mcp_server.code_writer_server"],
+            env=env,
+            cwd=self.project_root,
+            keep_alive=False
+        )
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self.writer_client = client
+        logger.info("Code Writer MCP Server connected successfully.")
+        return client
+
     async def provision_servers(self, server_names: List[str]):
         """
         要求されたJITロードMCPサーバー群をオンデマンドで起動する。
@@ -159,6 +201,10 @@ class MCPServerManager:
             clients.append(self.workspace_client)
         if self.knowledge_client:
             clients.append(self.knowledge_client)
+        if self.planner_client:
+            clients.append(self.planner_client)
+        if self.writer_client:
+            clients.append(self.writer_client)
             
         clients.extend(self.plugin_clients.values())
         
