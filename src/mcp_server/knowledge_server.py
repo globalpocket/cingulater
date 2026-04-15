@@ -18,11 +18,126 @@ import sys
 import json
 import logging
 import asyncio
-from typing import Optional
-
+from typing import Optional, Dict
 from fastmcp import FastMCP
+import duckdb
+from tree_sitter import Language, Parser
+import tree_sitter_python
+import tree_sitter_javascript
+import tree_sitter_typescript
+import tree_sitter_go
 
 logger = logging.getLogger(__name__)
+
+# --- 内部解析エンジン (FlowTracer) ---
+
+class FlowTracer:
+    """
+    AST 解析とコード構造分析（Flow）を管理するクラス。
+    DuckDB をバックエンドとして使用し、シンボルや関数呼び出しの情報を永続化・クエリする。
+    """
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.conn = duckdb.connect(db_path)
+        self._initialize_schema()
+        self.parsers = self._init_parsers()
+
+    def _initialize_schema(self):
+        """データベーススキーマの初期化"""
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS files (
+                path TEXT PRIMARY KEY,
+                last_scanned TIMESTAMP
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS symbols (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                file_path TEXT,
+                type TEXT, -- 'class', 'func', 'method'
+                start_line INTEGER,
+                end_line INTEGER
+            )
+        """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS calls (
+                caller_name TEXT,
+                callee_name TEXT,
+                file_path TEXT,
+                line INTEGER
+            )
+        """)
+        try:
+            self.conn.execute("CREATE SEQUENCE sym_id_seq")
+        except:
+            pass # すでに存在する場合
+
+    def _init_parsers(self) -> Dict[str, Parser]:
+        """各種言語の Tree-sitter パーサーを初期化"""
+        parsers = {}
+        try:
+            # Python
+            py_lang = Language(tree_sitter_python.language())
+            parsers[".py"] = Parser(py_lang)
+            # JS/TS
+            js_lang = Language(tree_sitter_javascript.language())
+            parsers[".js"] = Parser(js_lang)
+            parsers[".jsx"] = Parser(js_lang)
+            ts_lang = Language(tree_sitter_typescript.language_typescript())
+            parsers[".ts"] = Parser(ts_lang)
+            parsers[".tsx"] = Parser(ts_lang)
+            # Go
+            go_lang = Language(tree_sitter_go.language())
+            parsers[".go"] = Parser(go_lang)
+        except Exception as e:
+            logger.warning(f"Tree-sitter パーサーの初期化に失敗しました: {e}")
+        return parsers
+
+    def scan_file(self, file_path: str, content: str):
+        """ファイルを解析して情報を DuckDB に保存"""
+        ext = os.path.splitext(file_path)[1]
+        parser = self.parsers.get(ext)
+        if not parser:
+            return
+        try:
+            tree = parser.parse(bytes(content, "utf-8"))
+            self.conn.execute("DELETE FROM symbols WHERE file_path = ?", (file_path,))
+            self.conn.execute("DELETE FROM calls WHERE file_path = ?", (file_path,))
+            self._walk_tree(tree.root_node, file_path, content)
+            self.conn.execute("INSERT OR REPLACE INTO files (path, last_scanned) VALUES (?, CURRENT_TIMESTAMP)", (file_path,))
+        except Exception as e:
+            logger.error(f"ファイル解析エラー ({file_path}): {e}")
+
+    def _walk_tree(self, node, file_path: str, content: str):
+        """AST を再帰的にトラバースしてシンボル情報を取得"""
+        node_type = node.type
+        if node_type == "class_definition":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                self._add_symbol(name_node.text.decode("utf-8"), file_path, "class", node.start_point[0], node.end_point[0])
+        elif node_type == "function_definition":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                self._add_symbol(name_node.text.decode("utf-8"), file_path, "func", node.start_point[0], node.end_point[0])
+        elif node_type == "call":
+            func_node = node.child_by_field_name("function")
+            if func_node:
+                callee = func_node.text.decode("utf-8")
+                self.conn.execute("INSERT INTO calls (caller_name, callee_name, file_path, line) VALUES (?, ?, ?, ?)",
+                                 ("global", callee, file_path, node.start_point[0]))
+        for child in node.children:
+            self._walk_tree(child, file_path, content)
+
+    def _add_symbol(self, name: str, file_path: str, stype: str, start: int, end: int):
+        self.conn.execute("""
+            INSERT INTO symbols (id, name, file_path, type, start_line, end_line)
+            VALUES (nextval('sym_id_seq'), ?, ?, ?, ?, ?)
+        """, (name, file_path, stype, start, end))
+
+    def close(self):
+        self.conn.close()
 
 # --- サーバーインスタンスの生成 ---
 mcp = FastMCP("BrownieKnowledge")
@@ -45,12 +160,11 @@ def _validate_path(target: str, base: str) -> str:
 
 
 def _get_tracer():
-    """FlowTracer のレイジー初期化（DuckDB 接続を必要時にのみ確立）"""
+    """FlowTracer のレイジー初期化"""
     global _tracer
     if _tracer is not None:
         return _tracer
 
-    from src.core.analyzer.flow import FlowTracer
     db_path = os.path.join(_repo_path, ".brwn", "index.db")
     if not os.path.exists(db_path):
         return None
@@ -64,7 +178,7 @@ def _get_memory():
     if _memory is not None:
         return _memory
 
-    from src.mcp_server.history_server import HistoryServer
+    from .history_server import HistoryServer
     _memory = HistoryServer()
     return _memory
 

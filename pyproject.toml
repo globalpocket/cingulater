@@ -60,7 +60,7 @@ managed = true
 python-preference = "only-managed"
 
 [tool.pyright]
-include = ["src"]
+include = ["."]
 extraPaths = ["."]
 typeCheckingMode = "basic"
 
