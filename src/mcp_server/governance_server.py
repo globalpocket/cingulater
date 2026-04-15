@@ -1,17 +1,26 @@
 import logging
-import sys
-from typing import Optional
+from typing import Optional, List, Literal
+from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel, Field
 
-from fastmcp import FastMCP
+# --- 型定義 (Core から分散) ---
+
+class RingiDocument(BaseModel):
+    """
+    稟議書 (Phase 4)
+    """
+    summary: str = Field(..., description="発生した事象の概要")
+    impact_analysis: str = Field(..., description="影響範囲の分析")
+    proposed_fix: str = Field(..., description="具体的な修正案")
+    risk_assessment: str = Field(..., description="リスク評価")
+
+# --- サーバー定義 ---
 
 # ロギング設定
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("governance_server")
 
-# FastMCP サーバーの初期化
 mcp = FastMCP("Governance")
-
-# --- ツール定義 ---
 
 @mcp.tool()
 async def generate_ringi_sho(
@@ -52,4 +61,4 @@ async def generate_ringi_sho(
     return report
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run()

@@ -76,6 +76,10 @@ class Orchestrator:
         os.makedirs(self.workspace_base, exist_ok=True)
         logger.info(f"Workspace base directory set to: {self.workspace_base}")
 
+        # グローバルアクセスのための割り当て
+        global global_orchestrator
+        global_orchestrator = self
+
     def _increase_max_files(self):
         """ファイルディスクリプタ（ulimit -n）の制限を拡張する"""
         try:
@@ -124,6 +128,10 @@ class Orchestrator:
             await self.mcp_manager.start_github_sdk_server()
             await self.mcp_manager.start_github_notifications_server()
             await self.mcp_manager.start_repo_provision_server()
+
+            # WorkerController & TaskReasoning サーバーの起動
+            await self.mcp_manager.start_worker_controller_server()
+            await self.mcp_manager.start_task_reasoning_server()
 
             # Resource Monitor Server の起動
             await self.mcp_manager.start_resource_monitor_server()

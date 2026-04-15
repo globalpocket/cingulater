@@ -34,6 +34,8 @@ class MCPServerManager:
         self.worker_client: Optional[Client] = None
         self.intent_interpreter_client: Optional[Client] = None
         self.governance_client: Optional[Client] = None
+        self.worker_controller_client: Optional[Client] = None
+        self.task_reasoning_client: Optional[Client] = None
         
         # JIT ロードされるプラグインサーバークライアント
         self.plugin_clients: Dict[str, Client] = {}
@@ -48,9 +50,9 @@ class MCPServerManager:
         self._repo_name: str = ""
         
         # GitHub / Git 関連クライアント (既設)
-        self.github_sdk_client = None
-        self.github_notifications_client = None
-        self.repo_provision_client = None
+        self.github_sdk_client: Optional[Client] = None
+        self.github_notifications_client: Optional[Client] = None
+        self.repo_provision_client: Optional[Client] = None
     
 
     async def start_workspace_server(self, repo_path: str, reference_path: str, user_id: int, group_id: int):
@@ -301,45 +303,40 @@ class MCPServerManager:
         logger.info("Worker MCP Server connected successfully.")
         return client
 
-    async def start_intent_interpreter_server(self):
-        """Intent Interpreter MCP Server (内製) を起動"""
-        logger.info("Starting Intent Interpreter MCP Server...")
+    async def _start_server(self, script_path: str) -> Client:
+        """指定されたスクリプトパスの MCP サーバーを StdioTransport で起動する内部ヘルパー"""
+        # "src/mcp_server/name.py" -> "src.mcp_server.name"
+        module_path = script_path.replace("/", ".").replace(".py", "")
+        server_name = module_path.split(".")[-1]
+        
+        logger.info(f"Starting {server_name} MCP Server ({module_path})...")
         env = {
             **os.environ,
             "PYTHONPATH": "."
         }
         transport = StdioTransport(
             command=sys.executable,
-            args=["-m", "src.mcp_server.intent_interpreter_server"],
+            args=["-m", module_path],
             env=env,
             cwd=self.project_root,
             keep_alive=False
         )
         client = Client(transport)
         await self._exit_stack.enter_async_context(client)
-        self.intent_interpreter_client = client
-        logger.info("Intent Interpreter MCP Server connected successfully.")
+        logger.info(f"{server_name} MCP Server connected successfully.")
         return client
 
+    async def start_intent_interpreter_server(self):
+        self.intent_interpreter_client = await self._start_server("src/mcp_server/intent_interpreter_server.py")
+
     async def start_governance_server(self):
-        """Governance MCP Server (内製) を起動"""
-        logger.info("Starting Governance MCP Server...")
-        env = {
-            **os.environ,
-            "PYTHONPATH": "."
-        }
-        transport = StdioTransport(
-            command=sys.executable,
-            args=["-m", "src.mcp_server.governance_server"],
-            env=env,
-            cwd=self.project_root,
-            keep_alive=False
-        )
-        client = Client(transport)
-        await self._exit_stack.enter_async_context(client)
-        self.governance_client = client
-        logger.info("Governance MCP Server connected successfully.")
-        return client
+        self.governance_client = await self._start_server("src/mcp_server/governance_server.py")
+
+    async def start_worker_controller_server(self):
+        self.worker_controller_client = await self._start_server("src/mcp_server/worker_controller_server.py")
+
+    async def start_task_reasoning_server(self):
+        self.task_reasoning_client = await self._start_server("src/mcp_server/task_reasoning_server.py")
 
     async def provision_servers(self, server_names: List[str]):
         """

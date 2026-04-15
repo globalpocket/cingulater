@@ -1,23 +1,17 @@
 import logging
+import os
 import sys
-from typing import Any, Dict, List, Literal
-
-from fastmcp import FastMCP
+from typing import Dict, Any, List, Literal
+from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+from src.utils.llm import get_robust_model, wait_for_llm_ready
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-logger = logging.getLogger("intent_interpreter_server")
-
-# FastMCP サーバーの初期化
-mcp = FastMCP("IntentInterpreter")
-
-# --- データモデルの定義 ---
+# --- 型定義 (Core から分散) ---
 
 class IntentDraft(BaseModel):
     """
-    ユーザーの意図を整理した下書き
+    ユーザーの意図を整理した下書き (Phase 0)
     """
     status: Literal["approved", "pending"] = Field(
         description="ユーザーの指示が『承認済み・実行可能』か『まだ確認が必要』か"
@@ -38,7 +32,13 @@ class IntentDraft(BaseModel):
         ),
     )
 
-# --- ツール定義 ---
+# --- サーバー定義 ---
+
+# ロギング設定
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+logger = logging.getLogger("intent_interpreter_server")
+
+mcp = FastMCP("IntentInterpreter")
 
 @mcp.tool()
 async def interpret_intent(
@@ -47,13 +47,13 @@ async def interpret_intent(
     """
     ユーザーの指示を分析し、実行フェーズに進むべきか確認が必要かを判断します。
     """
-    logger.info(f"Interpreting intent for instruction: {instruction[:50]}...")
+    logger.info(f"Interpreting intent: {instruction[:100]}...")
 
-    # PydanticAI Agent の初期化
-    # 外部からモデル名とエンドポイントを受け取ることで柔軟性を確保
-    from src.core.agent import get_robust_model, wait_for_llm_ready
-    
-    await wait_for_llm_ready(endpoint)
+    # LLM の準備を待機
+    ready = await wait_for_llm_ready(endpoint)
+    if not ready:
+        return {"error": "LLM server not ready", "status": "pending"}
+
     model = get_robust_model(model_name, base_url=endpoint)
 
     agent = Agent(
@@ -72,7 +72,7 @@ async def interpret_intent(
             "   - `status` を 'approved' に設定してください。\n\n"
             "2. **【確認が必要 (pending)】**: \n"
             "   - 全く新しい大きなタスクで、まだ方針を合意していない場合。\n"
-            "   - 明らかに矛盾した指示があり、実行すると危険が伴う場合。\n"
+            "   - 指示が極めて曖昧で、何をしていいか分からない場合。\n"
             "   - `status` を 'pending' にし、`draft_comment` に丁寧な確認メッセージを"
             "記述してください。"
         ),
@@ -80,17 +80,16 @@ async def interpret_intent(
 
     try:
         result = await agent.run(instruction)
-        # 辞書形式で返すことで MCP クライアント側で扱いやすくする
         return result.data.model_dump()
     except Exception as e:
         logger.error(f"Intent interpretation failed: {e}")
         return {
             "status": "pending",
             "intent_summary": "Error during analysis",
+            "draft_comment": f"申し訳ありません、意図の解析中にエラーが発生しました: {str(e)}",
             "evaluation_axes": [],
-            "required_mcp_servers": [],
-            "draft_comment": f"解析中にエラーが発生しました: {str(e)}"
+            "required_mcp_servers": []
         }
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    mcp.run()
