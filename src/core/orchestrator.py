@@ -22,6 +22,8 @@ from src.llm.robust_model import wait_for_llm_ready
 
 logger = logging.getLogger(__name__)
 
+global_orchestrator: Optional["Orchestrator"] = None
+
 
 class Orchestrator:
     def __init__(self, config_path: str):
@@ -152,27 +154,27 @@ class Orchestrator:
                             # ワーカープロセスの生存確認と自動復旧
                             await self.worker_pool.check_health()
 
-                        # リソース監視とストール検知（初回のみ起動）
-                        if (
-                            not hasattr(self, "resource_monitor_task")
-                            or self.resource_monitor_task.done()
-                        ):
-                            self.resource_monitor_task = asyncio.create_task(
-                                self._resource_monitor_loop()
-                            )
+                            # リソース監視とストール検知（初回のみ起動）
+                            if (
+                                not hasattr(self, "resource_monitor_task")
+                                or self.resource_monitor_task.done()
+                            ):
+                                self.resource_monitor_task = asyncio.create_task(
+                                    self._resource_monitor_loop()
+                                )
 
-                        await self._poll_mentions()
-                        logger.debug("Polling cycle completed successfully.")
-                        await asyncio.sleep(
-                            self.config["agent"]["polling_interval_sec"]
-                        )
-                    except Exception as e:
-                        logger.error(f"Unexpected error in polling loop: {e}")
-                        await asyncio.sleep(30)
-            except (KeyboardInterrupt, asyncio.CancelledError):
-                logger.info("Orchestrator stopping...")
-            finally:
-                await self.shutdown()
+                            await self._poll_mentions()
+                            logger.debug("Polling cycle completed successfully.")
+                            await asyncio.sleep(
+                                self.config["agent"]["polling_interval_sec"]
+                            )
+                        except Exception as e:
+                            logger.error(f"Unexpected error in polling loop: {e}")
+                            await asyncio.sleep(30)
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    logger.info("Orchestrator stopping...")
+                finally:
+                    await self.shutdown()
 
     async def shutdown(self):
         """オーケストレーターのクリーンアップ"""

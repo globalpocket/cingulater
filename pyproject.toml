@@ -58,3 +58,17 @@ build-backend = "setuptools.build_meta"
 [tool.uv]
 managed = true
 python-preference = "only-managed"
+
+[tool.pyright]
+include = ["src"]
+extraPaths = ["."]
+typeCheckingMode = "basic"
+
+[tool.ruff]
+src = ["src", "."]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N"]
+ignore = ["E402"] # main.py での PATH 追加後のインポートを許容
