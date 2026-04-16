@@ -23,17 +23,16 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
 
 import os
 import sys
-import logging
+from loguru import logger
 import yaml as pyyaml
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
-from fastmcp import FastMCP
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging("workspace_server")
+mcp = create_mcp_server("BrownieWorkspace")
 
-# --- サーバーインスタンスの生成 ---
-mcp = FastMCP("BrownieWorkspace")
 
 # --- グローバル状態（起動時に初期化） ---
 _sandbox = None
@@ -50,6 +49,7 @@ def _get_sandbox():
 # MCP Tool: set_workspace_root
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def set_workspace_root(path: str) -> str:
     """ワークスペースのルートディレクトリを動的に変更します。
 
@@ -65,6 +65,7 @@ async def set_workspace_root(path: str) -> str:
 # MCP Tool: list_files
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def list_files(path: str = ".", max_depth: int = 1) -> str:
     """指定パスのファイル一覧を表示します。
     大規模リポジトリでは max_depth=1 で階層的探索 (Discovery) を行います。
@@ -81,6 +82,7 @@ async def list_files(path: str = ".", max_depth: int = 1) -> str:
 # MCP Tool: read_file
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def read_file(path: str) -> str:
     """指定したファイルの内容を読み取ります。
 
@@ -95,6 +97,7 @@ async def read_file(path: str) -> str:
 # MCP Tool: write_file
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def write_file(path: str, content: str) -> str:
     """ファイルを新規作成または上書きします。
     セキュリティ: workspace ディレクトリ内への書き込みのみ許可されます。
@@ -111,6 +114,7 @@ async def write_file(path: str, content: str) -> str:
 # MCP Tool: run_command
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def run_command(command: str) -> str:
     """Docker コンテナ内でシェルコマンドを実行します。
     セキュリティ: 非Rootユーザーで実行され、ワークスペースのみマウントされます。
@@ -127,6 +131,7 @@ async def run_command(command: str) -> str:
 # MCP Tool: run_semgrep
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def run_semgrep() -> str:
     """Semgrep による静的解析を実行します。
     Docker コンテナ内で実行され、結果を JSON 形式で返します。
@@ -140,6 +145,7 @@ async def run_semgrep() -> str:
 # MCP Tool: lint_code
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def lint_code(path: str = ".") -> str:
     """Semgrep やリンターを使用してコード品質を診断します。
 
@@ -154,6 +160,7 @@ async def lint_code(path: str = ".") -> str:
 # MCP Tool: format_code
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def format_code(path: str = ".") -> str:
     """Black や Prettier 等でコードをフォーマットします。
 
@@ -168,6 +175,7 @@ async def format_code(path: str = ".") -> str:
 # MCP Tool: scan_security
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def scan_security(path: str = ".") -> str:
     """Bandit 等によるセキュリティ脆弱性をスキャンします。
 
@@ -182,6 +190,7 @@ async def scan_security(path: str = ".") -> str:
 # MCP Tool: create_dynamic_workflow (Meta-Agent 機能)
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def create_dynamic_workflow(
     workflow_name: str,
     description: str,
@@ -268,6 +277,5 @@ def _init_from_args():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     _init_from_args()
     mcp.run(transport="stdio")

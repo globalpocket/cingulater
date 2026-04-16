@@ -1,6 +1,6 @@
 import asyncio
 import json
-import logging
+from loguru import logger
 import os
 import resource
 import subprocess
@@ -11,34 +11,20 @@ from typing import Optional
 import httpx
 import yaml
 
-from src.core.agent import GitHubClientWrapper, TaskAbortedException, wait_for_llm_ready
+from src.core.agent import GitHubClientWrapper, TaskAbortedException
+from src.core.config import get_settings
 from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager
 from src.core.state_manager import StateManager
-from src.utils.config_loader import get_build_id, get_config, get_footer
+from src.utils.llm import wait_for_llm_ready
 
-logger = logging.getLogger(__name__)
 
 global_orchestrator: Optional["Orchestrator"] = None
 
 
 class Orchestrator:
     def __init__(self, config_path: str):
-        self.config = get_config(config_path)
-
-        # magicvalues.yaml による例外的な上書き (設計書 11.2)
-        magic_path = os.path.join(
-            os.path.dirname(config_path or ""), "magicvalues.yaml"
-        )
-        if os.path.exists(magic_path):
-            try:
-                with open(magic_path, "r") as f:
-                    magic_config = yaml.safe_load(f)
-                if magic_config:
-                    self._deep_merge(magic_config, self.config)
-                    logger.info(f"Magic values loaded and merged from {magic_path}")
-            except Exception as e:
-                logger.warning(f"Failed to load magicvalues.yaml: {e}")
+        self.settings = get_settings(config_path)
 
         # リソースの初期化 (設計書 3.2)
         self.project_root = os.path.dirname(
@@ -54,8 +40,8 @@ class Orchestrator:
             os.getenv("GITHUB_TOKEN", ""), mcp_manager=self.mcp_manager
         )
         self.sandbox = SandboxManager(
-            self.config["workspace"]["sandbox_user_id"],
-            self.config["workspace"]["sandbox_group_id"],
+            self.settings.workspace.sandbox_user_id,
+            self.settings.workspace.sandbox_group_id,
         )
 
         # State Manager の初期化
@@ -70,9 +56,7 @@ class Orchestrator:
         self.is_running = False
 
         # ワークスペースのベースパスを解決 (設計書 8.1 参照)
-        ws_config = self.config.get("workspace", {})
-        base_dir = ws_config.get("base_dir", "~/.local/share/brownie/workspaces")
-        self.workspace_base = os.path.expanduser(base_dir)
+        self.workspace_base = os.path.expanduser(self.settings.workspace.base_dir)
         os.makedirs(self.workspace_base, exist_ok=True)
         logger.info(f"Workspace base directory set to: {self.workspace_base}")
 
@@ -95,21 +79,10 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Failed to increase file limits: {e}")
 
-    def _deep_merge(self, source, destination):
-        """辞書を再帰的にマージする"""
-        for key, value in source.items():
-            if (
-                isinstance(value, dict)
-                and key in destination
-                and isinstance(destination[key], dict)
-            ):
-                self._deep_merge(value, destination[key])
-            else:
-                destination[key] = value
 
     async def start(self):
         """オーケストレーター（メンション監視プロセス）の起動"""
-        logger.info(f"Orchestrator starting. Build ID: {get_build_id()}")
+        logger.info(f"Orchestrator starting. Build ID: {self.settings.build_id}")
 
         checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -148,7 +121,7 @@ class Orchestrator:
             await self.mcp_manager.start_governance_server()
 
             # 設定ファイルにあるリポジトリを初期登録 (MCP 経由)
-            initial_repos = self.config["agent"].get("repositories", [])
+            initial_repos = self.settings.agent.repositories
             for repo in initial_repos:
                 await persistence_client.call_tool("upsert_repository", repo_name=repo)
 
@@ -178,7 +151,7 @@ class Orchestrator:
                             await self._poll_mentions()
                             logger.debug("Polling cycle completed successfully.")
                             await asyncio.sleep(
-                                self.config["agent"]["polling_interval_sec"]
+                                self.settings.agent.polling_interval_sec
                             )
                         except Exception as e:
                             logger.error(f"Unexpected error in polling loop: {e}")
@@ -274,8 +247,8 @@ class Orchestrator:
         """LLM サーバーの死活監視と自動起動"""
         async with self._llm_startup_lock:
             models_config = [
-                ("planner", self.config["llm"]["planner_endpoint"], 8080),
-                ("executor", self.config["llm"]["executor_endpoint"], 8081),
+                ("planner", self.settings.llm.planner_endpoint, 8080),
+                ("executor", self.settings.llm.executor_endpoint, 8081),
             ]
 
             for role, endpoint, port in models_config:
@@ -286,7 +259,7 @@ class Orchestrator:
                 except Exception:
                     pass
 
-                model_name = self.config["llm"]["models"].get(role)
+                model_name = self.settings.llm.models.get(role)
                 logger.info(
                     f"LLM Server ({role}) down on port {port}. Restarting MLX: {model_name}"
                 )
@@ -333,9 +306,7 @@ class Orchestrator:
 
                 # MLX サーバーの再起動
                 env = os.environ.copy()
-                model_dir = self.config.get("llm", {}).get(
-                    "model_dir", "~/.local/share/brownie/models"
-                )
+                model_dir = self.settings.llm.model_dir
                 env["HF_HOME"] = os.path.expanduser(model_dir)
 
                 venv_python = os.path.join(self.project_root, ".venv", "bin", "python")
@@ -386,7 +357,7 @@ class Orchestrator:
                 )
 
                 # サーバーが準備完了になるまで待機
-                timeout_sec = self.config.get("llm", {}).get("timeout_sec", 180)
+                timeout_sec = self.settings.llm.timeout_sec
                 logger.info(
                     f"Waiting for MLX Server ({role}) to be ready on port {port} (Max {timeout_sec}s)..."
                 )
@@ -418,9 +389,9 @@ class Orchestrator:
             "Worker is waiting for LLM servers (planner & executor) to be ready..."
         )
 
-        planner_ready = await wait_for_llm_ready(self.config["llm"]["planner_endpoint"])
+        planner_ready = await wait_for_llm_ready(self.settings.llm.planner_endpoint)
         executor_ready = await wait_for_llm_ready(
-            self.config["llm"]["executor_endpoint"]
+            self.settings.llm.executor_endpoint
         )
 
         if planner_ready and executor_ready:
@@ -434,7 +405,7 @@ class Orchestrator:
     async def _poll_mentions(self):
         """メンション取得とキュー投入"""
         try:
-            exclude_list = self.config["agent"].get("exclude_repositories", [])
+            exclude_list = self.settings.agent.exclude_repositories
             all_mentions = await self.gh_client.get_mentions_to_process()
 
             # 1. メンションを Task ID (Issue) ごとに整理し、最新のもののみを残す (デデュープ)
@@ -722,7 +693,7 @@ class Orchestrator:
                                         repo_name,
                                         issue_number,
                                         f"### 🔍 意図の確認と提案\n\n{draft}"
-                                        + get_footer(),
+                                        + self.settings.footer,
                                     )
                                     await self.state_manager.update_state(
                                         task_id,
@@ -753,7 +724,7 @@ class Orchestrator:
                     await self.gh_client.post_comment(
                         repo_name,
                         issue_number,
-                        f"### 🛠 実行計画（承認待ち）\n\n{plan}" + get_footer(),
+                        f"### 🛠 実行計画（承認待ち）\n\n{plan}" + self.settings.footer,
                     )
                     await self.state_manager.update_state(
                         task_id,
@@ -768,7 +739,7 @@ class Orchestrator:
                     await self.gh_client.post_comment(
                         repo_name,
                         issue_number,
-                        f"### ✅ 完了報告\n\n{summary}" + get_footer(),
+                        f"### ✅ 完了報告\n\n{summary}" + self.settings.footer,
                     )
                     await self.state_manager.update_state(
                         task_id,
@@ -781,7 +752,7 @@ class Orchestrator:
                     repo_name,
                     issue_number,
                     "### ⚠️ タイムアウトによる中断\n処理時間が制限（10分）を超えたため、安全のために実行を中断しました。特定の処理でループが発生したか、LLM の応答が停止した可能性があります。"
-                    + get_footer(),
+                    + self.settings.footer,
                 )
                 await self.state_manager.update_state(
                     task_id, {"status": "Failed"}, as_node="intent_alignment"

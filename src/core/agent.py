@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
 
@@ -6,7 +6,6 @@ from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager, WorkspaceContext
 from src.core.workflow_manager import WorkflowLoader
 
-logger = logging.getLogger(__name__)
 
 class GitHubRateLimitException(Exception):
     """GitHubのレートリミットに達したことを示す例外"""

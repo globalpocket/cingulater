@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import os
 import traceback
 
-mcp = FastMCP("trace_analyzer")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("trace_analyzer")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def analyze_stack_trace(trace_text: str) -> str:
     """提供されたスタックトレースやログテキストをパースし、エラーの根本原因や関連ファイルを構造化して返します。"""
     try:

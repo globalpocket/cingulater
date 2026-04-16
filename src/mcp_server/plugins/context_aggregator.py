@@ -1,15 +1,14 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import subprocess
 import os
-import logging
 from typing import List, Optional
 
 # Logger settings
-logger = logging.getLogger(__name__)
-
-mcp = FastMCP("context_aggregator")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("context_aggregator")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def run_repomix_discovery(repo_path: str, exclude_patterns: Optional[List[str]] = None) -> str:
     """Repomixを使用してリポジトリのコンテキストを1つのMarkdownファイルに集約します。
     大規模なファイルや不要なディレクトリを除外して、LLMに最適なコンテキストを生成します。

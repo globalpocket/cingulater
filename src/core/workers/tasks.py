@@ -1,6 +1,6 @@
 import asyncio
 import json
-import logging
+from loguru import logger
 import os
 import sys
 import time
@@ -8,12 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
-# Environment setup
-load_dotenv()
-sys.path.insert(0, os.getcwd())
-
+from src.core.config import get_settings
 from src.core.trigger_manager import WorkflowTriggerManager
 from src.core.workers.pool import huey
 from src.core.workflow_manager import WorkflowLoader
@@ -67,12 +62,13 @@ _orchestrator = None
 def get_orchestrator():
     global _orchestrator
     if _orchestrator is None:
-        config_path = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
+        # get_settings() は内部で BROWNIE_CONFIG を参照する
+        settings = get_settings()
         # トークンチェックも行う
         if not os.getenv("GITHUB_TOKEN"):
              logger.error("FATAL: GITHUB_TOKEN not found in worker process.")
         from src.core.orchestrator import Orchestrator
-        _orchestrator = Orchestrator(config_path)
+        _orchestrator = Orchestrator(os.getenv("BROWNIE_CONFIG", "config/config.yaml"))
     return _orchestrator
 
 @huey.task(retries=0)
@@ -142,7 +138,7 @@ def execute_workflow_task(workflow_name: str, input_data: Any = None):
         # ワークフローローダーの初期化
         loader = WorkflowLoader(Path(orch.project_root))
         # ワークスペースがあればそれも考慮する (現状は Core 優先)
-        tools = loader.load_all(config=orch.config)
+        tools = loader.load_all()
         
         if workflow_name not in tools:
             logger.error(f"Workflow '{workflow_name}' not found by loader.")

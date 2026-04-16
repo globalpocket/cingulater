@@ -1,11 +1,11 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import httpx
-import logging
 
-logger = logging.getLogger(__name__)
-mcp = FastMCP("web_fetch")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("web_fetch")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def fetch_web_content(url: str) -> str:
     """
     指定されたURLのWebページを取得し、その内容（HTML文字列）を返します。

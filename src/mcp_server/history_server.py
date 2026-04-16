@@ -1,17 +1,15 @@
 import chromadb
-import logging
+from loguru import logger
 import sys
 import os
 import time
 from typing import List, Dict, Any, Optional
 from fastmcp import FastMCP
 
-# ロギングの設定
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-logger = logging.getLogger("history_server")
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
-# FastMCP サーバーの初期化
-mcp = FastMCP("History Server")
+logger = setup_logging("history_server")
+mcp = create_mcp_server("History Server")
 
 class HistoryServer:
     """Vector DB (ChromaDB) へのアクセスを管理するクラス"""
@@ -88,6 +86,7 @@ def get_service():
     return _service
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def save_experience(
     repo_name: str, 
     issue_id: int, 
@@ -97,29 +96,21 @@ async def save_experience(
     commit_hash: str
 ) -> str:
     """成功体験をベクトルDBに保存します。"""
-    try:
-        doc_id = get_service().save_experience(repo_name, issue_id, scope, task_type, content, commit_hash)
-        return f"Saved experience with ID: {doc_id}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    doc_id = get_service().save_experience(repo_name, issue_id, scope, task_type, content, commit_hash)
+    return f"Saved experience with ID: {doc_id}"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def search_memories(query: str, repo_name: str, limit: int = 5) -> List[Dict[str, Any]]:
     """関連する過去の経験を検索します。"""
-    try:
-        return get_service().search_memory(query, repo_name, limit)
-    except Exception as e:
-        logger.error(f"Search failed: {e}")
-        return []
+    return get_service().search_memory(query, repo_name, limit)
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def invalidate_memories(repo_name: str, file_path_pattern: str) -> str:
     """指定されたパターンの古い記憶を無効化（削除）します。"""
-    try:
-        get_service().invalidate_index(repo_name, file_path_pattern)
-        return f"Invalidated memories for {file_path_pattern}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    get_service().invalidate_index(repo_name, file_path_pattern)
+    return f"Invalidated memories for {file_path_pattern}"
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

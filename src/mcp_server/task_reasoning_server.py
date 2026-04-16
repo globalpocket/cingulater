@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 import os
 from pathlib import Path
 from pydantic_ai import Agent
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 from src.utils.llm import get_robust_model, wait_for_llm_ready
 from src.core.workflow_manager import WorkflowLoader
 from src.utils.config_loader import get_config
@@ -33,10 +34,8 @@ class Blueprint(BaseModel):
 
 # --- サーバー定義 ---
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("task_reasoning_server")
-
-mcp = FastMCP("TaskReasoning")
+logger = setup_logging("task_reasoning_server")
+mcp = create_mcp_server("TaskReasoning")
 
 # --- WorkflowManager の初期化とツール登録 ---
 project_root = os.getenv("BROWNIE_PROJECT_ROOT", ".")
@@ -67,6 +66,7 @@ for name, func in dynamic_tools.items():
 # ここでは一旦、Core の CoderAgent 相当の構造を模倣する。
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def execute_reasoning_loop(
     instruction: str,
     task_id: str,
@@ -119,4 +119,4 @@ async def execute_reasoning_loop(
     }
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="stdio")

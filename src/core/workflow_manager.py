@@ -1,6 +1,6 @@
 import os
 import yaml
-import logging
+from loguru import logger
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Callable, Annotated, TypedDict
@@ -10,7 +10,9 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import HumanMessage, BaseMessage, AIMessage
 from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
+from src.core.config import get_settings
 from src.utils.llm import get_robust_model
 
 logger = logging.getLogger("brownie.workflow_manager")
@@ -31,6 +33,20 @@ class DynamicWorkflowState(TypedDict):
     # results は各ノードの実行結果をマージして保持する
     results: Annotated[Dict[str, Any], merge_results]
 
+class WorkflowNodeDefinition(BaseModel):
+    """個別のワークフローノードの定義"""
+    prompt_file: str
+    next: str
+    model: str = "planner"
+
+class WorkflowDefinition(BaseModel):
+    """ワークフロー全体の定義"""
+    name: str
+    description: Optional[str] = None
+    start_node: str
+    nodes: Dict[str, WorkflowNodeDefinition]
+    triggers: List[str] = Field(default_factory=list)
+
 class WorkflowTool:
     def __init__(
         self,
@@ -38,25 +54,33 @@ class WorkflowTool:
         source_path: Path,
         scope: str,
         file_type: str,
-        description: str = None,
-        triggers: List[str] = None,
+        definition: Optional[WorkflowDefinition] = None,
+        markdown_content: Optional[str] = None,
     ):
         self.name = name
         self.source_path = source_path
         self.scope = scope
         self.file_type = file_type
-        self.description = description or f"Workflow tool loaded from {source_path}"
-        self.triggers = triggers or []
+        self.definition = definition
+        self.markdown_content = markdown_content
+        
+        if definition:
+            self.description = definition.description or f"Workflow tool loaded from {source_path}"
+            self.triggers = definition.triggers
+        else:
+            self.description = f"Markdown tool loaded from {source_path}"
+            self.triggers = []
 
 class WorkflowRegistry:
     """ロードされたワークフローを管理し、実行可能な Callable に変換するクラス"""
 
-    def __init__(self, project_root: Path, workspace_root: Optional[Path] = None):
+    def __init__(self, project_root: Path, workspace_root: Optional[Path] = None, config_path: Optional[str] = None):
         self._tools: Dict[str, WorkflowTool] = {}
         self._callables: Dict[str, Callable] = {}
         self._mcp_tool_names: List[str] = []
         self.project_root = project_root
         self.workspace_root = workspace_root
+        self.settings = get_settings(config_path)
 
     def set_mcp_tools(self, mcp_tool_names: List[str]):
         self._mcp_tool_names = mcp_tool_names
@@ -74,39 +98,33 @@ class WorkflowRegistry:
             return
 
         self._tools[tool.name] = tool
-        self._callables[tool.name] = self._create_callable(tool, content, config=config)
+        self._callables[tool.name] = self._create_callable(tool, content)
         logger.info(f"Registered {tool.file_type} tool '{tool.name}' from {tool.scope} scope.")
 
     def _create_callable(
-        self, tool: WorkflowTool, content: str, config: Optional[Dict[str, Any]] = None
+        self, tool: WorkflowTool, content: str
     ) -> Callable:
 
         async def workflow_runner(**kwargs):
-            planner_model = "gemma-4-26b-it"
-            planner_endpoint = "http://127.0.0.1:8080/v1"
-            if config:
-                planner_model = config["llm"]["models"]["planner"]
-                planner_endpoint = config["llm"]["planner_endpoint"]
+            planner_model = self.settings.llm.models.get("planner", "gemma-4-26b-it")
+            planner_endpoint = self.settings.llm.planner_endpoint
 
             if tool.file_type == "yaml":
-                data = yaml.safe_load(content)
-                nodes_def = data.get("nodes", {})
-                start_node = data.get("start_node")
-
-                if not nodes_def or not start_node:
-                    return f"Invalid workflow YAML: {tool.name}"
+                wf = tool.definition
+                if not wf:
+                    return f"Invalid workflow definition: {tool.name}"
 
                 builder = StateGraph(DynamicWorkflowState)
 
-                for node_name, node_cfg in nodes_def.items():
-                    prompt_file_name = node_cfg.get("prompt_file")
-                    next_node = node_cfg.get("next")
+                for node_name, node_cfg in wf.nodes.items():
+                    prompt_file_name = node_cfg.prompt_file
+                    next_node = node_cfg.next
                     
                     model_name = planner_model
                     endpoint = planner_endpoint
-                    if config and node_cfg.get("model") == "executor":
-                        model_name = config["llm"]["models"]["executor"]
-                        endpoint = config["llm"]["executor_endpoint"]
+                    if node_cfg.model == "executor":
+                        model_name = self.settings.llm.models.get("executor")
+                        endpoint = self.settings.llm.executor_endpoint
 
                     prompt_path = tool.source_path.parent / prompt_file_name
                     
@@ -144,7 +162,7 @@ class WorkflowRegistry:
                     elif next_node:
                         builder.add_edge(node_name, next_node)
 
-                builder.set_entry_point(start_node)
+                builder.set_entry_point(wf.start_node)
                 graph = builder.compile()
 
                 initial_state = {
@@ -158,7 +176,7 @@ class WorkflowRegistry:
 
             else:
                 model = get_robust_model(planner_model, base_url=planner_endpoint)
-                agent = Agent(model, system_prompt=content)
+                agent = Agent(model, system_prompt=tool.markdown_content)
                 res = await agent.run(str(kwargs.get("input_data", "")))
                 return res.output
 
@@ -170,12 +188,12 @@ class WorkflowRegistry:
         return self._callables
 
 class WorkflowLoader:
-    def __init__(self, project_root: Path, workspace_root: Optional[Path] = None):
+    def __init__(self, project_root: Path, workspace_root: Optional[Path] = None, config_path: Optional[str] = None):
         self.project_root = project_root
         self.workspace_root = workspace_root
-        self.registry = WorkflowRegistry(project_root, workspace_root)
+        self.registry = WorkflowRegistry(project_root, workspace_root, config_path=config_path)
 
-    def load_all(self, mcp_tool_names: List[str] = None, config: Optional[Dict[str, Any]] = None):
+    def load_all(self, mcp_tool_names: List[str] = None):
         if mcp_tool_names:
             self.registry.set_mcp_tools(mcp_tool_names)
 
@@ -185,21 +203,21 @@ class WorkflowLoader:
             workspace_path = self.workspace_root / ".brwn" / "workflows"
 
         for pattern in ["**/*.yaml", "**/*.yml", "**/*.md"]:
-            self._scan_dir(core_path, "core", pattern, config=config)
+            self._scan_dir(core_path, "core", pattern)
             if workspace_path:
-                self._scan_dir(workspace_path, "workspace", pattern, config=config)
+                self._scan_dir(workspace_path, "workspace", pattern)
 
         return self.registry.get_tool_dict()
 
-    def reload(self, mcp_tool_names: List[str] = None, config: Optional[Dict[str, Any]] = None):
+    def reload(self, mcp_tool_names: List[str] = None):
         """
         レジストリをクリアしてワークフローを再読み込みします。
         """
         logger.info("Reloading workflows and refreshing registry...")
-        self.registry = WorkflowRegistry(self.project_root, self.workspace_root)
-        return self.load_all(mcp_tool_names=mcp_tool_names, config=config)
+        self.registry = WorkflowRegistry(self.project_root, self.workspace_root, config_path=None) # シングルトンから取得
+        return self.load_all(mcp_tool_names=mcp_tool_names)
 
-    def _scan_dir(self, directory: Path, scope: str, pattern: str, config: Optional[Dict[str, Any]] = None):
+    def _scan_dir(self, directory: Path, scope: str, pattern: str):
         if not directory.exists() or not directory.is_dir():
             return
 
@@ -211,21 +229,25 @@ class WorkflowLoader:
                 description = None
                 triggers = None
                 file_type = "yaml" if file_path.suffix in [".yaml", ".yml"] else "md"
+                definition = None
+                markdown_content = None
 
                 if file_type == "yaml":
                     data = yaml.safe_load(content)
                     if isinstance(data, dict):
-                        description = data.get("description")
-                        triggers = data.get("triggers")
+                        # Pydantic モデルでバリデーション
+                        definition = WorkflowDefinition(**data)
+                else:
+                    markdown_content = content
 
                 tool = WorkflowTool(
                     name=tool_name,
                     source_path=file_path,
                     scope=scope,
                     file_type=file_type,
-                    description=description,
-                    triggers=triggers,
+                    definition=definition,
+                    markdown_content=markdown_content,
                 )
-                self.registry.register_tool(tool, content, config=config)
+                self.registry.register_tool(tool, content)
             except Exception as e:
                 logger.error(f"Failed to load tool from {file_path}: {e}")

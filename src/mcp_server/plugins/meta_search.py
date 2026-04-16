@@ -1,11 +1,13 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import httpx
 import urllib.parse
 from bs4 import BeautifulSoup
 
-mcp = FastMCP("meta_search")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("meta_search")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def search_web(query: str) -> str:
     """DuckDuckGo(HTML版)を使用した簡易Web検索を行います。"""
     try:

@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 import os
 from typing import Any, Dict
 
@@ -7,7 +7,6 @@ from src.core.state_manager import TaskState
 from src.core.workers.tasks import repair_task
 from src.utils.config_loader import get_footer
 
-logger = logging.getLogger(__name__)
 
 async def governance_node(state: TaskState) -> Dict[str, Any]:
     """

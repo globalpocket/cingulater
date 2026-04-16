@@ -1,13 +1,11 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import subprocess
 import os
-import logging
 from typing import List
 
 # Logger settings
-logger = logging.getLogger(__name__)
-
-mcp = FastMCP("wiki_syncer")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("wiki_syncer")
 
 class WikiSyncHelper:
     def __init__(self, repo_path: str):
@@ -28,6 +26,7 @@ class WikiSyncHelper:
             raise Exception(f"Git Error: {e.stderr}")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def setup_wiki_remote(repo_path: str, repo_url: str) -> str:
     """Wiki用のリモート(wiki)を git remote に追加します。
     
@@ -45,6 +44,7 @@ async def setup_wiki_remote(repo_path: str, repo_url: str) -> str:
     return "Wiki remote already exists."
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def sync_docs_to_wiki(repo_path: str, prefix: str = "docs", branch: str = "master") -> str:
     """指定されたディレクトリをWikiリポジトリに同期（subtree push）します。
     

@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 from typing import Optional, List, Literal
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -16,13 +16,13 @@ class RingiDocument(BaseModel):
 
 # --- サーバー定義 ---
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("governance_server")
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
-mcp = FastMCP("Governance")
+logger = setup_logging("governance_server")
+mcp = create_mcp_server("Governance")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def generate_ringi_sho(
     task_id: str,
     status: str,
@@ -61,4 +61,4 @@ async def generate_ringi_sho(
     return report
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="stdio")

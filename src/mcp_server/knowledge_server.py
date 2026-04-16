@@ -13,13 +13,7 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
   - brownie://repo/context: WDCA コンテキスト（プロジェクト概要）
 """
 
-import os
-import sys
-import json
-import logging
-import asyncio
-from typing import Optional, Dict
-from fastmcp import FastMCP
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import duckdb
 from tree_sitter import Language, Parser
 import tree_sitter_python
@@ -27,7 +21,7 @@ import tree_sitter_javascript
 import tree_sitter_typescript
 import tree_sitter_go
 
-logger = logging.getLogger(__name__)
+logger = setup_logging("knowledge_server")
 
 # --- 内部解析エンジン (FlowTracer) ---
 
@@ -140,7 +134,7 @@ class FlowTracer:
         self.conn.close()
 
 # --- サーバーインスタンスの生成 ---
-mcp = FastMCP("BrownieKnowledge")
+mcp = create_mcp_server("BrownieKnowledge")
 
 # --- グローバル状態（起動時に初期化） ---
 _repo_path: str = ""
@@ -187,6 +181,7 @@ def _get_memory():
 # MCP Tool: semantic_search
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def semantic_search(query: str, limit: int = 5) -> str:
     """コードベースからセマンティック検索を実行します。
     過去の実装経験や類似コードスニペットを探索できます。
@@ -229,6 +224,7 @@ def _sync_search_memory(memory, query: str, repo_name: str, limit: int):
 # MCP Tool: get_code_flow
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def get_code_flow(entry_symbol: str, depth: int = 5) -> str:
     """シンボル名（関数名やクラス名）から始まる処理フローを追跡し、
     Mermaid sequenceDiagram 形式で返します。
@@ -250,6 +246,7 @@ async def get_code_flow(entry_symbol: str, depth: int = 5) -> str:
 # MCP Tool: get_repo_summary
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def get_repo_summary() -> str:
     """リポジトリの構造サマリーを返します。
     技術スタック、ファイル数、シンボル数、主要クラス、
@@ -458,8 +455,6 @@ def _init_from_args():
 
     logger.info(f"Knowledge Server initialized: repo={_repo_name}, path={_repo_path}")
 
-
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     _init_from_args()
     mcp.run(transport="stdio")

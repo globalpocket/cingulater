@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import subprocess
 import os
 
-mcp = FastMCP("clone_detector")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("clone_detector")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def detect_clones(directory: str) -> str:
     """ast-grep (sg) を使用して指定されたディレクトリ内のコードの重複（DRY違反）を検出します。"""
     if not os.path.exists(directory):

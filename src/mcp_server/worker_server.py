@@ -1,4 +1,4 @@
-import logging
+from loguru import logger
 import sys
 import os
 import subprocess
@@ -7,12 +7,14 @@ from typing import Optional, Dict, Any, List
 from fastmcp import FastMCP
 from src.core.workers.pool import huey
 
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
+from src.core.workers.pool import huey
+
 # ロギングの設定
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-logger = logging.getLogger("worker_server")
+logger = setup_logging("worker_server")
 
 # FastMCP サーバーの初期化
-mcp = FastMCP("Worker Server")
+mcp = create_mcp_server("Worker Server")
 
 class WorkerService:
     def __init__(self, project_root: str):
@@ -83,30 +85,32 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 _service = WorkerService(PROJECT_ROOT)
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def start_worker() -> str:
     """Worker プロセスを開始します。"""
     return await _service.start_consumer()
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def stop_worker() -> str:
     """Worker プロセスを停止します。"""
     return _service.stop_consumer()
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def enqueue_task(task_id: str, repo_name: str, issue_number: int, payload: Optional[Dict[str, Any]] = None) -> str:
     """タスクをキューに追加します。"""
-    try:
-        h_id = _service.enqueue_task(task_id, repo_name, issue_number, payload=payload)
-        return f"Successfully enqueued with ID: {h_id}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    h_id = _service.enqueue_task(task_id, repo_name, issue_number, payload=payload)
+    return f"Successfully enqueued with ID: {h_id}"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def cancel_task(task_id: str) -> str:
     """指定されたタスクをキャンセルします。"""
     return _service.revoke_task(task_id)
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def get_worker_status() -> Dict[str, Any]:
     """Worker の健康状態とアクティブタスク一覧を取得します。"""
     is_running = _service.consumer_proc is not None and _service.consumer_proc.poll() is None

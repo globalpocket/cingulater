@@ -1,9 +1,11 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import os
 
-mcp = FastMCP("dep_audit")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("dep_audit")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def audit_dependencies() -> str:
     """uv.lock や pyproject.toml を解析してパッケージ競合や脆弱性の懸念点を抽出します。"""
     # 簡易モック: 実際には uv や pip-audit をラップする。

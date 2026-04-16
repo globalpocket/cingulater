@@ -7,21 +7,16 @@ BROWNIE Code Planner MCP Server
 
 import os
 import sys
-import logging
+from loguru import logger
 import asyncio
 from typing import Optional, Union, List, Dict, Any
 
-from fastmcp import FastMCP
-from pydantic import BaseModel, Field
-from pydantic_ai import Agent, RunContext
+from .base_server import create_mcp_server, mcp_tool_errorhandler, override_config_from_argv, setup_logging
 
-from src.core.types import Blueprint, BlueprintFile
-from src.core.agent import get_robust_model, wait_for_llm_ready
-
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 # --- サーバーインスタンスの生成 ---
-mcp = FastMCP("Code Planner")
+mcp = create_mcp_server("Code Planner")
 
 # --- グローバル設定（起動時に初期化） ---
 _config = {
@@ -53,6 +48,7 @@ def _get_agent():
 # MCP Tool: generate_blueprint
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def generate_blueprint(instruction: str, context: Optional[str] = None) -> str:
     """ユーザーの指示とコンテキストから、詳細な実装設計図（Blueprint）を生成します。
 
@@ -71,27 +67,17 @@ async def generate_blueprint(instruction: str, context: Optional[str] = None) ->
     if context:
         prompt += f"\n\nContext:\n{context}"
         
-    try:
-        result = await agent.run(prompt)
-        if isinstance(result.data, Blueprint):
-            return result.data.model_dump_json(indent=2)
-        else:
-            return str(result.data)
-    except Exception as e:
-        logger.error(f"Failed to generate blueprint: {e}")
-        return f"Error: {str(e)}"
+    result = await agent.run(prompt)
+    if isinstance(result.data, Blueprint):
+        return result.data.model_dump_json(indent=2)
+    else:
+        return str(result.data)
 
 # ============================================================
 # サーバー起動エントリーポイント
 # ============================================================
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    
-    # 引数による設定のオーバーライド（オプション）
-    if len(sys.argv) > 1:
-        _config["model_name"] = sys.argv[1]
-    if len(sys.argv) > 2:
-        _config["endpoint"] = sys.argv[2]
+    override_config_from_argv(_config, ["model_name", "endpoint"])
         
     logger.info(f"Code Planner Server initialized: model={_config['model_name']}, endpoint={_config['endpoint']}")
     mcp.run(transport="stdio")

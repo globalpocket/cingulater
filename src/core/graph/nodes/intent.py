@@ -1,9 +1,8 @@
-import logging
+from loguru import logger
 from typing import Any, Dict
 
 from src.utils.config_loader import get_config
 
-logger = logging.getLogger(__name__)
 
 async def intent_alignment_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """

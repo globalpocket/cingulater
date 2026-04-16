@@ -1,13 +1,16 @@
 import docker
-import os
-import yaml
-import logging
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+import asyncio
 import json
-import subprocess
+import logging
+from loguru import logger
+import os
+from src.utils.cmd_helper import run_command
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
-logger = logging.getLogger(__name__)
+from src.core.config import get_settings
+
 
 class WorkspaceContext:
     def __init__(self, root_path: str, reference_path: Optional[str] = None):
@@ -114,19 +117,14 @@ class LinterEngine:
 
     async def scan_semgrep(self, path: str = ".") -> Dict[str, Any]:
         """Semgrep によるセマンティック・スキャンを実行"""
-        # サンドボックス外（ホスト側）での実行を想定しつつ、パスを調整
         target_path = os.path.join(self.repo_root, path)
+        cmd = ["semgrep", "scan", "--config=auto", "--json", "."]
+        
+        result = run_command(cmd, cwd=target_path)
+        if result.exit_code not in (0, 1):
+            return {"error": f"Semgrep failed: {result.stderr}"}
+        
         try:
-            # semgrep scan --config=auto --json
-            result = subprocess.run(
-                ["semgrep", "scan", "--config=auto", "--json", "."],
-                cwd=target_path,
-                capture_output=True,
-                text=True
-            )
-            if result.returncode not in (0, 1): # 1 は指摘ありの場合
-                return {"error": f"Semgrep failed: {result.stderr}"}
-            
             data = json.loads(result.stdout)
             findings = []
             for item in data.get("results", []):
@@ -137,49 +135,36 @@ class LinterEngine:
                     "severity": item["extra"]["severity"]
                 })
             return {"findings": findings}
+        except json.JSONDecodeError:
+            return {"error": f"Failed to parse Semgrep output as JSON: {result.stdout}"}
         except Exception as e:
-            return {"error": f"Exception during semgrep scan: {e}"}
+            return {"error": f"Exception during semgrep scan processing: {e}"}
 
     async def scan_astgrep(self, query: str = None, path: str = ".") -> Dict[str, Any]:
         """ast-grep (sg) による構造的スキャンを実行"""
         target_path = os.path.join(self.repo_root, path)
-        try:
-            # デフォルトの sg scan --report-style json を実行
-            cmd = ["sg", "scan", "--report-style", "json"]
-            if query:
-                # パターン指定がある場合は sg run -p ... --json
-                cmd = ["sg", "run", "-p", query, "--json"]
+        cmd = ["sg", "scan", "--report-style", "json"]
+        if query:
+            cmd = ["sg", "run", "-p", query, "--json"]
 
-            result = subprocess.run(
-                cmd,
-                cwd=target_path,
-                capture_output=True,
-                text=True
-            )
-            
-            if result.returncode != 0:
-                # 0 以外でも findings がある場合があるので、stdout が JSON か確認
-                try:
-                    data = json.loads(result.stdout)
-                except json.JSONDecodeError:
-                    return {"error": f"ast-grep failed: {result.stderr or result.stdout}"}
-            else:
-                data = json.loads(result.stdout)
-            
+        result = run_command(cmd, cwd=target_path)
+        
+        try:
+            data = json.loads(result.stdout)
             findings = []
-            # sg scan の出力形式 (list of findings) を想定
-            # query指定時(sg run)はフラットなリスト、scan時はルールごとの場合があるので適宜調整
             items = data if isinstance(data, list) else data.get("results", [])
             for item in items:
                 findings.append({
                     "path": item.get("file", "unknown"),
                     "line": item.get("range", {}).get("start", {}).get("line", 0) + 1,
                     "message": item.get("message", "Pattern matched"),
-                    "severity": "info" # sg はルールにより異なるが、一旦 info
+                    "severity": "info"
                 })
             return {"findings": findings}
+        except json.JSONDecodeError:
+            return {"error": f"ast-grep failed or returned invalid JSON: {result.stderr or result.stdout}"}
         except Exception as e:
-            return {"error": f"Exception during ast-grep scan: {e}"}
+            return {"error": f"Exception during ast-grep scan processing: {e}"}
 
     def _get_tool_cmd(self, tool_name: str) -> str:
         """仮想環境 (.venv) 内のツールパスを優先して取得する"""
@@ -230,11 +215,8 @@ class LinterEngine:
         if not cmd_str:
             return "No linter found for this path."
 
-        try:
-            result = subprocess.run(cmd_str.split(), cwd=self.repo_root, capture_output=True, text=True)
-            return (result.stdout + "\n" + result.stderr).strip() or "No issues found."
-        except Exception as e:
-            return f"Linter error: {e}"
+        result = run_command(cmd_str, cwd=self.repo_root, shell=True)
+        return result.combined or "No issues found."
 
     def get_format_command(self, path: str = ".") -> Optional[str]:
         """適用可能なフォーマットコマンドを特定して返す"""
@@ -259,11 +241,8 @@ class LinterEngine:
         if not cmd_str:
             return "No formatter found for this path."
 
-        try:
-            result = subprocess.run(cmd_str.split(), cwd=self.repo_root, capture_output=True, text=True)
-            return f"Formatter output: {result.stdout.strip() or 'Success'}"
-        except Exception as e:
-            return f"Formatter error: {e}"
+        result = run_command(cmd_str, cwd=self.repo_root, shell=True)
+        return f"Formatter output: {result.stdout or 'Success'}"
 
     def get_security_command(self, path: str = ".") -> Optional[str]:
         """適用可能なセキュリティスキャンコマンドを特定して返す"""
@@ -287,19 +266,29 @@ class LinterEngine:
         if not cmd_str:
             return "No security scanner found for this path."
 
-        try:
-            result = subprocess.run(cmd_str.split(), cwd=self.repo_root, capture_output=True, text=True)
-            if result.returncode == 0:
-                return "No security issues found."
-            return f"Security Issues found:\n{result.stdout.strip()}"
-        except Exception as e:
-            return f"Security scan error: {e}"
+        result = run_command(cmd_str, cwd=self.repo_root, shell=True)
+        if result.exit_code == 0:
+            return "No security issues found."
+        return f"Security Issues found:\n{result.stdout}"
 
 class SandboxManager:
     def __init__(self, user_id: int, group_id: int):
         self.user_id = user_id
         self.group_id = group_id
-        self.context = None
+        try:
+            self._init_docker_client()
+        except Exception as e:
+            logger.error(f"Failed to initialize Docker client after retries: {e}")
+            raise RuntimeError("Docker daemon not found or unreachable. Please ensure Docker Desktop is running.")
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_fixed(2),
+        retry=retry_if_exception_type((docker.errors.DockerException, Exception)),
+        reraise=True
+    )
+    def _init_docker_client(self):
+        """Docker クライアントを初期化する（リトライあり）"""
         try:
             self.client = docker.from_env()
             self.client.ping()
@@ -314,14 +303,10 @@ class SandboxManager:
                 try:
                     self.client = docker.DockerClient(base_url=path)
                     self.client.ping()
-                    break
+                    return
                 except Exception:
-                    self.client = None
-            
-            if not self.client:
-                # 最終的なフォールバック（エラーメッセージを分かりやすくする）
-                raise RuntimeError("Docker daemon not found. Please ensure Docker Desktop is running. "
-                                 "On Mac, you may need to set: export DOCKER_HOST='unix://$HOME/.docker/run/docker.sock'")
+                    continue
+            raise docker.errors.DockerException("Could not connect to Docker daemon.")
 
     def sanitize_compose_yaml(self, yaml_content: str) -> str:
         """YAMLサニタイザー (設計書 8. サンドボックス & 実行環境)
@@ -456,6 +441,29 @@ class SandboxManager:
             f.write(content)
         return f"Successfully written to {path}."
 
+    def _get_container_config(
+        self,
+        image: str,
+        command: str,
+        environment: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """Docker コンテナの起動オプションを構築する内部ヘルパー"""
+        return {
+            "image": image,
+            "command": command,
+            "volumes": {
+                str(self.context.root_path): {"bind": "/workspace", "mode": "rw"}
+            },
+            "working_dir": "/workspace",
+            "user": f"{self.user_id}:{self.group_id}",
+            "environment": environment,
+            "detach": False,
+            "stdout": True,
+            "stderr": True,
+            "remove": True,
+            "network_disabled": True
+        }
+
     async def run_command(self, command: str, image: str = "python:3.11-slim", environment: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
         サンドボックス（Dockerコンテナ）内でコマンドを実行する。
@@ -464,27 +472,11 @@ class SandboxManager:
             raise RuntimeError("Workspace root is not set. Cannot run sandbox command.")
 
         logger.info(f"Running sandbox command: {command} in image: {image}")
+        config = self._get_container_config(image, command, environment)
         
         try:
-            # ワークスペースをコンテナ内の /workspace にマウント
-            volumes = {
-                str(self.context.root_path): {"bind": "/workspace", "mode": "rw"}
-            }
-            
             # 非特権ユーザーで実行
-            container = self.client.containers.run(
-                image,
-                command,
-                volumes=volumes,
-                working_dir="/workspace",
-                user=f"{self.user_id}:{self.group_id}",
-                environment=environment,
-                detach=False,
-                stdout=True,
-                stderr=True,
-                remove=True, # 実行後にコンテナを削除
-                network_disabled=True # ネットワーク隔離（必要に応じて）
-            )
+            container = self.client.containers.run(**config)
             
             # 同期的実行の場合、戻り値は bytes 型の stdout/stderr
             output = container.decode("utf-8") if isinstance(container, bytes) else str(container)

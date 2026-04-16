@@ -1,9 +1,10 @@
 import asyncio
 import json
-import logging
+from loguru import logger
 import re
 import time
 from typing import Optional
+from tenacity import AsyncRetrying, stop_after_delay, wait_exponential, retry_if_exception_type
 
 import httpx
 from pydantic_ai.models.openai import OpenAIModel
@@ -120,17 +121,24 @@ async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
         endpoint = endpoint.replace("localhost", "127.0.0.1")
     url = f"{endpoint.rstrip('/')}/models"
     logger.info(f"Waiting for LLM server at {url} (timeout: {timeout}s)...")
-    start_time = asyncio.get_event_loop().time()
+    
     async with httpx.AsyncClient(trust_env=False) as client:
-        while asyncio.get_event_loop().time() - start_time < timeout:
-            try:
-                resp = await client.get(url, timeout=2.0)
-                if resp.status_code == 200:
-                    logger.info(f"LLM server at {endpoint} is READY.")
-                    return True
-            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
-                pass
-            await asyncio.sleep(5)
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_delay(timeout),
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                retry=retry_if_exception_type((httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)),
+            ):
+                with attempt:
+                    resp = await client.get(url, timeout=2.0)
+                    if resp.status_code == 200:
+                        logger.info(f"LLM server at {endpoint} is READY.")
+                        return True
+                    # 200以外もリトライ対象にする（起動直後のエラー等）
+                    raise httpx.ReadTimeout(f"Server returned {resp.status_code}")
+        except Exception as e:
+            logger.error(f"LLM server at {endpoint} failed to become ready: {e}")
+            return False
     return False
 
 def get_robust_model(model_name: str, base_url: Optional[str] = None) -> OpenAIModel:

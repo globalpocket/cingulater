@@ -1,11 +1,10 @@
-import logging
+from loguru import logger
 import os
 import sys
 import json
 from typing import Dict, Any, List, Literal
 from pathlib import Path
-from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 from src.utils.llm import wait_for_llm_ready
 from src.core.workflow_manager import WorkflowLoader
 
@@ -37,10 +36,8 @@ class IntentDraft(BaseModel):
 # --- サーバー定義 ---
 
 # ロギング設定
-logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-logger = logging.getLogger("intent_interpreter_server")
-
-mcp = FastMCP("IntentInterpreter")
+logger = setup_logging("intent_interpreter_server")
+mcp = create_mcp_server("IntentInterpreter")
 
 # 動的ワークフローローダーの初期化
 # ルート直下の workflows ディレクトリをスキャン
@@ -50,6 +47,7 @@ loader = WorkflowLoader(project_root)
 workflow_registry = loader.load_all()
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def reload_workflows() -> str:
     """登録されている動的ワークフローを再読み込みし、最新の状態に更新します。"""
     global workflow_registry
@@ -58,6 +56,7 @@ async def reload_workflows() -> str:
     return f"Workflows reloaded. {len(workflow_registry)} workflows found."
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def interpret_intent(
     instruction: str, model_name: str, endpoint: str
 ) -> Dict[str, Any]:
@@ -84,45 +83,34 @@ async def interpret_intent(
             "required_mcp_servers": []
         }
 
-    try:
-        # ワークフローの実行
-        # DynamicWorkflowState が返される
-        state_result = await workflow_tool(
-            input_data=instruction,
-            model_name=model_name,
-            endpoint=endpoint
-        )
-        
-        # 最終ノード 'node3_draft_reply' の出力を取得
-        results = state_result.get("results", {})
-        final_output = results.get("node3_draft_reply", "")
-        
-        if not final_output:
-            raise ValueError("Final node output is empty.")
+    # ワークフローの実行
+    # DynamicWorkflowState が返される
+    state_result = await workflow_tool(
+        input_data=instruction,
+        model_name=model_name,
+        endpoint=endpoint
+    )
+    
+    # 最終ノード 'node3_draft_reply' の出力を取得
+    results = state_result.get("results", {})
+    final_output = results.get("node3_draft_reply", "")
+    
+    if not final_output:
+        raise ValueError("Final node output is empty.")
 
-        # JSON を抽出 (AI が Markdown ブロックを作ってしまう可能性を考慮)
-        clean_json = str(final_output).strip()
-        if "```json" in clean_json:
-            clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
-        elif "```" in clean_json:
-            clean_json = clean_json.split("```")[-1].split("```")[0].strip()
+    # JSON を抽出 (AI が Markdown ブロックを作ってしまう可能性を考慮)
+    clean_json = str(final_output).strip()
+    if "```json" in clean_json:
+        clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
+    elif "```" in clean_json:
+        clean_json = clean_json.split("```")[-1].split("```")[0].strip()
 
-        logger.debug(f"Raw workflow output: {final_output}")
-        data = json.loads(clean_json)
-        
-        # Pydantic モデルでバリデーション
-        draft = IntentDraft.model_validate(data)
-        return draft.model_dump()
-
-    except Exception as e:
-        logger.error(f"Intent interpretation via workflow failed: {e}")
-        return {
-            "status": "pending",
-            "intent_summary": "Error during analysis",
-            "draft_comment": f"申し訳ありません、動的ワークフローによる解析中にエラーが発生しました: {str(e)}",
-            "evaluation_axes": [],
-            "required_mcp_servers": []
-        }
+    logger.debug(f"Raw workflow output: {final_output}")
+    data = json.loads(clean_json)
+    
+    # Pydantic モデルでバリデーション
+    draft = IntentDraft.model_validate(data)
+    return draft.model_dump()
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="stdio")

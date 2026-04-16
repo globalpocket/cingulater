@@ -7,20 +7,16 @@ BROWNIE Code Writer MCP Server
 
 import os
 import sys
-import logging
+from loguru import logger
 import asyncio
 from typing import Optional, List, Dict, Any
 
-from fastmcp import FastMCP
-from pydantic_ai import Agent
+from .base_server import create_mcp_server, mcp_tool_errorhandler, override_config_from_argv, setup_logging
 
-from src.core.types import Blueprint
-from src.core.agent import get_robust_model, wait_for_llm_ready
-
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 # --- サーバーインスタンスの生成 ---
-mcp = FastMCP("Code Writer")
+mcp = create_mcp_server("Code Writer")
 
 # --- グローバル設定（起動時に初期化） ---
 _config = {
@@ -49,6 +45,7 @@ def _get_agent():
 # MCP Tool: generate_code
 # ============================================================
 @mcp.tool()
+@mcp_tool_errorhandler
 async def generate_code(blueprint_json: str) -> str:
     """設計図（Blueprint）を解析し、具体的な実装コードを生成します。
 
@@ -60,30 +57,19 @@ async def generate_code(blueprint_json: str) -> str:
     # サーバーの準備完了を待機
     await wait_for_llm_ready(_config["endpoint"])
     
-    try:
-        # JSON 文字列から Blueprint オブジェクトを復元（検証のため）
-        blueprint = Blueprint.model_validate_json(blueprint_json)
-        prompt = f"### STRICT BLUEPRINT ###\n{blueprint.model_dump_json(indent=2)}"
-        
-        agent = _get_agent()
-        result = await agent.run(prompt)
-        return str(result.data)
-        
-    except Exception as e:
-        logger.error(f"Failed to generate code: {e}")
-        return f"Error: {str(e)}"
+    # JSON 文字列から Blueprint オブジェクトを復元（検証のため）
+    blueprint = Blueprint.model_validate_json(blueprint_json)
+    prompt = f"### STRICT BLUEPRINT ###\n{blueprint.model_dump_json(indent=2)}"
+    
+    agent = _get_agent()
+    result = await agent.run(prompt)
+    return str(result.data)
 
 # ============================================================
 # サーバー起動エントリーポイント
 # ============================================================
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    
-    # 引数による設定のオーバーライド（オプション）
-    if len(sys.argv) > 1:
-        _config["model_name"] = sys.argv[1]
-    if len(sys.argv) > 2:
-        _config["endpoint"] = sys.argv[2]
+    override_config_from_argv(_config, ["model_name", "endpoint"])
         
     logger.info(f"Code Writer Server initialized: model={_config['model_name']}, endpoint={_config['endpoint']}")
     mcp.run(transport="stdio")

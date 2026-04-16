@@ -1,8 +1,7 @@
 import os
-import logging
+from loguru import logger
 from huey import RedisHuey
 
-logger = logging.getLogger(__name__)
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))

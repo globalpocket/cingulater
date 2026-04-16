@@ -1,16 +1,13 @@
-import logging
-
-from mcp.server.fastmcp import FastMCP
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 from src.core.workers.tasks import analysis_task, execution_task, repair_task
 
 # ロギング設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("worker_controller_server")
-
-mcp = FastMCP("WorkerController")
+logger = setup_logging("worker_controller_server")
+mcp = create_mcp_server("WorkerController")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def enqueue_task(
     task_type: str,
     task_id: str,
@@ -42,4 +39,4 @@ async def enqueue_task(
     return f"Successfully enqueued {task_type} task for {task_id}"
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="stdio")

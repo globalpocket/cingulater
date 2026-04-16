@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import subprocess
 import os
 
-mcp = FastMCP("security_analyzer")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("security_analyzer")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def analyze_security(directory: str) -> str:
     """Bandit を使用して指定されたディレクトリのセキュリティ脆弱性をスキャンします。"""
     # 簡易化のため Bandit のみをラップ。実際には Semgrep なども併用可能。

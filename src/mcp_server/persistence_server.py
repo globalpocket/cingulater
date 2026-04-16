@@ -1,22 +1,19 @@
 import sqlite3
 import os
-import logging
+from loguru import logger
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
-# ロギングの設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("persistence_server")
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
+from src.core.config import get_settings
 
-# FastMCP サーバーの初期化
-mcp = FastMCP("Persistence Server")
-
-# データベースパスの設定 (デフォルト)
-DEFAULT_DB_PATH = os.path.expanduser("~/.local/share/brownie/persistence.db")
+logger = setup_logging("persistence_server")
+mcp = create_mcp_server("Persistence Server")
 
 def get_db_path():
-    return os.getenv("BROWNIE_PERSISTENCE_DB", DEFAULT_DB_PATH)
+    settings = get_settings()
+    return os.path.expanduser(settings.database.db_path)
 
 def init_db():
     """データベースとテーブルの初期化"""
@@ -64,6 +61,7 @@ def init_db():
 init_db()
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def check_mention_status(mention_id: str, updated_at: str) -> str:
     """
     メンションが新規か、更新されているか、変更なし値かを確認します。
@@ -100,6 +98,7 @@ async def check_mention_status(mention_id: str, updated_at: str) -> str:
         conn.close()
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def register_processed_mention(mention_data: Dict[str, Any]) -> bool:
     """
     処理済みメンション情報を保存または更新します。
@@ -151,6 +150,7 @@ async def register_processed_mention(mention_data: Dict[str, Any]) -> bool:
         conn.close()
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def list_watched_repositories() -> List[str]:
     """監視対象のリポジトリ一覧を取得します。"""
     db_path = get_db_path()
@@ -163,6 +163,7 @@ async def list_watched_repositories() -> List[str]:
         conn.close()
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def upsert_repository(repo_name: str) -> bool:
     """リポジトリを監視リストに追加または更新します。"""
     db_path = get_db_path()
@@ -185,4 +186,4 @@ async def upsert_repository(repo_name: str) -> bool:
         conn.close()
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="stdio")

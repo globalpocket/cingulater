@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import subprocess
 import os
 
-mcp = FastMCP("test_coverage")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("test_coverage")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def analyze_coverage(directory: str) -> str:
     """pytest-covを使用してテストカバレッジを測定し、未テストの領域を特定します。"""
     if not os.path.exists(directory):

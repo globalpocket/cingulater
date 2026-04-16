@@ -1,14 +1,18 @@
 import asyncio
-import logging
+from loguru import logger
 import os
 import sys
 import signal
 import json
 import time
+from typing import Optional
 from dotenv import load_dotenv
 
 # .env ファイルの読み込み (設計書 11.2 補足)
 load_dotenv()
+
+import typer
+from typing_extensions import Annotated
 
 # プロジェクトルートをパスに追加 (設計書 3.2 補足)
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -16,55 +20,64 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from src.core.orchestrator import Orchestrator  # noqa: E402
 from src.core.agent import CoderAgent  # noqa: E402
 from src.core.sandbox_manager import SandboxManager  # noqa: E402
-from src.utils.config_loader import get_build_id  # noqa: E402
+from src.core.config import get_settings  # noqa: E402
+
+from loguru import logger
 
 # 1. ログ設定
-from logging.handlers import RotatingFileHandler  # noqa: E402
-
 log_file = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "logs", "brownie.log")
 )
 os.makedirs(os.path.dirname(log_file), exist_ok=True)
-log_level = logging.DEBUG if os.environ.get("BROWNIE_DEBUG") == "1" else logging.INFO
+log_level = "DEBUG" if os.environ.get("BROWNIE_DEBUG") == "1" else "INFO"
 
-root_logger = logging.getLogger()
-root_logger.setLevel(log_level)
+# Loguru の初期化 (stderr とファイルの両方に出力)
+# 標準 logging を Loguru にリダイレクトするためのハンドラ設定
+class InterceptHandler(logging.Handler):
+    def emit(self, record):
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
 
-# Set standard formatter
-formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        frame, depth = sys._getframe(6), 6
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
 
-# Suppress noise from external libraries
-logging.getLogger("httpcore").setLevel(logging.INFO)
-logging.getLogger("urllib3").setLevel(logging.INFO)
-logging.getLogger("docker").setLevel(logging.INFO)
-logging.getLogger("aiosqlite").setLevel(logging.INFO)
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
-# Create console handler with INFO level
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_handler.setFormatter(formatter)
+def setup_logging():
+    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+    
+    # 既存のハンドラをクリアして Loguru で再構築
+    logger.remove()
+    logger.add(
+        sys.stderr, 
+        level=log_level,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+    )
+    logger.add(
+        log_file,
+        rotation="5 MB",
+        retention="3 days",
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
+    )
 
-# Create file handler with rotation (Harden: 5MB x 3 backups instead of 10x5)
-file_handler = RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=3)
-file_handler.setLevel(logging.DEBUG)
-file_handler.setFormatter(formatter)
-
-root_logger.addHandler(file_handler)
-root_logger.addHandler(console_handler)
-
-logger = logging.getLogger("brownie.main")
-logger.info(f"Logging initialized. Level: {log_level}, File: {log_file}")
+setup_logging()
+logger.info(f"Loguru initialized. Level: {log_level}, File: {log_file}")
 
 
 class BrownieApp:
     def __init__(self, config_path: str):
-        self.config_path = config_path
+        self.settings = get_settings(config_path)
         self.orchestrator = Orchestrator(config_path)
         self.stop_event = asyncio.Event()
 
     async def run(self):
         """メインプロセスの実行 (設計書 3.2: 生存信号送信・LLM死活監視)"""
-        logger.info(f"Starting Brownie Main Process (Build: {get_build_id()})...")
+        logger.info(f"Starting Brownie Main Process (Build: {self.settings.build_id})...")
         logger.info(
             f"  - Loaded Agent from: {CoderAgent.__module__} in {os.path.abspath(CoderAgent.__module__.replace('.', '/') + '.py')}"
         )
@@ -112,7 +125,7 @@ class BrownieApp:
                             {
                                 "pid": pid,
                                 "timestamp": time.time(),
-                                "build": get_build_id(),
+                                "build": self.settings.build_id,
                             }
                         )
                     )
@@ -128,7 +141,15 @@ class BrownieApp:
         self.stop_event.set()
 
 
-if __name__ == "__main__":
-    config_file = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
+def main(
+    config: Annotated[Optional[str], typer.Option("--config", "-c", help="Path to config yaml file")] = None
+):
+    """
+    BROWNIE: Autonomous AI Coding Agent 🚀
+    """
+    config_file = config or os.getenv("BROWNIE_CONFIG", "config/config.yaml")
     app = BrownieApp(config_file)
     asyncio.run(app.run())
+
+if __name__ == "__main__":
+    typer.run(main)

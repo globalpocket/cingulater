@@ -1,10 +1,9 @@
 import operator
 import os
-import logging
+from loguru import logger
 from typing import TypedDict, List, Dict, Any, Optional, Annotated
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-logger = logging.getLogger(__name__)
 
 class TaskState(TypedDict):
     """
@@ -66,10 +65,9 @@ class StateManager:
         self._workflow_app = None
 
     async def __aenter__(self):
-        """
-        async with ステートメントでチェックポインタを有効化する
-        """
+        """async with ステートメントでチェックポインタを有効化する"""
         if not self._saver:
+            logger.debug(f"Connecting to State DB: {self.db_path}")
             self._saver = AsyncSqliteSaver.from_conn_string(self.db_path)
             await self._saver.__aenter__()
         
@@ -98,24 +96,30 @@ class StateManager:
             self._workflow_app = compile_workflow(checkpointer=self._saver)
         return self._workflow_app
 
-    async def get_state(self, thread_id: str):
-        """
-        指定した thread_id の最新状態を取得する
-        """
+    async def get_state(self, thread_id: str) -> Dict[str, Any]:
+        """指定した thread_id の最新状態を取得する"""
         config = {"configurable": {"thread_id": thread_id}}
-        return await self.workflow_app.aget_state(config)
+        state = await self.workflow_app.aget_state(config)
+        return state.values if state else {}
+
+    async def get_current_status(self, thread_id: str) -> str:
+        """現在のステータス（Phase名など）を取得する"""
+        values = await self.get_state(thread_id)
+        return values.get("status", "Unknown")
+
+    async def is_terminal_state(self, thread_id: str) -> bool:
+        """タスクが完了または失敗状態にあるかを判定する"""
+        status = await self.get_current_status(thread_id)
+        return status in ["Completed", "Failed"]
 
     async def update_state(self, thread_id: str, values: Dict[str, Any], as_node: Optional[str] = None):
-        """
-        状態を更新する
-        """
+        """状態を更新する"""
         config = {"configurable": {"thread_id": thread_id}}
+        logger.debug(f"Updating state for thread {thread_id} (node: {as_node})")
         return await self.workflow_app.aupdate_state(config, values, as_node=as_node)
 
     async def astream(self, thread_id: str, input_data: Dict[str, Any]):
-        """
-        ワークフローを非同期ストリームで実行する
-        """
+        """ワークフローを非同期ストリームで実行する"""
         config = {"configurable": {"thread_id": thread_id}}
         async for event in self.workflow_app.astream(input_data, config=config):
             yield event

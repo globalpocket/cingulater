@@ -1,14 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import instructor
 from litellm import completion
 from pydantic import BaseModel, Field, create_model
 from typing import Any, Dict, List, Optional, Type
-import logging
 
 # Logger settings
-logger = logging.getLogger(__name__)
-
-mcp = FastMCP("llm_validator")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("llm_validator")
 
 from src.core.types import IntentDraft, AnalysisProposal, RingiDocument
 
@@ -19,6 +17,7 @@ SCHEMA_MAP = {
 }
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def validate_and_extract(prompt: str, schema_type: str, model_name: str = "gemini/gemini-pro") -> str:
     """LLMからの出力を特定のスキーマに従って検証・抽出します。
     
@@ -52,6 +51,7 @@ async def validate_and_extract(prompt: str, schema_type: str, model_name: str = 
         return f"Validation Error: {e}"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def validate_dynamic_schema(prompt: str, schema_json: str, model_name: str = "gemini/gemini-pro") -> str:
     """JSON Schema文字列を動的にPydanticモデルに変換し、LLM出力を検証します。
     

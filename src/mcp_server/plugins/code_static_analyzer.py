@@ -1,6 +1,6 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import os
-import logging
+from loguru import logger
 import duckdb
 import networkx as nx
 import asyncio
@@ -17,9 +17,9 @@ except ImportError:
     pass
 
 # Logger settings
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
-mcp = FastMCP("code_static_analyzer")
+mcp = create_mcp_server("code_static_analyzer")
 
 class AnalyzerLogic:
     def __init__(self, repo_root: str):
@@ -86,6 +86,7 @@ class AnalyzerLogic:
             logger.error(f"Scan error {rel_path}: {e}")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def deep_scan_project(repo_path: str) -> str:
     """リポジトリ全体をスキャンし、シンボルと呼び出し関係をDBにインデックスします。"""
     logic = AnalyzerLogic(repo_path)
@@ -98,6 +99,7 @@ async def deep_scan_project(repo_path: str) -> str:
     return f"Scan completed for {repo_path}"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def get_critical_path(repo_path: str, top_k: int = 5) -> str:
     """NetworkXを使用してプロジェクトの重要ノード（影響範囲の広いシンボル）を特定します。"""
     logic = AnalyzerLogic(repo_path)
@@ -118,6 +120,7 @@ async def get_critical_path(repo_path: str, top_k: int = 5) -> str:
     return "\n".join(result)
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def trace_call_flow(repo_path: str, entry_symbol: str) -> str:
     """指定されたシンボルからの呼び出しフローを追跡し、Mermaid形式で出力します。"""
     logic = AnalyzerLogic(repo_path)

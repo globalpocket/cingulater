@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import os
 import ast
 
-mcp = FastMCP("arch_diagram")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("arch_diagram")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def generate_mermaid_diagram(directory: str) -> str:
     """指定されたディレクトリ内のPythonファイルの依存関係からMermaid.jsのクラス図（概略）を生成します。"""
     if not os.path.exists(directory):

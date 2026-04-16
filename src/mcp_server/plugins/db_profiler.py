@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import sqlite3
 import os
 
-mcp = FastMCP("db_profiler")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("db_profiler")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def profile_database_schema(db_path: str) -> str:
     """指定されたSQLiteデータベースファイルのスキーマや構成を分析し、最適化の提案（インデックス欠落等）を行います。"""
     if not os.path.exists(db_path):

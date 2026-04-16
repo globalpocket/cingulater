@@ -1,7 +1,6 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import os
 import time
-import logging
 import asyncio
 import pathspec
 from watchdog.observers import Observer
@@ -9,9 +8,8 @@ from watchdog.events import FileSystemEventHandler
 from typing import List
 
 # Logger settings
-logger = logging.getLogger(__name__)
-
-mcp = FastMCP("repo_watcher")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("repo_watcher")
 
 class RepoWatcherHandler(FileSystemEventHandler):
     """リポジトリの変更を監視し、自動的な再解析トリガーを発火させるハンドラ"""
@@ -48,6 +46,7 @@ class RepoWatcherHandler(FileSystemEventHandler):
         logger.info(f"Change detected in {file_path}. MCP notification could be triggered here.")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def watch_repositories(paths: List[str]) -> str:
     """指定されたディレクトリ群のファイル変更監視を開始します。
     

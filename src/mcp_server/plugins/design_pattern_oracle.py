@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import ast
 import os
 
-mcp = FastMCP("design_pattern_oracle")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("design_pattern_oracle")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def analyze_design_pattern(file_path: str) -> str:
     """指定されたソースファイルのAST（抽象構文木）を解析し、適用されているデザインパターンを推測します。"""
     if not os.path.exists(file_path):

@@ -10,15 +10,9 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
   - verify_sync(repo_path, branch_name): リモートとの同期確認
 """
 
-import logging
-import sys
-import os
-import subprocess
-import re
-from typing import Optional, List, Dict, Any
-from fastmcp import FastMCP
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
 # ============================================================
 # Git Operations Logic (Internal)
@@ -101,57 +95,46 @@ class GitOperations:
         return f"Committed and pushed to {branch}"
 
 # --- サーバーインスタンスの生成 ---
-mcp = FastMCP("RepositoryProvision")
+mcp = create_mcp_server("RepositoryProvision")
 
 # ============================================================
 # MCP Tools
 # ============================================================
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def provision_repository(repo_name: str, repo_path: str, token: str, branch_name: Optional[str] = None) -> str:
     """GitHub からリポジトリをクローンし、ブランチを最新化します。"""
-    try:
-        git_ops = GitOperations(repo_path)
-        git_ops.ensure_repo_cloned(repo_name, token, branch_name)
-        return f"Successfully provisioned {repo_name}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    git_ops = GitOperations(repo_path)
+    git_ops.ensure_repo_cloned(repo_name, token, branch_name)
+    return f"Successfully provisioned {repo_name}"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def sync_lfs(repo_path: str) -> str:
     """Git LFS を同期します。"""
-    try:
-        GitOperations(repo_path).sync_lfs()
-        return "LFS synced"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    GitOperations(repo_path).sync_lfs()
+    return "LFS synced"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def verify_sync(repo_path: str, branch_name: str) -> str:
     """同期状態を確認します。"""
-    try:
-        is_synced = GitOperations(repo_path).verify_remote_sha(branch_name)
-        return "Synced" if is_synced else "Desynced"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    is_synced = GitOperations(repo_path).verify_remote_sha(branch_name)
+    return "Synced" if is_synced else "Desynced"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def apply_fuzzy_replace(repo_path: str, file_path: str, target: str, replacement: str) -> str:
     """Fuzzy マッチを利用したテキスト置換を行います。"""
-    try:
-        GitOperations(repo_path).fuzzy_ast_replace(file_path, target, replacement)
-        return f"Applied replace to {file_path}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    GitOperations(repo_path).fuzzy_ast_replace(file_path, target, replacement)
+    return f"Applied replace to {file_path}"
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def commit_and_push(repo_path: str, branch: str, message: str) -> str:
     """変更をコミットしてプッシュします。"""
-    try:
-        return GitOperations(repo_path).commit_and_push(branch, message)
-    except Exception as e:
-        return f"Error: {str(e)}"
+    return GitOperations(repo_path).commit_and_push(branch, message)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     mcp.run(transport="stdio")

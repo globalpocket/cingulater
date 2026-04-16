@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import subprocess
 import os
 
-mcp = FastMCP("git_archeology")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("git_archeology")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def analyze_git_history(file_path: str, line_start: int = None, line_end: int = None) -> str:
     """指定されたファイル（または特定の行）の過去のコミット履歴（git blame や log）を解析します。"""
     if not os.path.exists(file_path):

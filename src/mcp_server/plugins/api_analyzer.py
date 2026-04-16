@@ -1,10 +1,12 @@
-from fastmcp import FastMCP
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import ast
 import os
 
-mcp = FastMCP("api_analyzer")
+logger = setup_logging(__name__)
+mcp = create_mcp_server("api_analyzer")
 
 @mcp.tool()
+@mcp_tool_errorhandler
 async def extract_api_endpoints(file_path: str) -> str:
     """FastAPIやFlaskなどのルーティングデコレータを解析してAPIエンドポイント仕様を抽出します。"""
     if not os.path.exists(file_path):

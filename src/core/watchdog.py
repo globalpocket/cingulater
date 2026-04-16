@@ -4,7 +4,7 @@ import os
 import sys
 import signal
 import subprocess
-import logging
+from loguru import logger
 from logging.handlers import RotatingFileHandler
 import shutil
 import glob
