@@ -1,11 +1,12 @@
-from langgraph.graph import StateGraph, END
-from src.core.state_manager import TaskState
-from src.core.graph.nodes.intent import intent_alignment_node
+from langgraph.graph import END, StateGraph
+
 from src.core.graph.nodes.analysis import core_analysis_node
-from src.core.graph.nodes.handshake import dynamic_handshake_node
+from src.core.graph.nodes.completion import completion_node  # 追加
 from src.core.graph.nodes.execution import execution_delegation_node
 from src.core.graph.nodes.governance import governance_node
-from src.core.graph.nodes.completion import completion_node  # 追加
+from src.core.graph.nodes.handshake import dynamic_handshake_node
+from src.core.graph.nodes.intent import intent_alignment_node
+from src.core.state_manager import TaskState
 
 
 def create_brownie_graph():

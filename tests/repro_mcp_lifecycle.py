@@ -1,9 +1,10 @@
 import asyncio
-import sys
 import os
-import psutil
+import sys
+
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport
+
 
 async def main():
     repo_path = os.getcwd()

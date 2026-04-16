@@ -1,11 +1,12 @@
-from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import os
 import time
-import asyncio
-import pathspec
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 from typing import List
+
+import pathspec
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 # Logger settings
 logger = setup_logging(__name__)

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
+import os
 import subprocess
 import sys
-import os
+
 
 def check_hygiene():
     """AI エージェントが残した可能性のある不要なプロセスをチェックする"""

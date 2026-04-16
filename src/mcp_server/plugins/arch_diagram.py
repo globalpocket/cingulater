@@ -1,6 +1,7 @@
-from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
-import os
 import ast
+import os
+
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 logger = setup_logging(__name__)
 mcp = create_mcp_server("arch_diagram")
@@ -32,7 +33,7 @@ async def generate_mermaid_diagram(directory: str) -> str:
                     for base in cls.bases:
                         if isinstance(base, ast.Name):
                             mermaid_lines.append(f"  {base.id} <|-- {cls.name}")
-            except Exception as e:
+            except Exception:
                 pass # skip
                 
     return "```mermaid\n" + "\n".join(mermaid_lines) + "\n```"

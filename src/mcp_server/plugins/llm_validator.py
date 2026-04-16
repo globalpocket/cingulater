@@ -1,14 +1,16 @@
-from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
+from typing import Any
+
 import instructor
 from litellm import completion
-from pydantic import BaseModel, Field, create_model
-from typing import Any, Dict, List, Optional, Type
+from pydantic import Field, create_model
+
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 # Logger settings
 logger = setup_logging(__name__)
 mcp = create_mcp_server("llm_validator")
 
-from src.core.types import IntentDraft, AnalysisProposal, RingiDocument
+from src.core.types import AnalysisProposal, IntentDraft, RingiDocument
 
 SCHEMA_MAP = {
     "intent_draft": IntentDraft,

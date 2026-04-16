@@ -10,8 +10,8 @@ async def test_meta_agent_tool():
     print("🚀 Meta-Agent (ワークフロー自己生成) の検証を開始します...")
 
     # SandboxManager と MCP Tool の準備 (Mock 的な初期化)
-    from src.core.sandbox_manager import SandboxManager
     import src.mcp_server.workspace_server as ws
+    from src.core.sandbox_manager import SandboxManager
     
     repo_path = os.getcwd()
     # テスト用に現在のユーザー権限で Sandbox を動作させる

@@ -1,9 +1,7 @@
 import asyncio
 import logging
-from pathlib import Path
-import os
-import yaml
 import sys
+from pathlib import Path
 
 # プロジェクトルートを PATH に追加
 project_root = Path(__file__).parent.parent

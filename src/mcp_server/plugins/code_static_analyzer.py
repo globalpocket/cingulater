@@ -1,18 +1,17 @@
-from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import os
-from loguru import logger
+
 import duckdb
 import networkx as nx
-import asyncio
-import hashlib
-from typing import List, Dict, Any, Optional
+from loguru import logger
+
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 try:
-    from tree_sitter import Language, Parser, Query, QueryCursor
-    import tree_sitter_python
-    import tree_sitter_javascript
-    import tree_sitter_typescript
     import tree_sitter_go
+    import tree_sitter_javascript
+    import tree_sitter_python
+    import tree_sitter_typescript
+    from tree_sitter import Language, Parser, Query, QueryCursor
 except ImportError:
     pass
 

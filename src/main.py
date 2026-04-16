@@ -1,12 +1,13 @@
 import asyncio
-from loguru import logger
-import os
-import sys
-import signal
 import json
+import os
+import signal
+import sys
 import time
 from typing import Optional
+
 from dotenv import load_dotenv
+from loguru import logger
 
 # .env ファイルの読み込み (設計書 11.2 補足)
 load_dotenv()
@@ -17,12 +18,10 @@ from typing_extensions import Annotated
 # プロジェクトルートをパスに追加 (設計書 3.2 補足)
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from src.core.orchestrator import Orchestrator  # noqa: E402
 from src.core.agent import CoderAgent  # noqa: E402
-from src.core.sandbox_manager import SandboxManager  # noqa: E402
 from src.core.config import get_settings  # noqa: E402
-
-from loguru import logger
+from src.core.orchestrator import Orchestrator  # noqa: E402
+from src.core.sandbox_manager import SandboxManager  # noqa: E402
 
 # 1. ログ設定
 log_file = os.path.normpath(

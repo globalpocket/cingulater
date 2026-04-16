@@ -13,13 +13,14 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
   - brownie://repo/context: WDCA コンテキスト（プロジェクト概要）
 """
 
-from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 import duckdb
-from tree_sitter import Language, Parser
-import tree_sitter_python
-import tree_sitter_javascript
-import tree_sitter_typescript
 import tree_sitter_go
+import tree_sitter_javascript
+import tree_sitter_python
+import tree_sitter_typescript
+from tree_sitter import Language, Parser
+
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 logger = setup_logging("knowledge_server")
 
@@ -235,7 +236,7 @@ async def get_code_flow(entry_symbol: str, depth: int = 5) -> str:
     """
     tracer = _get_tracer()
     if tracer is None:
-        return f"解析インデックスが見つかりません。.brwn/index.db が存在するか確認してください。"
+        return "解析インデックスが見つかりません。.brwn/index.db が存在するか確認してください。"
 
     # CPU バウンドな追跡処理をスレッドで実行（既存の非同期性を維持）
     flow_data = await asyncio.to_thread(tracer.trace_flow, entry_symbol, int(depth))

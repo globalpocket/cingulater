@@ -4,9 +4,10 @@ BROWNIE MCP Server Base Infrastructure
 全MCPサーバーで共通して利用する基底ロジック。
 """
 
-import sys
 import functools
-from typing import Any, Callable, List, Dict, Optional, TypeVar
+import sys
+from typing import Any, Callable, Dict, List, TypeVar
+
 from fastmcp import FastMCP
 from loguru import logger
 

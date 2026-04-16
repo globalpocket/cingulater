@@ -1,6 +1,7 @@
-from loguru import logger
 from datetime import datetime
 from typing import Any, Dict, List
+
+from loguru import logger
 
 try:
     from croniter import croniter

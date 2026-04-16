@@ -1,7 +1,9 @@
 import asyncio
-import sys
 import os
+import sys
+
 from fastmcp import Client
+
 
 async def main():
     repo_path = os.getcwd()

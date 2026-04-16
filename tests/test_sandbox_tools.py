@@ -1,9 +1,10 @@
-import pytest
-import os
 import asyncio
 from unittest.mock import MagicMock, patch
-from src.workspace.sandbox import SandboxManager
+
+import pytest
 from src.workspace.context import WorkspaceContext
+from src.workspace.sandbox import SandboxManager
+
 
 @pytest.fixture
 def sandbox():

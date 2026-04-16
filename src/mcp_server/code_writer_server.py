@@ -6,12 +6,15 @@ BROWNIE Code Writer MCP Server
 """
 
 import os
-import sys
-from loguru import logger
-import asyncio
-from typing import Optional, List, Dict, Any
 
-from .base_server import create_mcp_server, mcp_tool_errorhandler, override_config_from_argv, setup_logging
+from loguru import logger
+
+from .base_server import (
+    create_mcp_server,
+    mcp_tool_errorhandler,
+    override_config_from_argv,
+    setup_logging,
+)
 
 logger = setup_logging(__name__)
 
@@ -25,19 +28,23 @@ _config = {
     "language": os.environ.get("BROWNIE_LANGUAGE", "Japanese")
 }
 
+from jinja2 import Environment, FileSystemLoader
+
+# Jinja2 設定
+_template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
+_jinja_env = Environment(loader=FileSystemLoader(_template_dir))
+
 def _get_agent():
     """Executor Agent インスタンスの生成"""
     model = get_robust_model(_config["model_name"], base_url=_config["endpoint"])
     
+    # テンプレートの読み込みとレンダリング
+    template = _jinja_env.get_template("executor_system.j2")
+    system_prompt = template.render(language=_config["language"])
+    
     agent = Agent(
         model,
-        system_prompt=(
-            "あなたは高度なソフトウェアエンジニア（Executor）です。\n"
-            "Planner から渡される「Strict Blueprint（厳格な設計図）」は絶対のルールです。\n"
-            "設計図に記載されていない独自の解釈、機能追加、リファクタリングは厳禁です。\n"
-            "回答は実装コード案のみとし、ツール呼び出しは一切行わず、純粋な Markdown で返してください。\n\n"
-            f"報告や解説が必要な場合は、原則として {_config['language']} で記述してください。"
-        )
+        system_prompt=system_prompt
     )
     return agent
 
@@ -71,5 +78,8 @@ async def generate_code(blueprint_json: str) -> str:
 if __name__ == "__main__":
     override_config_from_argv(_config, ["model_name", "endpoint"])
         
-    logger.info(f"Code Writer Server initialized: model={_config['model_name']}, endpoint={_config['endpoint']}")
+    logger.info(
+        f"Code Writer Server initialized: model={_config['model_name']}, "
+        f"endpoint={_config['endpoint']}"
+    )
     mcp.run(transport="stdio")

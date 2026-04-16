@@ -1,14 +1,18 @@
-import asyncio
 import json
-from loguru import logger
 import re
 import time
 from typing import Optional
-from tenacity import AsyncRetrying, stop_after_delay, wait_exponential, retry_if_exception_type
 
 import httpx
+from loguru import logger
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_delay,
+    wait_exponential,
+)
 
 logger = logging.getLogger("brownie.llm_utils")
 

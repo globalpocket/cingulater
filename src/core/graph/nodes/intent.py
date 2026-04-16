@@ -1,6 +1,6 @@
-from loguru import logger
 from typing import Any, Dict
 
+from loguru import logger
 from src.utils.config_loader import get_config
 
 

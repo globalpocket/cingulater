@@ -1,16 +1,16 @@
-from loguru import logger
-from typing import Any, Dict, List, Optional
-
-from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
-
 import os
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from loguru import logger
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
-from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
-from src.utils.llm import get_robust_model, wait_for_llm_ready
+
 from src.core.workflow_manager import WorkflowLoader
 from src.utils.config_loader import get_config
+from src.utils.llm import get_robust_model, wait_for_llm_ready
+
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 # --- 型定義 (Decentralized from types.py) ---
 
@@ -32,9 +32,8 @@ class Blueprint(BaseModel):
         None, description="参考にするコード片"
     )
 
-# --- サーバー定義 ---
+from .base_server import create_mcp_server, mcp_tool_errorhandler
 
-logger = setup_logging("task_reasoning_server")
 mcp = create_mcp_server("TaskReasoning")
 
 # --- WorkflowManager の初期化とツール登録 ---
@@ -91,13 +90,20 @@ async def execute_reasoning_loop(
     _model = get_robust_model(model_name, base_url=endpoint)
     logger.info(f"Model {_model.model_name} initialized for reasoning.")
     
+    from jinja2 import Environment, FileSystemLoader
+    _template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
+    _jinja_env = Environment(loader=FileSystemLoader(_template_dir))
+    template = _jinja_env.get_template("reasoning_system.j2")
+    system_prompt = template.render(instruction=instruction)
+
     # ノード実行用の Pydantic AI Agent (Planner)
     # 動的ツールを注入
     agent = Agent(
         _model,
         tools=list(dynamic_tools.values()),
-        system_prompt=f"You are a BROWNIE Task Planner. Instruction: {instruction}"
+        system_prompt=system_prompt
     )
+    _ = agent # Mark as used for linting
     
     # 実際の実装ではここでエージェントを実行する (現在はスタブの Blueprint を返す)
     # res = await agent.run(instruction)

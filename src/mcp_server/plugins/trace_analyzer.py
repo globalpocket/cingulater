@@ -1,6 +1,5 @@
+
 from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
-import os
-import traceback
 
 logger = setup_logging(__name__)
 mcp = create_mcp_server("trace_analyzer")
@@ -29,9 +28,9 @@ async def analyze_stack_trace(trace_text: str) -> str:
         files_involved = list(dict.fromkeys(files_involved))
         
         report = [
-            f"Trace Analysis Report",
+            "Trace Analysis Report",
             f"Detected Error: {error_type}",
-            f"Files involved in trace:"
+            "Files involved in trace:"
         ]
         
         for f in files_involved:

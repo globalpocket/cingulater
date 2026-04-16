@@ -1,14 +1,14 @@
 import asyncio
+import datetime
 import os
 import sys
-import datetime
-import json
-from typing import Dict, Any
+from typing import Any, Dict
 
 # プロジェクトルートをパスに追加
 sys.path.append(os.getcwd())
 
 from src.mcp_server.manager import MCPServerManager
+
 
 async def safe_call_tool(client, tool_name: str, arguments: Dict[str, Any]) -> str:
     """ツールを安全に呼び出し、結果をテキストで返す。"""
@@ -45,7 +45,7 @@ async def main():
     print(f"📄 Report output: {report_path}")
     
     report_content = [
-        f"# BROWNIE Comprehensive Analysis Report",
+        "# BROWNIE Comprehensive Analysis Report",
         f"**Date:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"**Target:** `{project_root}`",
         "\n---\n"

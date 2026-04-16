@@ -1,8 +1,10 @@
-import pytest
-import duckdb
 import os
 import tempfile
+
+import duckdb
+import pytest
 from src.workspace.analyzer.flow import FlowTracer
+
 
 @pytest.fixture
 def temp_db():

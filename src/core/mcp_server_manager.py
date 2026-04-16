@@ -1,4 +1,3 @@
-from loguru import logger
 import os
 import sys
 from contextlib import AsyncExitStack
@@ -7,6 +6,8 @@ from typing import Any, Dict, List, Optional
 import anyio
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport
+from loguru import logger
+
 from src.core.config import get_settings
 
 

@@ -1,6 +1,7 @@
-from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
-import sqlite3
 import os
+import sqlite3
+
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 logger = setup_logging(__name__)
 mcp = create_mcp_server("db_profiler")

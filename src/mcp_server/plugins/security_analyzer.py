@@ -1,6 +1,7 @@
-from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
-import subprocess
 import os
+import subprocess
+
+from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 logger = setup_logging(__name__)
 mcp = create_mcp_server("security_analyzer")

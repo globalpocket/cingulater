@@ -1,74 +1,75 @@
-"""
-BROWNIE Repository Provision MCP Server
-=======================================
-リポジトリの「プロビジョニング（準備・同期）」を MCP プロトコルで公開するサーバー。
-stdio トランスポートで Orchestrator のサブプロセスとして動作する。
+import os
+import re
+from typing import Optional
 
-公開 Tool:
-  - provision_repository(repo_name, repo_path, token, branch_name): クローンおよび最新化
-  - sync_lfs(repo_path): LFS ファイルの取得
-  - verify_sync(repo_path, branch_name): リモートとの同期確認
-"""
+import git
 
-from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
+from .base_server import create_mcp_server, mcp_tool_errorhandler
 
-logger = setup_logging(__name__)
+mcp = create_mcp_server("RepositoryProvision")
 
 # ============================================================
 # Git Operations Logic (Internal)
 # ============================================================
 
 class GitOperations:
-    """Git コマンドの実行ロジックの実装"""
+    """GitPython を利用した Git 操作ロジックの実装"""
     def __init__(self, repo_path: str):
         self.repo_path = repo_path
+        self._repo: Optional[git.Repo] = None
 
-    def _run_git(self, args: List[str]) -> str:
-        try:
-            result = subprocess.run(
-                ["git"] + args,
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Git execution error: {e.stderr}")
-            raise Exception(f"Git Error: {e.stderr}")
+    @property
+    def repo(self) -> git.Repo:
+        if self._repo is None:
+            self._repo = git.Repo(self.repo_path)
+        return self._repo
 
     def sync_lfs(self):
         logger.info("Syncing Git LFS...")
-        self._run_git(["lfs", "install"])
-        self._run_git(["lfs", "pull"])
+        try:
+            # GitPython の git オブジェクト経由でコマンド実行
+            self.repo.git.lfs("install")
+            self.repo.git.lfs("pull")
+        except Exception as e:
+            logger.warning(f"LFS sync failed (might not be installed): {e}")
 
     def verify_remote_sha(self, branch: str) -> bool:
-        local_sha = self._run_git(["rev-parse", "HEAD"])
-        remote_sha = self._run_git(["rev-parse", f"origin/{branch}"])
+        local_sha = self.repo.head.commit.hexsha
+        # リモート情報の取得
+        self.repo.remotes.origin.fetch()
+        remote_sha = self.repo.remotes.origin.refs[branch].commit.hexsha
         return local_sha == remote_sha
 
-    def ensure_repo_cloned(self, repo_name: str, token: str, branch_name: Optional[str] = None):
+    def ensure_repo_cloned(
+        self, 
+        repo_name: str, 
+        token: str, 
+        branch_name: Optional[str] = None
+    ):
         if not os.path.exists(os.path.join(self.repo_path, ".git")):
             logger.info(f"Cloning repository: {repo_name} into {self.repo_path}")
             os.makedirs(self.repo_path, exist_ok=True)
             url = f"https://x-access-token:{token}@github.com/{repo_name}.git"
-            subprocess.run(["git", "clone", url, "."], cwd=self.repo_path, check=True)
+            git.Repo.clone_from(url, self.repo_path)
         
-        self._run_git(["fetch", "origin"])
+        repo = self.repo
+        repo.remotes.origin.fetch()
+        
         target = branch_name
         if not target:
             try:
-                target = self._run_git(["symbolic-ref", "refs/remotes/origin/HEAD"]).split("/")[-1]
-            except:
+                # デフォルトブランチの取得
+                target = repo.git.symbolic_ref(
+                    "refs/remotes/origin/HEAD", short=True
+                ).split("/")[-1]
+            except Exception:
                 target = "main"
 
         logger.info(f"Syncing to branch: {target}")
-        try:
-            self._run_git(["checkout", target])
-        except:
-            self._run_git(["checkout", "-b", target, f"origin/{target}"])
-            
-        self._run_git(["reset", "--hard", f"origin/{target}"])
+        
+        # チェックアウトとリセット
+        repo.git.checkout(target)
+        repo.git.reset("--hard", f"origin/{target}")
         self.sync_lfs()
 
     def fuzzy_ast_replace(self, file_path: str, target: str, replacement: str):
@@ -86,12 +87,13 @@ class GitOperations:
             f.write(new_content)
 
     def commit_and_push(self, branch: str, message: str):
-        self._run_git(["add", "."])
-        status = self._run_git(["status", "--porcelain"])
-        if not status:
+        repo = self.repo
+        repo.git.add(A=True)
+        if not repo.is_dirty():
             return "No changes to commit."
-        self._run_git(["commit", "-m", message])
-        self._run_git(["push", "origin", branch, "--force"])
+        
+        repo.index.commit(message)
+        repo.remotes.origin.push(branch, force=True)
         return f"Committed and pushed to {branch}"
 
 # --- サーバーインスタンスの生成 ---
@@ -103,7 +105,12 @@ mcp = create_mcp_server("RepositoryProvision")
 
 @mcp.tool()
 @mcp_tool_errorhandler
-async def provision_repository(repo_name: str, repo_path: str, token: str, branch_name: Optional[str] = None) -> str:
+async def provision_repository(
+    repo_name: str, 
+    repo_path: str, 
+    token: str, 
+    branch_name: Optional[str] = None
+) -> str:
     """GitHub からリポジトリをクローンし、ブランチを最新化します。"""
     git_ops = GitOperations(repo_path)
     git_ops.ensure_repo_cloned(repo_name, token, branch_name)
@@ -125,7 +132,12 @@ async def verify_sync(repo_path: str, branch_name: str) -> str:
 
 @mcp.tool()
 @mcp_tool_errorhandler
-async def apply_fuzzy_replace(repo_path: str, file_path: str, target: str, replacement: str) -> str:
+async def apply_fuzzy_replace(
+    repo_path: str, 
+    file_path: str, 
+    target: str, 
+    replacement: str
+) -> str:
     """Fuzzy マッチを利用したテキスト置換を行います。"""
     GitOperations(repo_path).fuzzy_ast_replace(file_path, target, replacement)
     return f"Applied replace to {file_path}"

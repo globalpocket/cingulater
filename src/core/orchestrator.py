@@ -1,6 +1,5 @@
 import asyncio
 import json
-from loguru import logger
 import os
 import resource
 import subprocess
@@ -9,7 +8,8 @@ from datetime import datetime
 from typing import Optional
 
 import httpx
-import yaml
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from loguru import logger
 
 from src.core.agent import GitHubClientWrapper, TaskAbortedException
 from src.core.config import get_settings
@@ -17,7 +17,6 @@ from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager
 from src.core.state_manager import StateManager
 from src.utils.llm import wait_for_llm_ready
-
 
 global_orchestrator: Optional["Orchestrator"] = None
 
@@ -54,6 +53,9 @@ class Orchestrator:
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._llm_startup_lock = asyncio.Lock()
         self.is_running = False
+        
+        # APScheduler の初期化
+        self.scheduler = AsyncIOScheduler()
 
         # ワークスペースのベースパスを解決 (設計書 8.1 参照)
         self.workspace_base = os.path.expanduser(self.settings.workspace.base_dir)
@@ -126,122 +128,123 @@ class Orchestrator:
                 await persistence_client.call_tool("upsert_repository", repo_name=repo)
 
             self.is_running = True
-            # LLM サーバーの自動起動監視を開始
-            asyncio.create_task(self._llm_health_loop())
+            
+            # ジョブを登録
+            self.scheduler.add_job(
+                self._poll_mentions, 
+                "interval", 
+                seconds=self.settings.agent.polling_interval_sec,
+                id="poll_mentions",
+                replace_existing=True
+            )
+            self.scheduler.add_job(
+                self._llm_health_loop_job, 
+                "interval", 
+                minutes=1,
+                id="llm_health",
+                replace_existing=True
+            )
+            self.scheduler.add_job(
+                self._resource_monitor_loop_job, 
+                "interval", 
+                seconds=30,
+                id="resource_monitor",
+                replace_existing=True
+            )
+            
+            self.scheduler.start()
+            logger.info("Scheduler started with recurring jobs.")
 
-            # メインプロセスではチェックポインターを維持し続ける
+            # メインプロセスではチェックポインターを維持し、待機し続ける
             async with self.state_manager as sm:
                 self._workflow_app = sm.workflow_app
-
                 try:
                     while self.is_running:
-                        try:
-                            # ワーカープロセスの生存確認と自動復旧
-                            await self.worker_pool.check_health()
-
-                            # リソース監視とストール検知（初回のみ起動）
-                            if (
-                                not hasattr(self, "resource_monitor_task")
-                                or self.resource_monitor_task.done()
-                            ):
-                                self.resource_monitor_task = asyncio.create_task(
-                                    self._resource_monitor_loop()
-                                )
-
-                            await self._poll_mentions()
-                            logger.debug("Polling cycle completed successfully.")
-                            await asyncio.sleep(
-                                self.settings.agent.polling_interval_sec
-                            )
-                        except Exception as e:
-                            logger.error(f"Unexpected error in polling loop: {e}")
-                            await asyncio.sleep(30)
+                        await asyncio.sleep(1)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logger.info("Orchestrator stopping...")
                 finally:
                     await self.shutdown()
 
+    async def _llm_health_loop_job(self):
+        """APScheduler 用：LLM サーバーの死活監視"""
+        try:
+            await self._check_llm_health()
+        except Exception as e:
+            logger.error(f"Error in LLM health job: {e}")
+
+    async def _resource_monitor_loop_job(self):
+        """APScheduler 用：リソース監視とストール検知"""
+        try:
+            await self._resource_monitor_step()
+        except Exception as e:
+            logger.error(f"Error in resource monitor job: {e}")
+
     async def shutdown(self):
         """オーケストレーターのクリーンアップ"""
         logger.info("Orchestrator shutting down...")
         self.is_running = False
+        self.scheduler.shutdown()
         await self.http_client.aclose()
         self.worker_pool.stop()
         await self.mcp_manager.stop_all()
         logger.info("Orchestrator cleanup completed.")
 
-    async def _llm_health_loop(self):
-        """LLM サーバーの死活監視ループ"""
-        while self.is_running:
-            try:
-                await self._check_llm_health()
-            except Exception as e:
-                logger.error(f"Error in LLM health loop: {e}")
-            await asyncio.sleep(60)  # 1分ごとにチェック
+    async def _resource_monitor_step(self):
+        """Worker のリソース状況を監視し、ストールを検知する一回分のステップ"""
+        # ワーカープロセスの生存確認と自動復旧
+        await self.worker_pool.check_health()
 
-    async def _resource_monitor_loop(self):
-        """Worker のリソース状況を監視し、ストールを検知するループ"""
         client = self.mcp_manager.resource_monitor_client
         if not client:
             logger.error("Resource Monitor Client is not initialized.")
             return
 
-        while self.is_running:
-            try:
-                # Redis からすべての Heartbeat を取得
-                conn = self.worker_pool.huey.storage.conn
-                keys = conn.keys("brownie:heartbeat:*")
+        try:
+            # Redis からすべての Heartbeat を取得
+            conn = self.worker_pool.huey.storage.conn
+            keys = conn.keys("brownie:heartbeat:*")
 
-                for key in keys:
-                    data = conn.get(key)
-                    if not data:
-                        continue
-                    hb = json.loads(data)
+            for key in keys:
+                data = conn.get(key)
+                if not data:
+                    continue
+                hb = json.loads(data)
 
-                    task_id = hb.get("task_id")
-                    last_seen = hb.get("timestamp", 0)
-                    cpu_usage = hb.get("cpu_pct", 0.0)
+                task_id = hb.get("task_id")
+                last_seen = hb.get("timestamp", 0)
+                cpu_usage = hb.get("cpu_pct", 0.0)
 
-                    # ストール判定 (5分以上進捗がなく、かつ CPU がアイドルの場合)
-                    # MCP 経由で判定。Worker プロセスのメトリクスは Redis にある hb['cpu_pct'] 等を使うため、
-                    # ここでは単純な timeout 判定＋システム状況（または Worker PID が分かればそのPID）での stall 判定を行う。
-                    # 元の ResourceGuardian.check_for_stall を踏襲し、MCP 側の check_stall ツールを呼ぶ。
-                    is_stalled = await client.call_tool(
-                        "check_stall", 
-                        last_heartbeat=last_seen, 
-                        timeout_sec=300,
-                        pid=hb.get("pid") # Heartbeat に PID が含まれていることを期待
+                # ストール判定
+                is_stalled = await client.call_tool(
+                    "check_stall", 
+                    last_heartbeat=last_seen, 
+                    timeout_sec=300,
+                    pid=hb.get("pid")
+                )
+                
+                if is_stalled:
+                    logger.error(
+                        f"Intelligent Stall Detection: Task {task_id} looks HUNG "
+                        f"(CPU: {cpu_usage}%). Revoking and restarting worker."
                     )
-                    
-                    if is_stalled:
-                        logger.error(
-                            f"Intelligent Stall Detection: Task {task_id} looks HUNG (CPU: {cpu_usage}%). Revoking and restarting worker."
-                        )
+                    self.worker_pool.revoke_task(task_id)
+                    self.worker_pool.stop()
+                    await self.worker_pool.run()
 
-                        # 1. タスクを取り消し
-                        self.worker_pool.revoke_task(task_id)
-
-                        # 2. Worker を再起動 (古いプロセスを掃除)
-                        self.worker_pool.stop()
-                        await self.worker_pool.run()
-
-                        # 3. GitHub に通知
-                        repo, num = task_id.split("#")
-                        await self.gh_client.post_comment(
-                            repo,
-                            int(num),
-                            "### ⚠️ 異常検知による自動再起動\n処理が長時間停止し、CPU負荷も確認できなかったため、タスクを中断して Worker を再起動しました。",
-                        )
-
-                        # 4. DB ステータスを更新
-                        await self.state_manager.update_state(
-                            task_id, {"status": "Failed"}, as_node="intent_alignment"
-                        )
-
-            except Exception as e:
-                logger.error(f"Error in resource monitor loop: {e}")
-
-            await asyncio.sleep(30)  # 30秒ごとに監視
+                    repo, num = task_id.split("#")
+                    await self.gh_client.post_comment(
+                        repo,
+                        int(num),
+                        "### ⚠️ 異常検知による自動再起動\n"
+                        "処理が長時間停止し、CPU負荷も確認できなかったため、"
+                        "タスクを中断して Worker を再起動しました。",
+                    )
+                    await self.state_manager.update_state(
+                        task_id, {"status": "Failed"}, as_node="intent_alignment"
+                    )
+        except Exception as e:
+            logger.error(f"Error in resource monitor step: {e}")
 
     async def _check_llm_health(self):
         """LLM サーバーの死活監視と自動起動"""

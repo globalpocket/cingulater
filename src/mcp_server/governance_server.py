@@ -1,6 +1,6 @@
+from typing import Optional
+
 from loguru import logger
-from typing import Optional, List, Literal
-from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 # --- 型定義 (Core から分散) ---

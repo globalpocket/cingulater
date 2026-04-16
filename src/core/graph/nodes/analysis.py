@@ -1,6 +1,7 @@
-from typing import Dict, Any
+from typing import Any, Dict
+
 from src.core.state_manager import TaskState
-from src.core.workers.tasks import analysis_task
+
 
 async def core_analysis_node(state: TaskState) -> Dict[str, Any]:
     """

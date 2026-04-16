@@ -1,8 +1,8 @@
-import asyncio
-import os
-import pytest
 from pathlib import Path
+
+import pytest
 from src.mcp_server.manager import MCPServerManager
+
 
 @pytest.mark.asyncio
 async def test_mcp_jit_loading():

@@ -1,18 +1,18 @@
 import asyncio
 import logging
-from pathlib import Path
-import sys
 import os
-from typing import Dict, Any
+import sys
+from pathlib import Path
 
 # プロジェクトルートと src を PATH に追加
 project_root = Path(__file__).parent.parent.absolute()
 sys.path.append(str(project_root))
 
-from src.core.workflow_manager import WorkflowLoader
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+
+from src.core.workflow_manager import WorkflowLoader
 
 # ログ設定 (デモ用なので INFO にして詳細を出す)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -29,6 +29,7 @@ async def run_demo():
     if mock_mode:
         console.print("[bold yellow]Running in MOCK mode (Testing LangGraph flow without real LLM)[/bold yellow]")
         from unittest.mock import patch
+
         from pydantic_ai.models.test import TestModel
         
         # TestModel を使用して、呼び出しごとに固定のレスポンスを返すようにする

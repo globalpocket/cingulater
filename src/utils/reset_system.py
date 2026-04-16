@@ -1,7 +1,8 @@
 import os
 import shutil
+
 import yaml
-import sys
+
 
 def reset():
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

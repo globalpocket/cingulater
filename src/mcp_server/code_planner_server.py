@@ -6,12 +6,16 @@ BROWNIE Code Planner MCP Server
 """
 
 import os
-import sys
-from loguru import logger
-import asyncio
-from typing import Optional, Union, List, Dict, Any
+from typing import Optional, Union
 
-from .base_server import create_mcp_server, mcp_tool_errorhandler, override_config_from_argv, setup_logging
+from loguru import logger
+
+from .base_server import (
+    create_mcp_server,
+    mcp_tool_errorhandler,
+    override_config_from_argv,
+    setup_logging,
+)
 
 logger = setup_logging(__name__)
 
@@ -25,22 +29,24 @@ _config = {
     "language": os.environ.get("BROWNIE_LANGUAGE", "Japanese")
 }
 
+from jinja2 import Environment, FileSystemLoader
+
+# Jinja2 設定
+_template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
+_jinja_env = Environment(loader=FileSystemLoader(_template_dir))
+
 def _get_agent():
     """Planner Agent インスタンスの生成"""
     model = get_robust_model(_config["model_name"], base_url=_config["endpoint"])
     
+    # テンプレートの読み込みとレンダリング
+    template = _jinja_env.get_template("planner_system.j2")
+    system_prompt = template.render(language=_config["language"])
+    
     agent = Agent(
         model,
         result_type=Union[Blueprint, str],  # Blueprint または ユーザーへの回答メッセージ
-        system_prompt=(
-            "あなたは高度なソフトウェアアーキテクト（Planner）です。\n"
-            "ユーザーの指示を分析し、具体的かつ厳密な実装設計図（Blueprint）を作成することが任務です。\n\n"
-            "### 設計の指針 ###\n"
-            "1. **決定論的設計**: 曖昧さを排し、Executor が迷わず実装できる詳細度で記述してください。\n"
-            "2. **最小変更原則**: 必要最小限のファイル変更で目的を達成してください。\n"
-            "3. **制約の明示**: 実装において守るべきロジックの制約や禁止事項を必ず含めてください。\n\n"
-            f"報告や思考は原則として {_config['language']} で行ってください。"
-        )
+        system_prompt=system_prompt
     )
     return agent
 
@@ -79,5 +85,8 @@ async def generate_blueprint(instruction: str, context: Optional[str] = None) ->
 if __name__ == "__main__":
     override_config_from_argv(_config, ["model_name", "endpoint"])
         
-    logger.info(f"Code Planner Server initialized: model={_config['model_name']}, endpoint={_config['endpoint']}")
+    logger.info(
+        f"Code Planner Server initialized: model={_config['model_name']}, "
+        f"endpoint={_config['endpoint']}"
+    )
     mcp.run(transport="stdio")
