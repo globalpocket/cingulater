@@ -63,6 +63,14 @@ class MCPServerManager:
     def worker_controller_client(self) -> Optional[Client]: return self.clients.get("worker_controller")
     @property
     def task_reasoning_client(self) -> Optional[Client]: return self.clients.get("task_reasoning")
+    @property
+    def memory_client(self) -> Optional[Client]: return self.clients.get("memory")
+    @property
+    def sequential_thinking_client(self) -> Optional[Client]: return self.clients.get("sequential_thinking")
+    @property
+    def sqlite_client(self) -> Optional[Client]: return self.clients.get("sqlite")
+    @property
+    def postgres_client(self) -> Optional[Client]: return self.clients.get("postgres")
 
     async def _start_server(self, name: str, command: str, args: List[str], env: Optional[Dict[str, str]] = None) -> Client:
         """共通の起動エンジン"""
@@ -163,6 +171,38 @@ class MCPServerManager:
             "fetch",
             "npx",
             ["-y", "@modelcontextprotocol/server-fetch"]
+        )
+
+    async def start_memory_server(self):
+        """公式の memory サーバーを起動し、知識グラフ管理を委譲する"""
+        return await self._start_server(
+            "memory",
+            "npx",
+            ["-y", "@modelcontextprotocol/server-memory"]
+        )
+
+    async def start_sequential_thinking_server(self):
+        """公式の sequential-thinking サーバーを起動し、論理的推論を強化する"""
+        return await self._start_server(
+            "sequential_thinking",
+            "npx",
+            ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+        )
+
+    async def start_sqlite_server(self, db_path: str):
+        """公式の sqlite サーバーを起動し、DB解析を委譲する"""
+        return await self._start_server(
+            "sqlite",
+            "npx",
+            ["-y", "@modelcontextprotocol/server-sqlite", "--db", db_path]
+        )
+
+    async def start_postgres_server(self, connection_string: str):
+        """公式の postgres サーバーを起動し、DB解析を委譲する"""
+        return await self._start_server(
+            "postgres",
+            "npx",
+            ["-y", "@modelcontextprotocol/server-postgres", connection_string]
         )
 
     async def provision_servers(self, server_names: List[str]):

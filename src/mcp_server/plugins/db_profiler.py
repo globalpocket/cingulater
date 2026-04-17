@@ -1,47 +1,58 @@
 import os
-import sqlite3
-
+import asyncio
+from fastmcp import Client
+from fastmcp.client.transports.stdio import StdioTransport
 from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 logger = setup_logging(__name__)
 mcp = create_mcp_server("db_profiler")
 
+class DBProxy:
+    def __init__(self):
+        self.sqlite_client: Optional[Client] = None
+
+    async def _get_sqlite_client(self) -> Client:
+        if self.sqlite_client:
+            return self.sqlite_client
+        
+        logger.info("Initializing official SQLite MCP sub-server...")
+        transport = StdioTransport(
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-sqlite"]
+        )
+        self.sqlite_client = Client(transport)
+        await self.sqlite_client.initialize()
+        return self.sqlite_client
+
+db_proxy = DBProxy()
+
 @mcp.tool()
 @mcp_tool_errorhandler
 async def profile_database_schema(db_path: str) -> str:
-    """指定されたSQLiteデータベースファイルのスキーマや構成を分析し、最適化の提案（インデックス欠落等）を行います。"""
+    """指定されたSQLiteデータベースファイルのスキーマや構成を分析し、最適化の提案を行います。"""
     if not os.path.exists(db_path):
         return f"Error: Database file not found {db_path}"
         
+    client = await db_proxy._get_sqlite_client()
+    
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        # 1. テーブル一覧の取得
+        res_tables = await client.call_tool("list_tables", dbPath=db_path)
+        tables = res_tables.get("tables", [])
         
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = [row[0] for row in cursor.fetchall()]
-        
-        report = ["Database Schema Profile:"]
+        report = ["Database Schema Profile (via Official SQLite MCP):"]
         for table in tables:
             report.append(f"\nTable: {table}")
             
-            cursor.execute(f"PRAGMA table_info({table});")
-            columns = cursor.fetchall()
-            for col in columns:
-                report.append(f"  - {col[1]} ({col[2]})")
-                
-            cursor.execute(f"PRAGMA index_list({table});")
-            indices = cursor.fetchall()
-            if indices:
-                report.append("  Indices:")
-                for idx in indices:
-                    report.append(f"    - {idx[1]}")
-            else:
-                report.append("  Indices: None (Warning: Possible N+1 or slow query issues)")
-                
-        conn.close()
+            # 2. スキーマ詳細の取得
+            res_schema = await client.call_tool("describe_table", dbPath=db_path, tableName=table)
+            schema = res_schema.get("schema", "No schema available")
+            report.append(f"  Schema: {schema}")
+            
         return "\n".join(report)
     except Exception as e:
-        return f"Profiling failed: {e}"
+        logger.error(f"Profiling failed via official MCP: {e}")
+        return f"Profiling failed: {e}. (Falling back to manual check not allowed under new pure architecture)"
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

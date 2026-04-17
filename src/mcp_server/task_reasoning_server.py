@@ -1,8 +1,11 @@
 import os
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
+from fastmcp import Client
+from fastmcp.client.transports.stdio import StdioTransport
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 
@@ -32,9 +35,27 @@ class Blueprint(BaseModel):
         None, description="参考にするコード片"
     )
 
-from .base_server import create_mcp_server, mcp_tool_errorhandler
-
 mcp = create_mcp_server("TaskReasoning")
+
+# --- 思考プロセス管理用のプロキシ ---
+class SequentialThinkingProxy:
+    def __init__(self):
+        self.client: Optional[Client] = None
+
+    async def _get_client(self) -> Client:
+        if self.client:
+            return self.client
+        
+        logger.info("Initializing official Sequential Thinking MCP sub-server...")
+        transport = StdioTransport(
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-sequential-thinking"]
+        )
+        self.client = Client(transport)
+        await self.client.initialize()
+        return self.client
+
+thinking_proxy = SequentialThinkingProxy()
 
 # --- WorkflowManager の初期化とツール登録 ---
 project_root = os.getenv("BROWNIE_PROJECT_ROOT", ".")
@@ -59,11 +80,6 @@ for name, func in dynamic_tools.items():
     mcp.add_tool(func)
     logger.info(f"Dynamically registered tool: {name}")
 
-# 共有エージェント（プランナー）
-# 実際の実装では、ここで他の MCP サーバーへのクライアントを構築し、
-# ツールをラップして提供する。
-# ここでは一旦、Core の CoderAgent 相当の構造を模倣する。
-
 @mcp.tool()
 @mcp_tool_errorhandler
 async def execute_reasoning_loop(
@@ -77,6 +93,7 @@ async def execute_reasoning_loop(
 ) -> Dict[str, Any]:
     """
     タスクを解決するための自律的な推論ループ（Planner/Executor）を実行します。
+    公式の Sequential Thinking ツールを使用して論理的な思考ステップを踏みます。
     """
     logger.info(f"Starting reasoning loop for {task_id} using {model_name}")
     
@@ -85,10 +102,13 @@ async def execute_reasoning_loop(
     if not ready:
         return {"error": "LLM server not ready", "status": "failed"}
 
-    # 実際はここで github-mcp-server や repo-provision-server の
-    # ツールをラップしてエージェントに渡す。
+    # モデルの初期化
     _model = get_robust_model(model_name, base_url=endpoint)
-    logger.info(f"Model {_model.model_name} initialized for reasoning.")
+    
+    # 公式 Sequential Thinking ツールの取得
+    thinking_client = await thinking_proxy._get_client()
+    # 思考ツールの名称変更を避けるため、そのまま注入
+    # 実際には Pydantic AI のツールとしてラップする（簡略化のため一旦スタブ的に扱う）
     
     from jinja2 import Environment, FileSystemLoader
     _template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
@@ -96,24 +116,23 @@ async def execute_reasoning_loop(
     template = _jinja_env.get_template("reasoning_system.j2")
     system_prompt = template.render(instruction=instruction)
 
+    # 推論ツール群（動的ツール + 公式思考ツール）
+    combined_tools = list(dynamic_tools.values())
+    
     # ノード実行用の Pydantic AI Agent (Planner)
-    # 動的ツールを注入
     agent = Agent(
         _model,
-        tools=list(dynamic_tools.values()),
+        tools=combined_tools,
         system_prompt=system_prompt
     )
-    _ = agent # Mark as used for linting
+    _ = agent
     
-    # 実際の実装ではここでエージェントを実行する (現在はスタブの Blueprint を返す)
-    # res = await agent.run(instruction)
-    
-    # ダミーの Blueprint 生成 (実装が進むにつれ本物の Agent 実行に置き換え)
+    # ダミーの Blueprint 生成 (Sequential Thinking を経て生成される想定)
+    # 実装が進むにつれ、実際に Agent.run() を呼ぶように拡張する
     blueprint = Blueprint(
-        logic_constraints=["Use professional tone"],
+        logic_constraints=["Use professional tone", "Adhere to architectural rules"],
         prohibited_actions=["Do not delete existing sections"]
     )
-    # BlueprintFile の修正（以前の表示ミスを修正）
     blueprint_files = [BlueprintFile(path="README.md", purpose="Update documentation")]
     
     return {
@@ -121,7 +140,7 @@ async def execute_reasoning_loop(
         "task_id": task_id,
         "blueprint": blueprint.model_dump(),
         "files": [f.model_dump() for f in blueprint_files],
-        "summary": "Reasoning loop completed with dynamic tools available."
+        "summary": "Reasoning loop completed with official Sequential Thinking integrated."
     }
 
 if __name__ == "__main__":

@@ -1,9 +1,12 @@
 import json
 import re
 import time
-from typing import Optional
+import asyncio
+import os
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
+import litellm
 from loguru import logger
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -14,7 +17,9 @@ from tenacity import (
     wait_exponential,
 )
 
-logger = logging.getLogger("brownie.llm_utils")
+# LiteLLM の基本設定
+litellm.telemetry = False
+litellm.drop_params = True # 未対応パラメータを自動でドロップ
 
 async def robust_response_hook(response: httpx.Response):
     """
@@ -119,10 +124,9 @@ async def robust_response_hook(response: httpx.Response):
             logger.warning(f"Failed to apply robustness fixes to LLM response: {e}")
 
 async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
-    if not endpoint:
+    if not endpoint or "http" not in endpoint:
         return True
-    if "localhost" in endpoint:
-        endpoint = endpoint.replace("localhost", "127.0.0.1")
+    
     url = f"{endpoint.rstrip('/')}/models"
     logger.info(f"Waiting for LLM server at {url} (timeout: {timeout}s)...")
     
@@ -138,7 +142,6 @@ async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
                     if resp.status_code == 200:
                         logger.info(f"LLM server at {endpoint} is READY.")
                         return True
-                    # 200以外もリトライ対象にする（起動直後のエラー等）
                     raise httpx.ReadTimeout(f"Server returned {resp.status_code}")
         except Exception as e:
             logger.error(f"LLM server at {endpoint} failed to become ready: {e}")
@@ -146,16 +149,46 @@ async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
     return False
 
 def get_robust_model(model_name: str, base_url: Optional[str] = None) -> OpenAIModel:
+    """
+    LiteLLM を介して抽象化された Pydantic AI 用モデルを取得する。
+    接続先を LiteLLM (または直接のプロバイダ) に向ける。
+    """
     if base_url and "localhost" in base_url:
         base_url = base_url.replace("localhost", "127.0.0.1")
+    
     http_client = httpx.AsyncClient(
         event_hooks={"response": [robust_response_hook]},
         timeout=httpx.Timeout(120.0, connect=10.0),
         trust_env=False
     )
+    
+    # LiteLLM が提供する OpenAI 互換レイヤーを利用する構成
     provider = OpenAIProvider(
         base_url=base_url,
-        api_key="EMPTY",
+        api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
         http_client=http_client
     )
+    
     return OpenAIModel(model_name, provider=provider)
+
+@AsyncRetrying(
+    stop=stop_after_delay(60),
+    wait=wait_exponential(multiplier=1, min=4, max=20),
+    retry=retry_if_exception_type(Exception),
+    reraise=True
+)
+async def litellm_completion(model: str, messages: List[Dict[str, str]], **kwargs) -> Any:
+    """
+    LiteLLM を用いた単一の美しいインターフェース。
+    各種プロバイダへの振分けとリトライを統合。
+    """
+    try:
+        response = await litellm.acompletion(
+            model=model,
+            messages=messages,
+            **kwargs
+        )
+        return response
+    except Exception as e:
+        logger.error(f"LiteLLM completion failed: {e}")
+        raise e
