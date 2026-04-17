@@ -11,41 +11,33 @@ async def intent_alignment_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     logger.info("--- Intent Alignment Node (Delegated to MCP) ---")
 
-    # グローバルオーケストレーターから MCP マネージャーを取得
+    # グローバルオーケストレーターからワークフローを取得 (Phase 8)
     from src.core.orchestrator import global_orchestrator
-    mgr = global_orchestrator.mcp_manager if global_orchestrator else None
-    if not mgr or not mgr.intent_interpreter_client:
-        logger.error("Intent Interpreter MCP Client is not available.")
+    if not global_orchestrator or "interpreter" not in global_orchestrator.dynamic_workflows:
+        logger.error("Interpreter workflow is not available.")
         return {
             "status": "Phase0_WaitingForUserConfirmation",
             "intent_confirmed": False,
-            "intent_draft": "システムエラー：意図解析サーバーが起動していません。",
+            "intent_draft": "システムエラー：意図解析ワークフローがロードされていません。",
             "evaluation_axes": [],
             "required_mcp_servers": [],
             "history": [{"node": "intent_alignment", "status": "error"}]
         }
 
-    client = global_orchestrator.mcp_manager.intent_interpreter_client
-    config = get_config()
-    model_name = config["llm"]["models"]["planner"]
-    endpoint = config["llm"]["planner_endpoint"]
+    interpreter_wf = global_orchestrator.dynamic_workflows["interpreter"]
 
     try:
-        # MCP ツールの呼び出し
-        result = await client.call_tool(
-            "interpret_intent", 
-            instruction=state["instruction"],
-            model_name=model_name,
-            endpoint=endpoint
-        )
+        # YAML ワークフローを実行
+        # WorkflowManager は {'results': {'analyze': ...}, ...} 形式の辞書を返す
+        wf_result = await interpreter_wf(input_data=state["instruction"])
         
-        # 結果の解析
-        # result は通常辞書形式（ToolResponse.content 等を FastMCP クライアントが処理したもの）
-        if isinstance(result, str):
-            import json
-            draft_data = json.loads(result)
-        else:
-            draft_data = result
+        # 'analyze' ノードの出力を取得 (Pydantic-AI の result.output)
+        draft_data = wf_result.get("results", {}).get("analyze")
+        
+        if not draft_data:
+            raise ValueError("Interpreter workflow returned no analysis data.")
+
+        # 以降のロジックは従来通り (互換性維持)
 
         draft_status = draft_data.get("status")
         draft_comment = draft_data.get("draft_comment", "")

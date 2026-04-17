@@ -1,0 +1,8 @@
+name: writer
+description: "設計図（Blueprint）に基づき、具体的なコード修正やファイル操作を実行するエージェント"
+start_node: write
+nodes:
+  write:
+    prompt_file: writer.md
+    model: executor
+    next: END

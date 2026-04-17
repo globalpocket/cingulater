@@ -49,6 +49,15 @@ class Orchestrator:
         self.state_manager = StateManager()
         self._workflow_app = self.state_manager.workflow_app
 
+        # WorkflowLoader の初期化 (Phase 8: 純粋エンジン化)
+        from src.core.workflow_manager import WorkflowLoader
+        self.workflow_loader = WorkflowLoader(
+            Path(self.project_root),
+            Path(self.workspace_base)
+        )
+        # 全てのワークフロー定義 (YAML/MD) をロード
+        self.dynamic_workflows = self.workflow_loader.load_all()
+
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._llm_startup_lock = asyncio.Lock()
         self.is_running = False

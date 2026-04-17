@@ -1,0 +1,8 @@
+name: planner
+description: "タスクの解決策を設計し、実行担当者（Writer）への設計図を作成するエージェント"
+start_node: plan
+nodes:
+  plan:
+    prompt_file: planner.md
+    model: planner
+    next: END

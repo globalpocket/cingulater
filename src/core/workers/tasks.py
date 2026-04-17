@@ -137,7 +137,6 @@ async def execute_workflow_task(workflow_name: str, input_data: Any = None):
         
         await orch._wait_for_llm_ready()
         async with orch.mcp_manager:
-            await orch.mcp_manager.start_interpreter_server() # Ensure interpreter is up
             logger.info(f"Running workflow function for {workflow_name}...")
             result = await workflow_func(input_data=input_data)
             logger.info(f"✅ Workflow '{workflow_name}' finished.")

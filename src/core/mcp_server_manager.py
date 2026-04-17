@@ -48,10 +48,6 @@ class MCPServerManager:
     @property
     def knowledge_client(self) -> Optional[Client]: return self.clients.get("knowledge")
     @property
-    def planner_client(self) -> Optional[Client]: return self.clients.get("planner")
-    @property
-    def writer_client(self) -> Optional[Client]: return self.clients.get("writer")
-    @property
     def resource_monitor_client(self) -> Optional[Client]: return self.clients.get("resource_monitor")
     @property
     def github_sdk_client(self) -> Optional[Client]: return self.clients.get("github_sdk")
@@ -66,13 +62,9 @@ class MCPServerManager:
     @property
     def worker_client(self) -> Optional[Client]: return self.clients.get("worker")
     @property
-    def intent_interpreter_client(self) -> Optional[Client]: return self.clients.get("intent_interpreter")
-    @property
     def governance_client(self) -> Optional[Client]: return self.clients.get("governance")
     @property
     def worker_controller_client(self) -> Optional[Client]: return self.clients.get("worker_controller")
-    @property
-    def task_reasoning_client(self) -> Optional[Client]: return self.clients.get("task_reasoning")
     @property
     def memory_client(self) -> Optional[Client]: return self.clients.get("memory")
     @property
@@ -100,7 +92,7 @@ class MCPServerManager:
         logger.info(f"{name} MCP Server connected successfully.")
         return client
 
-    # --- Core Servers ---
+    # --- Core Infrastructure Servers ---
     async def start_workspace_server(self, repo_path: str, reference_path: str, user_id: int, group_id: int):
         self._repo_path = repo_path
         self._reference_path = reference_path
@@ -120,12 +112,6 @@ class MCPServerManager:
             ["-m", "src.mcp_server.knowledge_server", repo_path, memory_path, repo_name],
             {"BROWNIE_TARGET_REPO": repo_name, "BROWNIE_REPO_PATH": repo_path, "BROWNIE_MEMORY_PATH": memory_path}
         )
-
-    async def start_planner_server(self):
-        return await self._start_server("planner", sys.executable, ["-m", "src.mcp_server.code_planner_server"])
-
-    async def start_writer_server(self):
-        return await self._start_server("writer", sys.executable, ["-m", "src.mcp_server.code_writer_server"])
 
     async def start_resource_monitor_server(self):
         return await self._start_server("resource_monitor", sys.executable, ["-m", "src.mcp_server.resource_monitor_server"])
@@ -151,17 +137,11 @@ class MCPServerManager:
     async def start_worker_server(self):
         return await self._start_server("worker", sys.executable, ["-m", "src.mcp_server.worker_server"])
 
-    async def start_intent_interpreter_server(self) -> Client:
-        return await self._start_server("intent_interpreter", sys.executable, ["-m", "src.mcp_server.intent_interpreter_server"])
-
     async def start_governance_server(self) -> Client:
         return await self._start_server("governance", sys.executable, ["-m", "src.mcp_server.governance_server"])
 
     async def start_worker_controller_server(self) -> Client:
         return await self._start_server("worker_controller", sys.executable, ["-m", "src.mcp_server.worker_controller_server"])
-
-    async def start_task_reasoning_server(self) -> Client:
-        return await self._start_server("task_reasoning", sys.executable, ["-m", "src.mcp_server.task_reasoning_server"])
 
     # --- Official & Dynamic Plugins via Pluggy ---
     async def provision_servers(self, server_names: List[str]):
