@@ -114,6 +114,8 @@ class Orchestrator:
         logger.info("Shutting down Orchestrator...")
         self.is_running = False
         await self.http_client.aclose()
+        # SandboxManager (内蔵 MCP クライアント) の停止
+        await self.sandbox.stop()
         # MCP サーバー停止時にワーカープロセス等のクリーンアップも行われる
         await self.mcp_manager.stop_all()
 

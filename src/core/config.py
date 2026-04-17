@@ -7,6 +7,13 @@ import yaml
 from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
+
 VERSION = "0.1.0--alpha"
 
 class AgentSettings(BaseSettings):
@@ -53,12 +60,37 @@ class Settings(BaseSettings):
     llm: LLMSettings = LLMSettings()
     workspace: WorkspaceSettings = WorkspaceSettings()
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """設定ソースの優先順位を定義（YAMLファイル > 環境変数）"""
+        project_root = Path(__file__).parent.parent.parent
+        config_path = project_root / os.getenv("BROWNIE_CONFIG", "config/config.yaml")
+        magic_path = config_path.parent / "magicvalues.yaml"
+
+        sources = [init_settings, env_settings]
+        
+        # magicvalues.yaml (優先度低)
+        if magic_path.exists():
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=magic_path))
+        
+        # config.yaml
+        if config_path.exists():
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=config_path))
+            
+        return tuple(sources)
+
     @computed_field
     @property
     def build_id(self) -> str:
         """現在のGitコミットハッシュを取得し、ビルドIDとして返す"""
         try:
-            # プロジェクトルートを取得 (src/core/config.py から見て 2つ上)
             project_root = Path(__file__).parent.parent.parent
             build_id = subprocess.check_output(
                 ["git", "rev-parse", "--short", "HEAD"], 
@@ -74,52 +106,12 @@ class Settings(BaseSettings):
         """GitHubコメント用の標準フッターを生成する"""
         return f"\n\n---\n> Built from: `{self.build_id}`"
 
-    @classmethod
-    def load(cls, config_path: Optional[str] = None) -> "Settings":
-        """
-        YAMLファイルから設定を読み込み、Settingsオブジェクトを生成します。
-        環境変数による上書き、magicvalues.yaml のマージも行います。
-        """
-        if config_path is None:
-            config_path = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
-
-        # プロジェクトルートからの相対パス解決
-        if not os.path.isabs(config_path):
-            project_root = Path(__file__).parent.parent.parent
-            config_path = str(project_root / config_path)
-
-        # 1. config.yaml の読み込み
-        init_data = {}
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                yaml_data = yaml.safe_load(f)
-                if yaml_data:
-                    init_data.update(yaml_data)
-
-        # 2. magicvalues.yaml の読み込みとマージ
-        magic_path = os.path.join(os.path.dirname(config_path), "magicvalues.yaml")
-        if os.path.exists(magic_path):
-            with open(magic_path, "r", encoding="utf-8") as f:
-                magic_data = yaml.safe_load(f)
-                if magic_data:
-                    _deep_merge(magic_data, init_data)
-
-        # 3. Pydantic-settings に YAML データを初期値として渡す
-        # これにより、環境変数が YAML データを上書きする (Pydantic の標準挙動)
-        return cls(**init_data)
-
-def _deep_merge(source: dict, destination: dict):
-    for key, value in source.items():
-        if isinstance(value, dict) and key in destination and isinstance(destination[key], dict):
-            _deep_merge(value, destination[key])
-        else:
-            destination[key] = value
-
 _settings: Optional[Settings] = None
 
 def get_settings(config_path: Optional[str] = None) -> Settings:
     """Settings のシングルトンインスタンスを取得します。"""
     global _settings
     if _settings is None or config_path:
-        _settings = Settings.load(config_path)
+        # Pydantic-Settings 2.x ではインスタンス化時に自動でソースが読み込まれる
+        _settings = Settings()
     return _settings

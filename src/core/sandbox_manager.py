@@ -11,6 +11,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fi
 from src.utils.cmd_helper import run_command
 
 
+from contextlib import AsyncExitStack
+from fastmcp import Client
+from fastmcp.client.transports.stdio import StdioTransport
+
 class WorkspaceContext:
     def __init__(self, root_path: str, reference_path: Optional[str] = None):
         """
@@ -21,48 +25,17 @@ class WorkspaceContext:
         
         logger.info(f"WorkspaceContext initialized. root={self.root_path}, reference={self.reference_path}")
 
-    def resolve_path(self, target_path: str, strict: bool = True) -> Path:
+    def resolve_path(self, target_path: str, strict: bool = True) -> str:
         """
-        AIエージェントから渡されたパスを安全な物理絶対パスに解決する。
+        AIエージェントから渡されたパスを、公式 MCP も理解できる絶対パスまたは
+        コンテキストルートからの相対パスとして解決する。
+        セキュリティは Filesystem MCP の起動時引数 (--allowed-directories) で担保されるため、
+        ここでは単純な結合と存在チェックを行う。
         """
         p = Path(target_path)
-        
         if p.is_absolute():
-            full_path = p.resolve()
-        else:
-            full_path = (self.root_path / p).resolve()
-
-        if strict:
-            if not self._is_within(full_path, self.root_path):
-                if self.reference_path and self._is_within(full_path, self.reference_path):
-                    return full_path
-                
-                logger.error(f"Security Alert: Path Traversal attempt detected: {target_path} -> {full_path}")
-                raise PermissionError(f"Access denied. Path '{target_path}' is outside the authorized workspace.")
-        
-        return full_path
-
-    def get_relative_path(self, absolute_path: Union[str, Path]) -> str:
-        abs_p = Path(absolute_path).resolve()
-        try:
-            return os.path.relpath(abs_p, self.root_path)
-        except ValueError:
-            if self.reference_path:
-                try:
-                    return os.path.relpath(abs_p, self.reference_path)
-                except ValueError:
-                    pass
-            return str(abs_p)
-
-    def _is_within(self, child: Path, parent: Path) -> bool:
-        try:
-            return child.resolve().is_relative_to(parent.resolve())
-        except (ValueError, AttributeError):
-            try:
-                os.relpath(child.resolve(), parent.resolve())
-                return not os.path.relpath(child.resolve(), parent.resolve()).startswith("..")
-            except ValueError:
-                return False
+            return str(p.resolve())
+        return str((self.root_path / p).resolve())
 
 class LinterEngine:
     """各種リンター・フォーマッター・セキュリティスキャナの一括実行エンジン"""
@@ -118,9 +91,9 @@ class LinterEngine:
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("lint_command")
         if not cmd:
-            if any(f.endswith(".py") for _, _, fs in os.walk(target_path) for f in fs):
-                cmd = "ruff check"
-        if not cmd: return None
+            # os.walk を廃止し、パスの存在確認のみに留めるか、
+            # あるいは必要に応じて外部から情報を渡す設計へ
+            cmd = "ruff check"
         rel_path = os.path.relpath(target_path, self.repo_root)
         return f"{cmd} {rel_path}"
 
@@ -128,9 +101,7 @@ class LinterEngine:
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("format_command")
         if not cmd:
-            if any(f.endswith(".py") for _, _, fs in os.walk(target_path) for f in fs):
-                cmd = "black"
-        if not cmd: return None
+            cmd = "black"
         rel_path = os.path.relpath(target_path, self.repo_root)
         return f"{cmd} {rel_path}"
 
@@ -138,20 +109,50 @@ class LinterEngine:
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("security_command")
         if not cmd:
-            if any(f.endswith(".py") for _, _, fs in os.walk(target_path) for f in fs):
-                cmd = "bandit -r -f txt"
-        if not cmd: return None
+            cmd = "bandit -r -f txt"
         rel_path = os.path.relpath(target_path, self.repo_root)
         return f"{cmd} {rel_path}"
 
 class SandboxManager:
-    """Testcontainers を用いたサンドボックス管理クラス"""
+    """公式 Filesystem MCP を内部で活用するサンドボックス管理クラス"""
     
     def __init__(self, user_id: int, group_id: int):
         self.user_id = user_id
         self.group_id = group_id
         self.context: Optional[WorkspaceContext] = None
+        self._exit_stack = AsyncExitStack()
+        self._fs_client: Optional[Client] = None
         logger.info(f"SandboxManager initialized for user {user_id}:{group_id}")
+
+    async def _get_fs_client(self) -> Client:
+        """Filesystem MCP クライアントを遅延起動・取得する"""
+        if self._fs_client:
+            return self._fs_client
+        
+        if not self.context:
+            raise RuntimeError("WorkspaceContext is not set.")
+
+        # 許可ディレクトリの設定（ワークスペースとリファレンス）
+        allowed_dirs = [str(self.context.root_path)]
+        if self.context.reference_path:
+            allowed_dirs.append(str(self.context.reference_path))
+
+        logger.info(f"Starting official Filesystem MCP server with allowed dirs: {allowed_dirs}")
+        
+        transport = StdioTransport(
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-filesystem"] + allowed_dirs
+        )
+        
+        client = Client(transport)
+        await self._exit_stack.enter_async_context(client)
+        self._fs_client = client
+        return client
+
+    async def stop(self):
+        """内部 MCP サーバーを停止する"""
+        await self._exit_stack.aclose()
+        self._fs_client = None
 
     def set_workspace_root(self, root_path: str):
         if self.context:
@@ -168,38 +169,58 @@ class SandboxManager:
     def _get_full_path(self, path: str, rw: bool = False) -> str:
         if not self.context:
             raise RuntimeError("WorkspaceContext is not set.")
-        full_path = self.context.resolve_path(path, strict=True)
+        full_path = self.context.resolve_path(path)
+        # 書き込み制限の基本チェック（詳細は MCP 側でもバリデーションされる）
         if rw and not str(full_path).startswith(str(self.context.root_path)):
             raise PermissionError("Write access denied outside workspace.")
         return str(full_path)
 
     async def list_files(self, path: str = ".", max_depth: int = 1) -> str:
+        client = await self._get_fs_client()
         full_path = self._get_full_path(path)
-        if not os.path.exists(full_path):
-            return f"Error: Path '{path}' not found."
-        output = []
-        for root, dirs, files in os.walk(full_path):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            rel_root = os.path.relpath(root, full_path)
-            prefix = "" if rel_root == "." else rel_root + "/"
-            for d in sorted(dirs): output.append(f"[DIR]  {prefix}{d}/")
-            for f in sorted(files):
-                if not f.startswith("."): output.append(f"[FILE] {prefix}{f}")
-            depth = 0 if rel_root == "." else rel_root.count(os.sep) + 1
-            if depth >= max_depth: del dirs[:]
-        return "\n".join(output) or "(Empty directory)"
+        
+        # 公式 MCP の list_directory を使用
+        # 再帰的な探索が必要な場合はエミュレートする
+        async def _recursive_list(current_path: str, depth: int) -> List[str]:
+            if depth > max_depth:
+                return []
+            
+            try:
+                # ツール名の取得（公式 MCP の定義に従う）
+                res = await client.call_tool("list_directory", {"path": current_path})
+                # 結果のパース
+                content = res if isinstance(res, str) else str(res)
+                lines = content.strip().split("\n")
+                
+                results = []
+                for line in lines:
+                    results.append(line)
+                    if "[DIR]" in line and depth < max_depth:
+                        dir_name = line.split("  ")[-1].strip("/")
+                        dir_path = os.path.join(current_path, dir_name)
+                        results.extend(await _recursive_list(dir_path, depth + 1))
+                return results
+            except Exception as e:
+                logger.warning(f"Failed to list directory {current_path}: {e}")
+                return [f"Error: {e}"]
+
+        all_files = await _recursive_list(full_path, 1)
+        return "\n".join(all_files) or "(Empty directory)"
 
     async def read_file(self, path: str) -> str:
+        client = await self._get_fs_client()
         full_path = self._get_full_path(path)
-        if not os.path.exists(full_path): return f"Error: File '{path}' not found."
-        with open(full_path, "r", encoding="utf-8") as f:
-            return f"--- Contents of {path} ---\n{f.read()}\n--- End ---"
+        res = await client.call_tool("read_file", {"path": full_path})
+        content = res if isinstance(res, str) else str(res)
+        return f"--- Contents of {path} ---\n{content}\n--- End ---"
 
     async def write_file(self, path: str, content: str) -> str:
+        client = await self._get_fs_client()
         full_path = self._get_full_path(path, rw=True)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        # 公式 MCP の write_file は親ディレクトリが存在しないと失敗する可能性があるため、
+        # ここでは write_file ツールを呼び出す。
+        # 備考: 公式 server-filesystem の write_file はディレクトリ作成機能を含む場合がある。
+        await client.call_tool("write_file", {"path": full_path, "content": content})
         return f"Successfully written to {path}."
 
     async def run_command(
