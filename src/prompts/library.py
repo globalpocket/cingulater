@@ -3,50 +3,41 @@ BROWNIE プロジェクトのプロンプト・ライブラリ。
 Jinja2 テンプレートを廃止し、Python コード内での型安全な管理へ移行しました。
 """
 
-# エージェント共通のフッター
-DEFAULT_LANGUAGE = "日本語"
+import logging
+from pathlib import Path
+from typing import Optional
 
-# Planner 用プロンプト
-PLANNER_SYSTEM_PROMPT = f"""
-あなたは高度なソフトウェアアーキテクト（Planner）です。
-ユーザーの指示を分析し、具体的かつ厳密な実装設計図（Blueprint）を作成することが任務です。
+logger = logging.getLogger("brownie.prompts")
 
-### 設計の指針 ###
-1. **決定論的設計**: 曖昧さを排し、Executor が迷わず実装できる詳細度で記述してください。
-2. **最小変更原則**: 必要最小限のファイル変更で目的を達成してください。
-3. **制約の明示**: 実装において守るべきロジックの制約や禁止事項を必ず含めてください。
+PROMPT_DIR = Path(__file__).parent
 
-報告や思考は原則として {DEFAULT_LANGUAGE} で行ってください。
-"""
+def load_prompt(filename: str) -> str:
+    """Markdown ファイルからシステムプロンプトを読み込む。"""
+    path = PROMPT_DIR / filename
+    if not path.exists():
+        logger.error(f"Prompt file not found: {path}")
+        return f"System prompt error: {filename} not found."
+    return path.read_text(encoding="utf-8")
 
-# Executor 用プロンプト
-EXECUTOR_SYSTEM_PROMPT = f"""
-あなたは高度なソフトウェアエンジニア（Executor）です。
-Planner から渡される「Strict Blueprint（厳格な設計図）」は絶対のルールです。
-設計図に記載されていない独自の解釈、機能追加、リファクタリングは厳禁です。
-回答は実装コード案のみとし、ツール呼び出しは一切行わず、純粋な Markdown で返してください。
+# 各担当者用の動的読み込みプロパティ/関数
+def get_planner_prompt() -> str:
+    return load_prompt("planner.md")
 
-報告や解説が必要な場合は、原則として {DEFAULT_LANGUAGE} で記述してください。
-"""
+def get_executor_prompt() -> str:
+    return load_prompt("executor.md")
 
-# 意図解析担当 (intent_alignment ワークフロー用)
-INTENT_ANALYST_PROMPT = """
-あなたは Brownie AI の意図解析担当（アナリスト）です。
-ユーザーからの指示を分析し、要求の要約と成功基準を整理してください。
-"""
+def get_intent_analyst_prompt() -> str:
+    return load_prompt("intent_analyst.md")
 
-# ツール選定担当 (intent_alignment ワークフロー用)
-TOOL_ARCHITECT_PROMPT = """
-あなたは Brownie AI のツール選定担当（アーキテクト）です。
-これまでの分析結果をもとに、このタスクの解決に必要な MCP サーバーを特定してください。
-"""
+def get_tool_architect_prompt() -> str:
+    return load_prompt("tool_architect.md")
 
-# 最終判定担当 (intent_alignment ワークフロー用)
-INTENT_DIRECTOR_PROMPT = """
-あなたは Brownie AI の最終判定担当（ディレクター）です。
-これまでの分析とツール選定結果をまとめ、ユーザーへの返信とタスクの進行可否を決定してください。
+def get_intent_director_prompt() -> str:
+    return load_prompt("intent_director.md")
 
-### 判定基準 ###
-- **approved**: 指示が明確で、ユーザーが「進めて」等の意図を示している場合。
-- **pending**: 指示が曖昧であるか、全く新しい大きなタスクで方針の合意が必要な場合。
-"""
+# 後方互換性および簡易アクセス用（必要に応じて）
+PLANNER_SYSTEM_PROMPT = get_planner_prompt()
+EXECUTOR_SYSTEM_PROMPT = get_executor_prompt()
+INTENT_ANALYST_PROMPT = get_intent_analyst_prompt()
+TOOL_ARCHITECT_PROMPT = get_tool_architect_prompt()
+INTENT_DIRECTOR_PROMPT = get_intent_director_prompt()

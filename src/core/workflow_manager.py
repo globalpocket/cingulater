@@ -154,53 +154,91 @@ class WorkflowRegistry:
         workflow_runner.__doc__ = tool.description
         return workflow_runner
 
-    def _create_node_func(self, node_id: str, prompt_path: Path, model_name: str, endpoint: str):
-        """
-        特定のノードに対する Pydantic AI Agent 実行関数を生成する。
-        (Jinja2 テンプレートを廃止し、標準的な文字列処理に移行)
-        """
-        async def node_func(state: DynamicWorkflowState) -> DynamicWorkflowState:
-            logger.info(f"--- Node: {node_id} ---")
-            
-            p_content = (
-                prompt_path.read_text(encoding="utf-8")
-                if prompt_path.exists()
-                else f"Prompt file not found: {prompt_path}"
-            )
+from pydantic_ai import Agent, RunContext
 
-            # コンテキストデータの準備
-            context = {
-                "input_data": state.get("input_data"),
-                "results": state.get("results", {}),
-                "vars": state.get("vars", {})
+class WorkflowDeps(BaseModel):
+    """Pydantic-AI の RunContext で利用する依存関係定義"""
+    input_data: Any
+    results: Dict[str, Any] = Field(default_factory=dict)
+    vars: Dict[str, Any] = Field(default_factory=dict)
+
+def _create_node_func(self, node_id: str, prompt_path: Path, model_name: str, endpoint: str):
+    """
+    特定のノードに対する Pydantic AI Agent 実行関数を生成する。
+    RunContext を用いて、Markdown 内の変数を動的に解決する。
+    """
+    async def node_func(state: DynamicWorkflowState) -> DynamicWorkflowState:
+        logger.info(f"--- Node: {node_id} ---")
+        
+        # 1. プロンプトの読み込み
+        raw_prompt = (
+            prompt_path.read_text(encoding="utf-8")
+            if prompt_path.exists()
+            else f"Prompt file not found: {prompt_path}"
+        )
+
+        # 2. モデルとエージェントの準備
+        model = get_robust_model(model_name, base_url=endpoint)
+        deps = WorkflowDeps(
+            input_data=state.get("input_data"),
+            results=state.get("results", {}),
+            vars=state.get("vars", {})
+        )
+
+        # 3. Pydantic-AI Agent の定義 (動的システムプロンプト & ツール委譲)
+        agent = Agent(model, deps_type=WorkflowDeps)
+
+        # 全ての MCP ツールをエージェントに公開する (Phase 7 の核心)
+        # ※ 実際にはセキュリティ上、必要最小限にするのが望ましいが、
+        # ここでは強力な自律性を確保するため、利用可能な全 MCP ツールをバインドする。
+        # Note: Pydantic-AI で外部ツールを動的に追加する仕組みを利用。
+        from src.core.orchestrator import global_orchestrator
+        if global_orchestrator:
+            all_tools = global_orchestrator.mcp_manager.get_all_tools()
+            for tool_node in all_tools:
+                # ツールをラップして登録 (簡易実装。実際には MCP クライアント経由)
+                # ここでは orchestrator の mcp_manager を介して直接呼び出す
+                async def mcp_tool_wrapper(ctx: RunContext[WorkflowDeps], **kwargs):
+                    # 各ツールの実体は MCPServerManager で管理されている
+                    return await global_orchestrator.mcp_manager.call_tool_by_name(tool_node.name, **kwargs)
+                
+                mcp_tool_wrapper.__name__ = tool_node.name
+                mcp_tool_wrapper.__doc__ = tool_node.description
+                agent.tool(mcp_tool_wrapper)
+
+        @agent.system_prompt
+        def get_system_prompt(ctx: RunContext[WorkflowDeps]) -> str:
+            """Markdown 内の {placeholder} を ctx.deps から解決する"""
+            prompt = raw_prompt
+            # 展開用コンテキストの作成
+            format_ctx = {
+                "input_data": ctx.deps.input_data,
+                **ctx.deps.results,
+                **ctx.deps.vars
             }
+            try:
+                # 正規表現による {key} 置換 (Jinja2 等は使わず標準機能で)
+                import re
+                def replacer(match):
+                    key = match.group(1).strip()
+                    return str(format_ctx.get(key, match.group(0)))
+                
+                return re.sub(r"\{(.+?)\}", replacer, prompt)
+            except Exception as e:
+                logger.warning(f"Prompt formatting failed: {e}")
+                return prompt
 
-            # 簡易的な変数置換 ( {{ var }} -> value )
-            system_prompt = p_content
-            for key, val in context.items():
-                if isinstance(val, dict):
-                    for sub_key, sub_val in val.items():
-                        placeholder = f"{{{{ {key}.{sub_key} }}}}"
-                        if placeholder in system_prompt:
-                            system_prompt = system_prompt.replace(placeholder, str(sub_val))
-                placeholder = f"{{{{ {key} }}}}"
-                if placeholder in system_prompt:
-                    system_prompt = system_prompt.replace(placeholder, str(val))
+        # 4. 実行
+        prompt_data = str(state.get("input_data"))
+        # ツール呼び出しを許可して実行
+        result = await agent.run(prompt_data, deps=deps)
+        
+        output = result.output
+        state["results"][node_id] = output
+        logger.debug(f"Node {node_id} output: {str(output)[:100]}...")
+        return state
 
-            model = get_robust_model(model_name, base_url=endpoint)
-
-            # Pydantic AI Agent の実行
-            agent = Agent(model, system_prompt=system_prompt)
-            
-            prompt_data = str(state.get("input_data"))
-            result = await agent.run(prompt_data)
-            
-            output = result.output
-            state["results"][node_id] = output
-            logger.debug(f"Node {node_id} output: {str(output)[:100]}...")
-            return state
-
-        return node_func
+    return node_func
 
     def get_tool_dict(self) -> Dict[str, Callable]:
         return self._callables

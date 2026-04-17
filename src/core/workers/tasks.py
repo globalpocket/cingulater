@@ -144,11 +144,43 @@ async def execute_workflow_task(workflow_name: str, input_data: Any = None):
     except Exception as e:
         logger.error(f"Error in execute_workflow_task: {e}")
 
+from src.gh_platform_client import GitHubRateLimitError
+
 @broker.task
 async def poll_mentions_task():
     """GitHub メールの監視とタスク投入を実行する定期タスク"""
     orch = await get_orchestrator()
-    await orch._poll_mentions()
+    try:
+        # 新しい GitHubClient を通じて通知を取得
+        mentions = await orch.gh_client.get_mentions_to_process()
+        
+        for m in mentions:
+            task_id = f"git_monitor_{m['repo_name'].replace('/', '_')}_{m['number']}"
+            
+            # 標準的な解析タスクだけでなく、YAML 駆動の git_monitor ワークフローを起動
+            logger.info(f"🔔 Mention detected on {m['repo_name']}#{m['number']}. Triggering 'git_monitor' workflow.")
+            
+            # ワークフロー用の入力データを準備
+            workflow_input = {
+                "repo_name": m["repo_name"],
+                "issue_number": m["number"],
+                "comment_id": m["comment_id"],
+                "body": m["body"],
+                "subject_type": m.get("subject_type", "issue")
+            }
+            
+            # 動的ワークフロータスクを投入 (Phase 2 の肝)
+            await execute_workflow_task.kiq("git_monitor", input_data=workflow_input)
+
+    except GitHubRateLimitError as e:
+        # Taskiq の遅延機能を利用して、リセット時刻まで待機するように再スケジュール
+        wait_seconds = int(max(e.reset_time - time.time(), 60))
+        logger.warning(f"GitHub Rate Limit hit. Delaying polling for {wait_seconds}s until reset.")
+        # 実際には現在のタスクを完了し、次回のスケジュールが自然に回るのを待つか、
+        # あるいは今回分を延期（再試行）する
+        # ここでは Taskiq のスケジュール機能に任せ、ログに留める
+    except Exception as e:
+        logger.error(f"Polling task failed: {e}")
 
 @broker.task
 async def llm_health_check_task():
