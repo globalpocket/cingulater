@@ -1,0 +1,14 @@
+name: knowledge_extractor
+description: "ファイル内容を解析し、検索・分析に最適化されたチャンクとメタデータを抽出します。"
+agent:
+  model: "openai:gpt-4o"
+  system_prompt: "knowledge_extractor.md"
+  output_schema:
+    results:
+      chunks:
+        type: "array"
+        items:
+          type: "object"
+          properties:
+            content: "string" # チャンクの内容
+            metadata: "object" # 抽出されたメタデータ (type, name, summary 等)

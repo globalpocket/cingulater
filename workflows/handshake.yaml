@@ -1,0 +1,13 @@
+name: handshake
+description: "ユーザーへの初期挨拶とコンテキストに基づいたヒアリングを実行します。"
+agent:
+  model: "openai:gpt-4o" # または環境に応じたモデル
+  system_prompt: "handshake.md"
+  tools:
+    - name: "get_repo_summary" # KnowledgeServer MCP
+    - name: "search_code" # Filesystem MCP
+  output_schema:
+    results:
+      greeting: "string" # ユーザーへの挨拶文
+      needs_info: "boolean" # 不足情報の有無
+      questions: "array" # 具体的な質問事項 (string[])

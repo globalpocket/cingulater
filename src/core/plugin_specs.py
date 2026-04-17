@@ -1,5 +1,6 @@
+from typing import Any, Dict, List, Optional
+
 import pluggy
-from typing import Any, Dict, Optional, List
 
 hookspec = pluggy.HookspecMarker("brownie")
 hookimpl = pluggy.HookimplMarker("brownie")

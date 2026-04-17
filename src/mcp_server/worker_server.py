@@ -4,8 +4,6 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
-from src.core.workers.pool import broker
-
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 # ロギングの設定

@@ -1,7 +1,9 @@
-import sys
 import os
+import sys
 from typing import Any, Dict, List, Optional
+
 from .plugin_specs import hookimpl
+
 
 class DirectoryDiscoveryPlugin:
     """src/mcp_server/plugins/ ディレクトリ下のファイルを MCP プラグインとして自動登録するデフォルト実装"""

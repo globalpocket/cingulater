@@ -1,5 +1,8 @@
 from datetime import datetime
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import os
+import yaml
 
 from loguru import logger
 
@@ -8,59 +11,112 @@ try:
 except ImportError:
     croniter = None
 
-logger = logging.getLogger("brownie.trigger_manager")
 
 class WorkflowTriggerManager:
     """
-    ワークフローのトリガー（cron 等）を評価し、実行タイミングを判定する管理クラス。
+    ワークフローのトリガー（cron, events）を評価し、動的にルーティングする管理クラス。
+    (Phase 9: 深層ドメイン抽出により純粋なディスパッチャへと昇華)
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, project_root: Optional[Path] = None):
+        self.project_root = project_root or Path(os.getcwd())
+        self.routing_rules = self._load_routing_rules()
 
-    def check_cron_trigger(self, cron_expr: str, now: datetime) -> bool:
-        """
-        指定された cron 式が現在時刻（now）において実行されるべきか判定する。
-        """
-        if croniter is None:
-            # A案の採用が予定されているが、インストール前の保護
-            logger.warning("croniter is not installed. Cron triggers will be skipped.")
-            return False
-            
+    def _load_routing_rules(self) -> List[Dict[str, Any]]:
+        """workflows/events_routing.yaml から ECA ルールをロード"""
+        routing_path = self.project_root / "workflows" / "events_routing.yaml"
+        if not routing_path.exists():
+            logger.warning(
+                f"Routing rules not found at {routing_path}. Using empty rules."
+            )
+            return []
+
         try:
-            # 1分単位の精度で評価（秒とマイクロ秒は無視）
+            with open(routing_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                return data.get("events", [])
+        except Exception as e:
+            logger.error(f"Failed to load routing rules: {e}")
+            return []
+
+    async def handle_event(self, event_type: str, payload: Dict[str, Any]):
+        """
+        イベントを受け取り、登録されたルールに基づいてアクションを実行する。
+        """
+        logger.info(f"Handling event: {event_type}")
+
+        for rule in self.routing_rules:
+            if rule.get("type") != event_type:
+                continue
+
+            # 1. 条件評価 (Condition Handling)
+            condition_str = rule.get("condition", "True")
+            try:
+                # payload を名前空間として eval を実行し、条件に合致するか判定
+                # 注意: YAML は信頼できるソースであることを前提とする
+                is_matched = eval(
+                    condition_str, {"payload": payload, "__builtins__": {}}
+                )
+            except Exception as e:
+                logger.error(f"Failed to evaluate condition '{condition_str}': {e}")
+                continue
+
+            if not is_matched:
+                continue
+
+            # 2. アクション実行 (Action Execution)
+            action = rule.get("action")
+            if not action or action.get("type") != "run_workflow":
+                continue
+
+            wf_name = action.get("name")
+            mapping = action.get("params_mapping", {})
+            params = {}
+
+            # パラメータのマッピング評価
+            for target_key, expr in mapping.items():
+                try:
+                    params[target_key] = eval(
+                        expr, {"payload": payload, "__builtins__": {}}
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to map param '{target_key}' with expr '{expr}': {e}"
+                    )
+
+            # Taskiq タスクとしてワークフローを投入
+            from src.core.workers.tasks import execute_workflow_task
+
+            logger.info(f"🚀 Routing event '{event_type}' to workflow '{wf_name}'")
+            await execute_workflow_task.kiq(wf_name, input_data=params)
+
+    # --- Legacy Compat / Cron Support ---
+    def check_cron_trigger(self, cron_expr: str, now: datetime) -> bool:
+        if croniter is None:
+            return False
+        try:
             base_time = now.replace(second=0, microsecond=0)
             return croniter.match(cron_expr, base_time)
-        except Exception as e:
-            logger.error(f"Error evaluating cron expression '{cron_expr}': {e}")
+        except Exception:
             return False
 
     def get_due_workflows(
         self, tools_metadata: Dict[str, Any], now: datetime
     ) -> List[Dict[str, Any]]:
-        """
-        登録されたワークフローの中から、実行期限が来ているものをリストアップする。
-        """
+        # 既存の master_trigger_dispatcher から呼び出される互換レイヤー
         due_list = []
-        # tools_metadata は WorkflowRegistry._tools を想定 (Dict[str, WorkflowTool])
         for name, tool in tools_metadata.items():
             triggers = getattr(tool, "triggers", [])
-            if not triggers:
-                continue
-            
             for trigger in triggers:
-                if not isinstance(trigger, dict):
-                    continue
-                
-                t_type = trigger.get("type")
-                if t_type == "cron":
+                if trigger.get("type") == "cron":
                     expr = trigger.get("value")
                     if expr and self.check_cron_trigger(expr, now):
-                        due_list.append({
-                            "workflow_name": name,
-                            "trigger_type": "cron",
-                            "schedule": expr
-                        })
-                        # 1つのワークフローで複数のトリガーがマッチしても、1回の周期では1度だけ実行
+                        due_list.append(
+                            {
+                                "workflow_name": name,
+                                "trigger_type": "cron",
+                                "schedule": expr,
+                            }
+                        )
                         break
         return due_list

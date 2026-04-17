@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, List, Optional, TypedDict
 
 import yaml
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from loguru import logger
@@ -154,7 +154,8 @@ class WorkflowRegistry:
         workflow_runner.__doc__ = tool.description
         return workflow_runner
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import RunContext
+
 
 class WorkflowDeps(BaseModel):
     """Pydantic-AI の RunContext で利用する依存関係定義"""

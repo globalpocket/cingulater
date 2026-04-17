@@ -13,6 +13,12 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
   - brownie://repo/context: WDCA コンテキスト（プロジェクト概要）
 """
 
+import asyncio
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
 import duckdb
 import tree_sitter_go
 import tree_sitter_javascript
@@ -25,6 +31,7 @@ from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 logger = setup_logging("knowledge_server")
 
 # --- 内部解析エンジン (FlowTracer) ---
+
 
 class FlowTracer:
     """
@@ -67,7 +74,7 @@ class FlowTracer:
         try:
             self.conn.execute("CREATE SEQUENCE sym_id_seq")
         except:
-            pass # すでに存在する場合
+            pass  # すでに存在する場合
 
     def _init_parsers(self) -> Dict[str, Parser]:
         """各種言語の Tree-sitter パーサーを初期化"""
@@ -91,48 +98,62 @@ class FlowTracer:
         return parsers
 
     def scan_file(self, file_path: str, content: str):
-        """ファイルを解析して情報を DuckDB に保存"""
-        ext = os.path.splitext(file_path)[1]
-        parser = self.parsers.get(ext)
-        if not parser:
-            return
-        try:
-            tree = parser.parse(bytes(content, "utf-8"))
-            self.conn.execute("DELETE FROM symbols WHERE file_path = ?", (file_path,))
-            self.conn.execute("DELETE FROM calls WHERE file_path = ?", (file_path,))
-            self._walk_tree(tree.root_node, file_path, content)
-            self.conn.execute("INSERT OR REPLACE INTO files (path, last_scanned) VALUES (?, CURRENT_TIMESTAMP)", (file_path,))
-        except Exception as e:
-            logger.error(f"ファイル解析エラー ({file_path}): {e}")
+        """ファイルを解析して情報を DuckDB に保存 (Phase 9: LLM 抽出への委譲)"""
+        logger.info(f"Scanning file via knowledge_extractor: {file_path}")
 
-    def _walk_tree(self, node, file_path: str, content: str):
-        """AST を再帰的にトラバースしてシンボル情報を取得"""
-        node_type = node.type
-        if node_type == "class_definition":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                self._add_symbol(name_node.text.decode("utf-8"), file_path, "class", node.start_point[0], node.end_point[0])
-        elif node_type == "function_definition":
-            name_node = node.child_by_field_name("name")
-            if name_node:
-                self._add_symbol(name_node.text.decode("utf-8"), file_path, "func", node.start_point[0], node.end_point[0])
-        elif node_type == "call":
-            func_node = node.child_by_field_name("function")
-            if func_node:
-                callee = func_node.text.decode("utf-8")
-                self.conn.execute("INSERT INTO calls (caller_name, callee_name, file_path, line) VALUES (?, ?, ?, ?)",
-                                 ("global", callee, file_path, node.start_point[0]))
-        for child in node.children:
-            self._walk_tree(child, file_path, content)
+        try:
+            # ワークフローをロードして実行 (MCP サーバー内でも WorkflowLoader を利用可能にする)
+            from pathlib import Path
+
+            from src.core.workflow_manager import WorkflowLoader
+
+            # オーケストレーターのグローバルインスタンスが使えない可能性があるため、個別にロード
+            project_root = Path(os.getcwd())
+            loader = WorkflowLoader(project_root)
+            extract_wf = loader.load_all().get("knowledge_extractor")
+
+            if not extract_wf:
+                logger.error("knowledge_extractor workflow not found.")
+                return
+
+            # LLM による構造解析の実行 (同期コンテキストでの実行に対応するため run_sync 等を検討)
+            # ここでは asyncio ループ内であることを想定
+            wf_result = asyncio.run_coroutine_threadsafe(
+                extract_wf(input_data=content), asyncio.get_event_loop()
+            ).result()
+
+            results = wf_result.get("results", {})
+            chunks = results.get("chunks", [])
+
+            # DuckDB への保存 (symbols テーブル等を流用)
+            self.conn.execute("DELETE FROM symbols WHERE file_path = ?", (file_path,))
+            for chunk in chunks:
+                meta = chunk.get("metadata", {})
+                self._add_symbol(
+                    name=meta.get("name", "anonymous"),
+                    file_path=file_path,
+                    stype=meta.get("type", "chunk"),
+                    start=0,  # LLM 抽出の場合は行番号が不定なこともあるため 0 で開始
+                    end=0,
+                )
+
+            # 最終的なスキャン日時の更新
+            self.conn.execute(
+                "INSERT OR REPLACE INTO files (path, last_scanned) VALUES (?, CURRENT_TIMESTAMP)",
+                (file_path,),
+            )
+        except Exception as e:
+            logger.error(f"LLM によるファイル解析エラー ({file_path}): {e}")
 
     def _add_symbol(self, name: str, file_path: str, stype: str, start: int, end: int):
-        self.conn.execute("""
+        self.conn.execute(
+            """
             INSERT INTO symbols (id, name, file_path, type, start_line, end_line)
             VALUES (nextval('sym_id_seq'), ?, ?, ?, ?, ?)
-        """, (name, file_path, stype, start, end))
+        """,
+            (name, file_path, stype, start, end),
+        )
 
-    def close(self):
-        self.conn.close()
 
 # --- サーバーインスタンスの生成 ---
 mcp = create_mcp_server("BrownieKnowledge")
@@ -174,6 +195,7 @@ def _get_memory():
         return _memory
 
     from .history_server import HistoryServer
+
     _memory = HistoryServer()
     return _memory
 
@@ -193,7 +215,9 @@ async def semantic_search(query: str, limit: int = 5) -> str:
     """
     memory = _get_memory()
     if memory is None:
-        return json.dumps({"error": "HistoryServer が初期化されていません。"}, ensure_ascii=False)
+        return json.dumps(
+            {"error": "HistoryServer が初期化されていません。"}, ensure_ascii=False
+        )
 
     # ChromaDB の内部 I/O はブロッキングのため、スレッドで実行
     results = await asyncio.to_thread(
@@ -206,18 +230,18 @@ def _sync_search_memory(memory, query: str, repo_name: str, limit: int):
     """HistoryServer.search_memory の同期ラッパー（to_thread 用）"""
     # search_memory は async def だが内部は同期的。直接 collection.query を呼ぶ
     results = memory.collection.query(
-        query_texts=[query],
-        where={"repo_name": repo_name},
-        n_results=limit
+        query_texts=[query], where={"repo_name": repo_name}, n_results=limit
     )
     memories = []
-    if results['documents'] and results['documents'][0]:
-        for i in range(len(results['documents'][0])):
-            memories.append({
-                "content": results['documents'][0][i],
-                "metadata": results['metadatas'][0][i],
-                "distance": results['distances'][0][i]
-            })
+    if results["documents"] and results["documents"][0]:
+        for i in range(len(results["documents"][0])):
+            memories.append(
+                {
+                    "content": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "distance": results["distances"][0][i],
+                }
+            )
     return memories
 
 
@@ -286,9 +310,13 @@ def _detect_tech_stack() -> dict:
                 content = f.read()
             # 主要フレームワークの検出
             fw_markers = {
-                "fastapi": "FastAPI", "django": "Django", "flask": "Flask",
-                "fastmcp": "FastMCP/MCP", "langchain": "LangChain",
-                "chromadb": "ChromaDB", "duckdb": "DuckDB",
+                "fastapi": "FastAPI",
+                "django": "Django",
+                "flask": "Flask",
+                "fastmcp": "FastMCP/MCP",
+                "langchain": "LangChain",
+                "chromadb": "ChromaDB",
+                "duckdb": "DuckDB",
             }
             for marker, name in fw_markers.items():
                 if marker in content.lower():
@@ -304,7 +332,12 @@ def _detect_tech_stack() -> dict:
             with open(pkg_json, "r", encoding="utf-8") as f:
                 data = json.load(f)
             deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-            js_fw = {"react": "React", "vue": "Vue", "next": "Next.js", "express": "Express"}
+            js_fw = {
+                "react": "React",
+                "vue": "Vue",
+                "next": "Next.js",
+                "express": "Express",
+            }
             for marker, name in js_fw.items():
                 if marker in deps:
                     stack["frameworks"].append(name)
@@ -327,7 +360,9 @@ def _query_statistics() -> dict:
 
     try:
         files_count = tracer.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        symbols_count = tracer.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+        symbols_count = tracer.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[
+            0
+        ]
         calls_count = tracer.conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
         return {"files": files_count, "symbols": symbols_count, "calls": calls_count}
     except Exception as e:
@@ -342,7 +377,8 @@ def _query_top_symbols(symbol_type: str, limit: int) -> list:
         return []
 
     try:
-        rows = tracer.conn.execute("""
+        rows = tracer.conn.execute(
+            """
             SELECT s.name, s.file_path, COUNT(c.callee_name) as ref_count
             FROM symbols s
             LEFT JOIN calls c ON s.name = c.callee_name
@@ -350,7 +386,9 @@ def _query_top_symbols(symbol_type: str, limit: int) -> list:
             GROUP BY s.name, s.file_path
             ORDER BY ref_count DESC
             LIMIT ?
-        """, (symbol_type, limit)).fetchall()
+        """,
+            (symbol_type, limit),
+        ).fetchall()
         return [{"name": r[0], "file": r[1], "references": r[2]} for r in rows]
     except Exception as e:
         logger.error(f"シンボルクエリ失敗: {e}")
@@ -394,24 +432,32 @@ def _detect_entry_points() -> list:
         # main, __main__, start, run 等のシンボルを検索
         entry_names = ["main", "__main__", "start", "run", "app", "serve"]
         placeholders = ", ".join(["?" for _ in entry_names])
-        rows = tracer.conn.execute(f"""
+        rows = tracer.conn.execute(
+            f"""
             SELECT s.name, s.file_path, s.type
             FROM symbols s
             WHERE s.name IN ({placeholders})
-        """, entry_names).fetchall()
+        """,
+            entry_names,
+        ).fetchall()
 
         entries = []
         for name, fpath, stype in rows:
             # このエントリーポイントが呼び出しているモジュールを取得
-            deps = tracer.conn.execute("""
+            deps = tracer.conn.execute(
+                """
                 SELECT DISTINCT callee_name FROM calls WHERE caller_name = ? LIMIT 10
-            """, (name,)).fetchall()
-            entries.append({
-                "name": name,
-                "file": fpath,
-                "type": stype,
-                "dependencies": [d[0] for d in deps]
-            })
+            """,
+                (name,),
+            ).fetchall()
+            entries.append(
+                {
+                    "name": name,
+                    "file": fpath,
+                    "type": stype,
+                    "dependencies": [d[0] for d in deps],
+                }
+            )
         return entries
     except Exception as e:
         logger.error(f"エントリーポイント検出失敗: {e}")
@@ -438,7 +484,10 @@ def _init_from_args():
     global _repo_path, _memory_path, _repo_name
 
     if len(sys.argv) < 4:
-        print("Usage: python -m src.mcp.knowledge_server <repo_path> <memory_path> <repo_name>", file=sys.stderr)
+        print(
+            "Usage: python -m src.mcp.knowledge_server <repo_path> <memory_path> <repo_name>",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     _repo_path = os.path.realpath(sys.argv[1])
@@ -455,6 +504,7 @@ def _init_from_args():
         sys.exit(1)
 
     logger.info(f"Knowledge Server initialized: repo={_repo_name}, path={_repo_path}")
+
 
 if __name__ == "__main__":
     _init_from_args()

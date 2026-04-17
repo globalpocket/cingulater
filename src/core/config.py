@@ -3,10 +3,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import yaml
 from pydantic import computed_field
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,

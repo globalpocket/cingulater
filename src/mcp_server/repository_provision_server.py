@@ -1,7 +1,7 @@
 import os
 import re
-from typing import Optional, List
 from contextlib import AsyncExitStack
+from typing import Optional
 
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport

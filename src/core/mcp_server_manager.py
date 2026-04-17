@@ -1,17 +1,17 @@
 import os
 import sys
-import pluggy
 from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 
 import anyio
+import pluggy
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport
 from loguru import logger
 
 from src.core.config import get_settings
-from src.core.plugin_specs import MCPPluginSpec
 from src.core.default_plugins import DirectoryDiscoveryPlugin
+from src.core.plugin_specs import MCPPluginSpec
 
 
 class MCPServerManager:

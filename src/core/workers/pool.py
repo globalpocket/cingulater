@@ -1,8 +1,8 @@
 import os
 
+from loguru import logger
 from taskiq import RedisAsyncResultBackend
 from taskiq_redis import RedisBroker, RedisScheduleSource
-from loguru import logger
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
