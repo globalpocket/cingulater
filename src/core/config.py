@@ -42,10 +42,6 @@ class WorkspaceSettings(BaseSettings):
     lfs_enabled: bool = True
     base_dir: str = "~/.local/share/brownie/workspaces"
 
-class DatabaseSettings(BaseSettings):
-    db_path: str = "~/.local/share/brownie/brownie.db"
-    memory_path: str = "~/.local/share/brownie/vector_db"
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_nested_delimiter="__",
@@ -56,7 +52,6 @@ class Settings(BaseSettings):
     agent: AgentSettings = AgentSettings()
     llm: LLMSettings = LLMSettings()
     workspace: WorkspaceSettings = WorkspaceSettings()
-    database: DatabaseSettings = DatabaseSettings()
 
     @computed_field
     @property

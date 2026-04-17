@@ -43,9 +43,8 @@ class Orchestrator:
             self.settings.workspace.sandbox_group_id,
         )
 
-        # State Manager の初期化
-        checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
-        self.state_manager = StateManager(checkpoint_path)
+        # State Manager の初期化 (Redis を内部で使用)
+        self.state_manager = StateManager()
 
         # ワークフローの準備 (checkpoint なしで一度準備)
         self._workflow_app = self.state_manager.workflow_app
@@ -86,9 +85,6 @@ class Orchestrator:
         """オーケストレーター（メンション監視プロセス）の起動"""
         logger.info(f"Orchestrator starting. Build ID: {self.settings.build_id}")
 
-        checkpoint_path = os.path.join(self.project_root, ".brwn", "checkpoints.db")
-        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-
         global global_orchestrator
         global_orchestrator = self
 
@@ -110,6 +106,9 @@ class Orchestrator:
 
             # Resource Monitor Server の起動
             await self.mcp_manager.start_resource_monitor_server()
+
+            # 公式 Fetch サーバーの起動
+            await self.mcp_manager.start_fetch_server()
 
             # Persistence Server の起動
             persistence_client = await self.mcp_manager.start_persistence_server()

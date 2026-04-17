@@ -2,7 +2,8 @@ import operator
 import os
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+import redis.asyncio as redis
+from langgraph.checkpoint.redis.aio import RedisSaver
 from loguru import logger
 
 
@@ -59,18 +60,27 @@ class StateManager:
     """
     LangGraph の状態管理（チェックポインタ）をラップするクラス
     """
-    def __init__(self, db_path: str):
-        self.db_path = os.path.expanduser(db_path)
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        self._saver: Optional[AsyncSqliteSaver] = None
+    def __init__(self, db_path: Optional[str] = None):
+        # Redis 接続情報
+        self.redis_host = os.getenv("REDIS_HOST", "localhost")
+        self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        self._pool: Optional[redis.ConnectionPool] = None
+        self._saver: Optional[RedisSaver] = None
         self._workflow_app = None
 
     async def __aenter__(self):
         """async with ステートメントでチェックポインタを有効化する"""
         if not self._saver:
-            logger.debug(f"Connecting to State DB: {self.db_path}")
-            self._saver = AsyncSqliteSaver.from_conn_string(self.db_path)
-            await self._saver.__aenter__()
+            logger.debug(f"Connecting to Redis Checkpointer at {self.redis_host}:{self.redis_port}")
+            self._pool = redis.ConnectionPool(
+                host=self.redis_host, 
+                port=self.redis_port, 
+                db=0,
+                decode_responses=False # Checkpointer internally handles bytes
+            )
+            # aio クライアントを使用
+            client = redis.Redis(connection_pool=self._pool)
+            self._saver = RedisSaver(client)
         
         # ワークフローのコンパイル (循環参照を避けるためにメソッド内でインポート)
         from src.core.graph.builder import compile_workflow
@@ -81,8 +91,9 @@ class StateManager:
         """
         async with ステートメント終了時にチェックポインタを閉じる
         """
-        if self._saver:
-            await self._saver.__aexit__(exc_type, exc_val, exc_tb)
+        if self._pool:
+            await self._pool.disconnect()
+            self._pool = None
             self._saver = None
             self._workflow_app = None
 

@@ -6,6 +6,7 @@ from loguru import logger
 from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager, WorkspaceContext
 from src.core.workflow_manager import WorkflowLoader
+from src.gh_platform_client import GitHubClient
 
 
 class GitHubRateLimitException(Exception):
@@ -16,85 +17,47 @@ class GitHubRateLimitException(Exception):
 
 class GitHubClientWrapper:
     """
-    GitHub 操作を MCP サーバーに委任するブリッジ。
+    GitHub 操作を提供するラッパー。
+    内部で ghapi ベースの GitHubClient を使用し、必要に応じて MCP を併用する。
     """
     def __init__(self, token: str, mcp_manager: MCPServerManager):
-        self._token = token
+        self._gh = GitHubClient(token=token)
         self.mcp_manager = mcp_manager
-        self._my_username: Optional[str] = None
 
     async def get_my_username_async(self) -> str:
-        if self._my_username:
-            return self._my_username
-        
-        client = self.mcp_manager.github_sdk_client
-        if not client:
-            return "unknown"
-            
         try:
-            res = await client.call_tool("get_me")
-            if isinstance(res, dict):
-                self._my_username = res.get("login", "unknown")
-            else:
-                import json
-                try:
-                    data = json.loads(res) if isinstance(res, str) else {}
-                    self._my_username = data.get("login", "unknown")
-                except:
-                    self._my_username = str(res)
+            return await self._gh.get_my_username()
         except Exception as e:
-            logger.error(f"Failed to get username via MCP: {e}")
+            logger.error(f"Failed to get username via ghapi: {e}")
             return "unknown"
-        return self._my_username
 
     async def get_all_accessible_repositories(self) -> List[str]:
-        client = self.mcp_manager.github_sdk_client
-        if not client: return []
         try:
-            res = await client.call_tool("search_repositories", query="user:@me")
-            return [repo["full_name"] for repo in res.get("repositories", [])]
+            return await self._gh.search_repositories(query="user:@me")
         except Exception as e:
-            logger.error(f"Failed to list repositories via MCP: {e}")
+            logger.error(f"Failed to list repositories via ghapi: {e}")
             return []
 
     async def post_comment(self, repo_name: str, issue_number: int, body: str):
-        client = self.mcp_manager.github_sdk_client
-        if not client: return
         owner, repo = repo_name.split("/")
         try:
-            await client.call_tool("add_issue_comment", owner=owner, repo=repo, issue_number=issue_number, body=body)
+            await self._gh.post_comment(owner=owner, repo=repo, issue_number=issue_number, body=body)
         except Exception as e:
-            logger.error(f"Failed to post comment via MCP: {e}")
+            logger.error(f"Failed to post comment via ghapi: {e}")
 
     async def create_pull_request(self, repo_name: str, title: str, body: str, head: str, base: str):
-        client = self.mcp_manager.github_sdk_client
-        if not client: return None
         owner, repo = repo_name.split("/")
         try:
-            return await client.call_tool("create_pull_request", owner=owner, repo=repo, title=title, head=head, base=base, body=body)
+            return await self._gh.create_pull_request(owner=owner, repo=repo, title=title, head=head, base=base, body=body)
         except Exception as e:
-            logger.error(f"Failed to create PR via MCP: {e}")
+            logger.error(f"Failed to create PR via ghapi: {e}")
             return None
 
     async def get_mentions_to_process(self, repo_name: Optional[str] = None) -> List[Dict[str, Any]]:
-        client = self.mcp_manager.github_notifications_client
-        if not client: return []
         try:
-            notifications = await client.call_tool("list-notifications")
-            if not notifications: return []
-            results = []
-            for n in notifications:
-                if n.get("reason") in ["mention", "author", "assignee"]:
-                    results.append({
-                        "repo_name": n["repository"]["full_name"],
-                        "number": int(n["subject"]["url"].split("/")[-1]),
-                        "comment_id": "notification_" + n["id"],
-                        "body": n["subject"]["title"],
-                        "updated_at": n["updated_at"]
-                    })
-            return results
+            return await self._gh.get_mentions()
         except Exception as e:
-            logger.error(f"Failed to get notifications via MCP: {e}")
+            logger.error(f"Failed to get mentions via ghapi: {e}")
             return []
 
     async def get_issue(self, repo_name: str, issue_number: int) -> Dict[str, Any]:

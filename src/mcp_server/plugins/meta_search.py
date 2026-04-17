@@ -1,38 +1,36 @@
-
 import httpx
-from bs4 import BeautifulSoup
+import re
+from loguru import logger
 
-from ..base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
+from ..base_server import create_mcp_server, mcp_tool_errorhandler
 
-logger = setup_logging(__name__)
 mcp = create_mcp_server("meta_search")
 
 @mcp.tool()
 @mcp_tool_errorhandler
 async def search_web(query: str) -> str:
-    """DuckDuckGo(HTML版)を使用した簡易Web検索を行います。"""
+    """DuckDuckGo を使用して Web 検索を行い、上位の結果を返します。"""
+    logger.info(f"Searching web for: {query} (Clean Mode)")
     try:
-        async with httpx.AsyncClient() as client:
-            url = "https://html.duckduckgo.com/html/"
-            data = {"q": query}
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            url = f"https://duckduckgo.com/html/?q={query}"
             headers = {"User-Agent": "Mozilla/5.0"}
-            response = await client.post(url, data=data, headers=headers, timeout=10.0)
+            response = await client.get(url, headers=headers)
             response.raise_for_status()
             
-            # BeautifulSoupがインストールされていればパース、なければそのまま返す（要件に合わせて調整）
-            try:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                results = []
-                for a in soup.find_all('a', class_='result__url'):
-                    results.append(a.get('href'))
-                if not results:
-                    return "No results found or parsing failed."
-                return "URLs found:\n" + "\n".join(results[:5])
-            except ImportError:
-                # beautifulsoup4がない場合のフォールバック（最初の2000文字）
-                return response.text[:2000]
+            # BeautifulSoup を排除し、軽量な正規表現による抽出に純化（または公式 MCP へ委譲の布石）
+            links = re.findall(r'href="(https?://[^"]+)"', response.text)
+            
+            # 不要なドメインを除外
+            filtered = [l for l in links if "duckduckgo.com" not in l and "w3.org" not in l]
+            
+            if not filtered:
+                return "No useful results found."
+                
+            return "Top URLs found:\n" + "\n".join(filtered[:5])
                 
     except Exception as e:
+        logger.error(f"Search proxy failed: {e}")
         return f"Search failed: {e}"
 
 if __name__ == "__main__":

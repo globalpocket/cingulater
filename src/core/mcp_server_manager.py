@@ -136,8 +136,7 @@ class MCPServerManager:
         return await self._start_server(
             "persistence",
             sys.executable,
-            ["-m", "src.mcp_server.persistence_server"],
-            {"BROWNIE_PERSISTENCE_DB": self.settings.database.db_path}
+            ["-m", "src.mcp_server.persistence_server"]
         )
 
     async def start_history_server(self):
@@ -157,6 +156,14 @@ class MCPServerManager:
 
     async def start_task_reasoning_server(self) -> Client:
         return await self._start_server("task_reasoning", sys.executable, ["-m", "src.mcp_server.task_reasoning_server"])
+
+    async def start_fetch_server(self):
+        """公式の fetch サーバーを起動し、高品質な Markdown 取得を実現する"""
+        return await self._start_server(
+            "fetch",
+            "npx",
+            ["-y", "@modelcontextprotocol/server-fetch"]
+        )
 
     async def provision_servers(self, server_names: List[str]):
         """要求されたJITロードMCPサーバー群をオンデマンドで起動する"""
