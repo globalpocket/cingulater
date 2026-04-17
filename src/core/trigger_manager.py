@@ -41,19 +41,33 @@ class WorkflowTriggerManager:
 
     async def handle_event(self, event_type: str, payload: Dict[str, Any]):
         """
-        イベントを受け取り、登録されたルールに基づいてアクションを実行する。
+        イベントを受け取り、規約（Convention）またはルールに基づいてアクションを実行する。
+        (Phase 10: 設定より規約の実装)
         """
         logger.info(f"Handling event: {event_type}")
 
+        # 1. 規約ベースのルーティング (Convention over Configuration)
+        # イベント名と同名のワークフローが存在すれば、それを実行する
+        from src.core.orchestrator import global_orchestrator
+
+        if global_orchestrator and event_type in global_orchestrator.dynamic_workflows:
+            from src.core.workers.tasks import execute_workflow_task
+
+            logger.info(
+                f"✨ Convention matched: Routing event '{event_type}' directly to its namesake workflow."
+            )
+            # 規約ベースの場合、ペイロードをそのまま input_data として渡す
+            await execute_workflow_task.kiq(event_type, input_data=payload)
+            return
+
+        # 2. 明示的なルールベースのルーティング (Fallback to Configuration)
         for rule in self.routing_rules:
             if rule.get("type") != event_type:
                 continue
 
-            # 1. 条件評価 (Condition Handling)
+            # 条件評価
             condition_str = rule.get("condition", "True")
             try:
-                # payload を名前空間として eval を実行し、条件に合致するか判定
-                # 注意: YAML は信頼できるソースであることを前提とする
                 is_matched = eval(
                     condition_str, {"payload": payload, "__builtins__": {}}
                 )
@@ -64,7 +78,7 @@ class WorkflowTriggerManager:
             if not is_matched:
                 continue
 
-            # 2. アクション実行 (Action Execution)
+            # アクション実行
             action = rule.get("action")
             if not action or action.get("type") != "run_workflow":
                 continue
@@ -73,7 +87,6 @@ class WorkflowTriggerManager:
             mapping = action.get("params_mapping", {})
             params = {}
 
-            # パラメータのマッピング評価
             for target_key, expr in mapping.items():
                 try:
                     params[target_key] = eval(
@@ -84,10 +97,11 @@ class WorkflowTriggerManager:
                         f"Failed to map param '{target_key}' with expr '{expr}': {e}"
                     )
 
-            # Taskiq タスクとしてワークフローを投入
             from src.core.workers.tasks import execute_workflow_task
 
-            logger.info(f"🚀 Routing event '{event_type}' to workflow '{wf_name}'")
+            logger.info(
+                f"🚀 Routing event '{event_type}' to workflow '{wf_name}' via explicit rule."
+            )
             await execute_workflow_task.kiq(wf_name, input_data=params)
 
     # --- Legacy Compat / Cron Support ---

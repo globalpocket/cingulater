@@ -23,13 +23,14 @@ log_file = os.path.join(log_dir, "brownie.log")
 log_level = logging.DEBUG if os.environ.get("BROWNIE_DEBUG") == "1" else logging.INFO
 logging.basicConfig(
     level=log_level,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5),
-        logging.StreamHandler(sys.stdout)
-    ]
+        RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5),
+        logging.StreamHandler(sys.stdout),
+    ],
 )
 logger = logging.getLogger("brownie.watchdog")
+
 
 class Watchdog:
     def __init__(self, main_script: str, survival_file: str):
@@ -40,13 +41,13 @@ class Watchdog:
         self.max_crashes = 5
         self.crash_count = 0
         self.is_running = True
-        
+
         # --- 追加: ホットリロード用の監視設定 ---
         self.watch_dirs = [
             os.path.join(base_dir, "src"),
             os.path.join(base_dir, "config"),
             os.path.join(base_dir, "workflows"),
-            os.path.join(base_dir, ".brwn", "workflows")
+            os.path.join(base_dir, ".brwn", "workflows"),
         ]
         self.p_root = base_dir
         self.file_mtimes = self._get_all_mtimes()
@@ -68,10 +69,10 @@ class Watchdog:
             except subprocess.TimeoutExpired:
                 logger.warning("Main process did not terminate. Force killing...")
                 self.process.kill()
-        
+
         if os.path.exists(self.survival_file):
             os.remove(self.survival_file)
-        
+
         sys.exit(0)
 
     # --- 追加: ファイル更新日時取得メソッド ---
@@ -80,7 +81,7 @@ class Watchdog:
         for d in self.watch_dirs:
             for root, _, files in os.walk(d):
                 for f in files:
-                    if f.endswith(('.py', '.yaml', '.yml', '.md')):
+                    if f.endswith((".py", ".yaml", ".yml", ".md")):
                         p = os.path.join(root, f)
                         try:
                             mtimes[p] = os.path.getmtime(p)
@@ -89,37 +90,57 @@ class Watchdog:
         return mtimes
 
     def _check_file_changes(self):
-        """ファイルの変更を検知してプロセスを再起動する"""
+        """ファイルの変更を検知してプロセスを再起動、およびイベントを発火する"""
         current_mtimes = self._get_all_mtimes()
         for p, mtime in current_mtimes.items():
             if p not in self.file_mtimes or self.file_mtimes[p] < mtime:
-                logger.info(f"Hot-reload triggered: File changed -> {p}")
+                ext = os.path.splitext(p)[1].lower().replace(".", "")
+                event_name = f"on_{ext}_file_changed" if ext else "on_file_changed"
+
+                logger.info(f"File changed: {p} -> Dispatching event '{event_name}'")
+
+                # イベントを TriggerManager (Phase 10) 経由で発火
+                try:
+                    import asyncio
+                    from src.core.trigger_manager import WorkflowTriggerManager
+                    from pathlib import Path
+
+                    tm = WorkflowTriggerManager(Path(self.p_root))
+                    # asyncio.run は新しいループを作るため、短時間のタスク投入に適している
+                    asyncio.run(tm.handle_event(event_name, {"file_path": p}))
+                except Exception as e:
+                    logger.error(f"Failed to dispatch file change event: {e}")
+
                 self.file_mtimes = current_mtimes
                 if self.process:
-                    self.process.terminate() # メインプロセスをキルして再起動を誘発
+                    logger.info(
+                        f"Hot-reload triggered: Restarting main process due to {p}"
+                    )
+                    self.process.terminate()
                 return True
         return False
+
     # ------------------------------------------
 
     def start(self):
         """Watchdogの実行 (設計書 3.2)"""
         logger.info("Starting Brownie Watchdog...")
-        
+
         while self.is_running:
             # 1. メインプロセスの起動・監視
             if self.process is None or self.process.poll() is not None:
                 self._handle_restart()
-            
+
             # 2. 生存信号の確認
             self._check_survival()
-            
+
             # --- 追加: ファイル変更検知の呼び出し ---
             self._check_file_changes()
-            
+
             if not self.is_running:
                 break
-                
-            time.sleep(15) # 反応速度を上げるために 30s -> 15s に短縮推奨
+
+            time.sleep(15)  # 反応速度を上げるために 30s -> 15s に短縮推奨
 
     def _handle_restart(self):
         """プロセス再起動と CrashLoopBackOff"""
@@ -127,22 +148,19 @@ class Watchdog:
             logger.error("Too many crashes! System stopping.")
             self.is_running = False
             return
-        
+
         # 指数バックオフ
-        wait_time = min(2 ** self.crash_count, 60)
+        wait_time = min(2**self.crash_count, 60)
         if self.crash_count > 0:
             logger.info(f"Waiting {wait_time}s before restart...")
             time.sleep(wait_time)
-            
+
         logger.info(f"Restarting main process (Attempt: {self.crash_count + 1})...")
-        
+
         venv_python = os.path.join(base_dir, ".venv", "bin", "python")
         # メインプロセスを起動 (親の死を検知できるようにする等、将来的な拡張の余地を残す)
-        self.process = subprocess.Popen(
-            [venv_python, self.main_script],
-            cwd=base_dir
-        )
-        
+        self.process = subprocess.Popen([venv_python, self.main_script], cwd=base_dir)
+
         self.crash_count += 1
         self.last_survival_time = time.time()
 
@@ -155,11 +173,13 @@ class Watchdog:
                     self.last_survival_time = mtime
                     if time.time() - self.last_survival_time < 60:
                         self.crash_count = 0
-            
+
             # 1時間以上生存信号がなければハングアップとみなす
             # (GitHub APIのBackoffが40分程度になるケースがあるため、余裕を持たせる)
             if time.time() - self.last_survival_time > 3600:
-                logger.warning("Main process seems hung (No survival signal for 1 hour). Killing it...")
+                logger.warning(
+                    "Main process seems hung (No survival signal for 1 hour). Killing it..."
+                )
                 if self.process:
                     self.process.terminate()
         except Exception as e:
@@ -169,19 +189,20 @@ class Watchdog:
         """リソース監視"""
         usage = shutil.disk_usage("/")
         free_gb = usage.free / (1024**3)
-        if free_gb < 2: # 閾値を少し下げて 2GB
+        if free_gb < 2:  # 閾値を少し下げて 2GB
             logger.error(f"Disk space critically low: {free_gb:.2f} GB left!")
+
 
 if __name__ == "__main__":
     import fcntl
     from pathlib import Path
-    
+
     # ロックファイルの取得
     data_dir = Path.home() / ".local" / "share" / "brownie"
     lock_path = data_dir / "brownie.lock"
     pid_file = data_dir / "brownie.pid"
     data_dir.mkdir(parents=True, exist_ok=True)
-    
+
     def try_lock(path):
         f = open(path, "a")
         try:
@@ -198,18 +219,20 @@ if __name__ == "__main__":
             try:
                 with open(pid_file, "r") as pf:
                     pid = int(pf.read().strip())
-                    os.kill(pid, 0) # 生存確認
+                    os.kill(pid, 0)  # 生存確認
                     is_stale = False
                     print(f"Error: Another Watchdog is already running (PID: {pid}).")
             except (ValueError, ProcessLookupError):
                 pass
-        
+
         if is_stale:
             # プロセスはいないのにロックがある = Stale Lock
             print("⚠️ Stale lock detected in watchdog. Cleaning up...")
             if lock_path.exists():
-                try: os.remove(lock_path)
-                except: pass
+                try:
+                    os.remove(lock_path)
+                except:
+                    pass
             lock_f = try_lock(lock_path)
             if lock_f is None:
                 print("Error: Could not acquire lock even after cleanup.")
@@ -217,6 +240,8 @@ if __name__ == "__main__":
         else:
             sys.exit(1)
 
-    script_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "main.py"))
+    script_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "main.py")
+    )
     dog = Watchdog(script_path, "/tmp/brownie_survival.signal")
     dog.start()

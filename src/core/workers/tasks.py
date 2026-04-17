@@ -184,10 +184,13 @@ async def poll_mentions_task():
                 "subject_type": m.get("subject_type", "issue"),
             }
 
-            # WorkflowTriggerManager (ECA ハブ) を使用して、疎結合にワークフローを起動
-            # (Phase 9: 深層ドメインの外部化)
+            # TriggerManager (Phase 10: 規約ベースのディスパッチ) を使用
+            # 'on_github_mention' というイベント名で発火させる
             trigger_manager = WorkflowTriggerManager(Path(orch.project_root))
-            await trigger_manager.handle_event("github_mention", workflow_input)
+            logger.info(
+                f"🔔 Dispatching event 'on_github_mention' for {m['repo_name']}#{m['number']}"
+            )
+            await trigger_manager.handle_event("on_github_mention", workflow_input)
 
     except GitHubRateLimitError as e:
         # Taskiq の遅延機能を利用して、リセット時刻まで待機するように再スケジュール
