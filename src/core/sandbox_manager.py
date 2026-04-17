@@ -1,9 +1,10 @@
 import json
 import os
+import yaml
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, List
 
-import docker
+from testcontainers.core.container import DockerContainer
 from loguru import logger
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
@@ -14,10 +15,6 @@ class WorkspaceContext:
     def __init__(self, root_path: str, reference_path: Optional[str] = None):
         """
         ワークスペースのコンテキストを管理する。
-        
-        Args:
-            root_path: ワークスペースのルート（書き込み可能、優先読み込み）
-            reference_path: 参照用ルート（読み取り専用、フォールバック用）
         """
         self.root_path = Path(os.path.realpath(root_path))
         self.reference_path = Path(os.path.realpath(reference_path)) if reference_path else None
@@ -27,18 +24,7 @@ class WorkspaceContext:
     def resolve_path(self, target_path: str, strict: bool = True) -> Path:
         """
         AIエージェントから渡されたパスを安全な物理絶対パスに解決する。
-        
-        Args:
-            target_path: 解決したいパス（相対・絶対いずれも可）
-            strict: Trueの場合、root_path 外へのアクセスを禁止する (Path Traversal 防御)
-            
-        Returns:
-            Path: 解決された絶対パス
-            
-        Raises:
-            PermissionError: 境界外へのアクセスが検出された場合
         """
-        # 1. パスの正規化
         p = Path(target_path)
         
         if p.is_absolute():
@@ -46,10 +32,8 @@ class WorkspaceContext:
         else:
             full_path = (self.root_path / p).resolve()
 
-        # 2. 境界チェック
         if strict:
             if not self._is_within(full_path, self.root_path):
-                # 読み取り操作の場合、reference_path 内にあれば許可（フォールバック）
                 if self.reference_path and self._is_within(full_path, self.reference_path):
                     return full_path
                 
@@ -59,15 +43,10 @@ class WorkspaceContext:
         return full_path
 
     def get_relative_path(self, absolute_path: Union[str, Path]) -> str:
-        """
-        絶対パスをリポジトリルートからの相対パスに変換する。
-        AIへの出力時に使用。
-        """
         abs_p = Path(absolute_path).resolve()
         try:
             return os.path.relpath(abs_p, self.root_path)
         except ValueError:
-            # root_path 外の場合
             if self.reference_path:
                 try:
                     return os.path.relpath(abs_p, self.reference_path)
@@ -76,14 +55,11 @@ class WorkspaceContext:
             return str(abs_p)
 
     def _is_within(self, child: Path, parent: Path) -> bool:
-        """child が parent の配下にあるか判定する"""
         try:
-            # Python 3.9+ supports is_relative_to
             return child.resolve().is_relative_to(parent.resolve())
         except (ValueError, AttributeError):
-            # Fallback for even older versions or unexpected errors
             try:
-                os.path.relpath(child.resolve(), parent.resolve())
+                os.relpath(child.resolve(), parent.resolve())
                 return not os.path.relpath(child.resolve(), parent.resolve()).startswith("..")
             except ValueError:
                 return False
@@ -96,10 +72,9 @@ class LinterEngine:
         self.config = self._load_repo_config()
 
     def _load_repo_config(self) -> Dict[str, Any]:
-        """リポジトリ固有の設定 (.brwn.json) を読み込む"""
         config_path = os.path.join(self.repo_root, ".brwn.json")
         default_config = {
-            "lint_command": None, # None の場合はデフォルトを使用
+            "lint_command": None,
             "format_command": None,
             "security_command": None,
             "test_command": "pytest"
@@ -114,14 +89,11 @@ class LinterEngine:
         return default_config
 
     async def scan_semgrep(self, path: str = ".") -> Dict[str, Any]:
-        """Semgrep によるセマンティック・スキャンを実行"""
         target_path = os.path.join(self.repo_root, path)
         cmd = ["semgrep", "scan", "--config=auto", "--json", "."]
-        
         result = run_command(cmd, cwd=target_path)
         if result.exit_code not in (0, 1):
             return {"error": f"Semgrep failed: {result.stderr}"}
-        
         try:
             data = json.loads(result.stdout)
             findings = []
@@ -133,438 +105,179 @@ class LinterEngine:
                     "severity": item["extra"]["severity"]
                 })
             return {"findings": findings}
-        except json.JSONDecodeError:
-            return {"error": f"Failed to parse Semgrep output as JSON: {result.stdout}"}
         except Exception as e:
-            return {"error": f"Exception during semgrep scan processing: {e}"}
-
-    async def scan_astgrep(self, query: str = None, path: str = ".") -> Dict[str, Any]:
-        """ast-grep (sg) による構造的スキャンを実行"""
-        target_path = os.path.join(self.repo_root, path)
-        cmd = ["sg", "scan", "--report-style", "json"]
-        if query:
-            cmd = ["sg", "run", "-p", query, "--json"]
-
-        result = run_command(cmd, cwd=target_path)
-        
-        try:
-            data = json.loads(result.stdout)
-            findings = []
-            items = data if isinstance(data, list) else data.get("results", [])
-            for item in items:
-                findings.append({
-                    "path": item.get("file", "unknown"),
-                    "line": item.get("range", {}).get("start", {}).get("line", 0) + 1,
-                    "message": item.get("message", "Pattern matched"),
-                    "severity": "info"
-                })
-            return {"findings": findings}
-        except json.JSONDecodeError:
-            return {"error": f"ast-grep failed or returned invalid JSON: {result.stderr or result.stdout}"}
-        except Exception as e:
-            return {"error": f"Exception during ast-grep scan processing: {e}"}
-
-    def _get_tool_cmd(self, tool_name: str) -> str:
-        """仮想環境 (.venv) 内のツールパスを優先して取得する"""
-        venv_bin = os.path.join(self.repo_root, ".venv", "bin", tool_name)
-        if os.path.exists(venv_bin):
-            return venv_bin
-        return tool_name
-
-    def _detect_py(self, target_path: str) -> bool:
-        """パスが Python ファイル、または Python ファイルを含むディレクトリか判定"""
-        if os.path.isfile(target_path):
-            return target_path.endswith(".py")
-        if os.path.isdir(target_path):
-            return any(f.endswith(".py") for _, _, fs in os.walk(target_path) for f in fs)
-        return False
-
-    def _detect_js(self, target_path: str) -> bool:
-        """パスが JS/TS ファイル、またはそれらを含むディレクトリか判定"""
-        exts = (".js", ".ts", ".jsx", ".tsx")
-        if os.path.isfile(target_path):
-            return target_path.endswith(exts)
-        if os.path.isdir(target_path):
-            return any(f.endswith(exts) for _, _, fs in os.walk(target_path) for f in fs)
-        return False
-
-    def get_lint_command(self, path: str = ".") -> Optional[str]:
-        """適用可能なリンターコマンドを特定して返す"""
-        target_path = os.path.normpath(os.path.join(self.repo_root, path))
-        cmd = self.config.get("lint_command")
-        
-        if not cmd:
-            if self._detect_py(target_path):
-                cmd = f"{self._get_tool_cmd('ruff')} check"
-            elif self._detect_js(target_path):
-                cmd = "npx eslint"
-        
-        if not cmd:
-            return None
-            
-        # ターゲットのパスを追加して返す
-        # リポジトリ内での相対パスを使用
-        rel_path = os.path.relpath(target_path, self.repo_root)
-        return f"{cmd} {rel_path}"
+            return {"error": f"Exception during semgrep scan: {e}"}
 
     async def run_lint(self, path: str = ".") -> str:
-        """リンター (Ruff / ESLint) の実行 (ホスト側)"""
         cmd_str = self.get_lint_command(path)
-        if not cmd_str:
-            return "No linter found for this path."
-
+        if not cmd_str: return "No linter found."
         result = run_command(cmd_str, cwd=self.repo_root, shell=True)
         return result.combined or "No issues found."
 
+    def get_lint_command(self, path: str = ".") -> Optional[str]:
+        target_path = os.path.normpath(os.path.join(self.repo_root, path))
+        cmd = self.config.get("lint_command")
+        if not cmd:
+            if any(f.endswith(".py") for _, _, fs in os.walk(target_path) for f in fs):
+                cmd = "ruff check"
+        if not cmd: return None
+        rel_path = os.path.relpath(target_path, self.repo_root)
+        return f"{cmd} {rel_path}"
+
     def get_format_command(self, path: str = ".") -> Optional[str]:
-        """適用可能なフォーマットコマンドを特定して返す"""
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("format_command")
-        
         if not cmd:
-            if self._detect_py(target_path):
-                cmd = f"{self._get_tool_cmd('black')}"
-            elif self._detect_js(target_path):
-                cmd = "npx prettier --write"
-        
-        if not cmd:
-            return None
-        
+            if any(f.endswith(".py") for _, _, fs in os.walk(target_path) for f in fs):
+                cmd = "black"
+        if not cmd: return None
         rel_path = os.path.relpath(target_path, self.repo_root)
         return f"{cmd} {rel_path}"
-
-    async def run_format(self, path: str = ".") -> str:
-        """フォーマッター (Black / Prettier) の実行 (ホスト側)"""
-        cmd_str = self.get_format_command(path)
-        if not cmd_str:
-            return "No formatter found for this path."
-
-        result = run_command(cmd_str, cwd=self.repo_root, shell=True)
-        return f"Formatter output: {result.stdout or 'Success'}"
 
     def get_security_command(self, path: str = ".") -> Optional[str]:
-        """適用可能なセキュリティスキャンコマンドを特定して返す"""
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         cmd = self.config.get("security_command")
-        
         if not cmd:
-            if self._detect_py(target_path):
-                # Docker内などで実行しやすいよう相対パスを想定
-                cmd = f"{self._get_tool_cmd('bandit')} -r -f txt"
-        
-        if not cmd:
-            return None
-        
+            if any(f.endswith(".py") for _, _, fs in os.walk(target_path) for f in fs):
+                cmd = "bandit -r -f txt"
+        if not cmd: return None
         rel_path = os.path.relpath(target_path, self.repo_root)
         return f"{cmd} {rel_path}"
 
-    async def scan_security(self, path: str = ".") -> str:
-        """セキュリティスキャン (Bandit 等) の実行 (ホスト側)"""
-        cmd_str = self.get_security_command(path)
-        if not cmd_str:
-            return "No security scanner found for this path."
-
-        result = run_command(cmd_str, cwd=self.repo_root, shell=True)
-        if result.exit_code == 0:
-            return "No security issues found."
-        return f"Security Issues found:\n{result.stdout}"
-
 class SandboxManager:
+    """Testcontainers を用いたサンドボックス管理クラス"""
+    
     def __init__(self, user_id: int, group_id: int):
         self.user_id = user_id
         self.group_id = group_id
-        try:
-            self._init_docker_client()
-        except Exception as e:
-            logger.error(f"Failed to initialize Docker client after retries: {e}")
-            raise RuntimeError("Docker daemon not found or unreachable. Please ensure Docker Desktop is running.")
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_fixed(2),
-        retry=retry_if_exception_type((docker.errors.DockerException, Exception)),
-        reraise=True
-    )
-    def _init_docker_client(self):
-        """Docker クライアントを初期化する（リトライあり）"""
-        try:
-            self.client = docker.from_env()
-            self.client.ping()
-        except Exception:
-            # Mac / Linux の標準的なソケットパスを試行 (設計書 11.2 補足)
-            paths = [
-                f"unix://{os.path.expanduser('~/.docker/run/docker.sock')}",
-                "unix:///var/run/docker.sock"
-            ]
-            self.client = None
-            for path in paths:
-                try:
-                    self.client = docker.DockerClient(base_url=path)
-                    self.client.ping()
-                    return
-                except Exception:
-                    continue
-            raise docker.errors.DockerException("Could not connect to Docker daemon.")
-
-    def sanitize_compose_yaml(self, yaml_content: str) -> str:
-        """YAMLサニタイザー (設計書 8. サンドボックス & 実行環境)
-        privileged, volumesマウント等の攻撃をブロックし、
-        非Root実行ユーザーを指定する。
-        """
-        data = yaml.safe_load(yaml_content)
-        
-        # サービスごとのループ
-        if 'services' in data:
-            for service_name, config in data['services'].items():
-                # 1. privileged 禁止
-                if 'privileged' in config:
-                    logger.warning(f"Removing privileged flag from {service_name}")
-                    del config['privileged']
-                
-                # 2. volumes マウントの制限 (ホスト側のマウントを禁止、名前付きボリュームのみ許可など)
-                # 設計上は workspace ディレクトリのみマウントするように調整
-                if 'volumes' in config:
-                    new_volumes = []
-                    for vol in config['volumes']:
-                        if isinstance(vol, str) and ":" in vol:
-                            # ホストパスが "/etc" や "/" であれば削除
-                            host_path = vol.split(":")[0]
-                            if host_path in ["/", "/etc", "/root", "/var/run/docker.sock"]:
-                                logger.warning(f"Forbidden volume mount detected: {vol}")
-                                continue
-                        new_volumes.append(vol)
-                    config['volumes'] = new_volumes
-                
-                # 3. 実行ユーザーの指定 (設計書 3.2: ホスト側の権限ロック回避)
-                config['user'] = f"{self.user_id}:{self.group_id}"
-                
-                # 4. ネットワーク隔離
-                # デフォルトでは分離されたブリッジネットワークを使用
-        
-        return yaml.dump(data)
-
-    def dump(self, data): # Added for compatibility if needed
-        return yaml.dump(data)
+        self.context: Optional[WorkspaceContext] = None
+        logger.info(f"SandboxManager initialized for user {user_id}:{group_id}")
 
     def set_workspace_root(self, root_path: str):
-        """ワークスペースのルートパスを設定する"""
         if self.context:
-            self.context.root_path = os.path.realpath(root_path)
+            self.context.root_path = Path(os.path.realpath(root_path))
         else:
             self.context = WorkspaceContext(root_path)
-        logger.info(f"Sandbox workspace root set via context: {self.context.root_path}")
 
     def set_reference_root(self, ref_path: str):
-        """参照用（ローカル）ルートを設定する"""
         if not self.context:
-            # root がない状態で ref だけ設定されるケースは想定外だが一応対応
             self.context = WorkspaceContext(".", ref_path)
         else:
-            self.context.reference_path = os.path.realpath(ref_path)
-        logger.info(f"Sandbox reference root set via context: {self.context.reference_path}")
+            self.context.reference_path = Path(os.path.realpath(ref_path))
 
     def _get_full_path(self, path: str, rw: bool = False) -> str:
-        """パスの解決を WorkspaceContext に委譲する"""
         if not self.context:
-            raise RuntimeError("WorkspaceContext (root) is not set.")
-        
-        # WorkspaceContext.resolve_path は Path オブジェクトを返す
+            raise RuntimeError("WorkspaceContext is not set.")
         full_path = self.context.resolve_path(path, strict=True)
-        
-        # 書き込み操作の場合、root_path 内であることを追加確認（Context側でも strict なら弾かれるが念押し）
-        if rw:
-            if not str(full_path).startswith(str(self.context.root_path)):
-                logger.error(f"Write operation denied outside workspace: {full_path}")
-                raise PermissionError("Write access denied outside the workspace area.")
-        
+        if rw and not str(full_path).startswith(str(self.context.root_path)):
+            raise PermissionError("Write access denied outside workspace.")
         return str(full_path)
 
     async def list_files(self, path: str = ".", max_depth: int = 1) -> str:
-        """指定されたパスのファイル一覧を取得する (max_depth で制御可能)"""
-        full_path = self._get_full_path(path, rw=False)
+        full_path = self._get_full_path(path)
         if not os.path.exists(full_path):
-            # パスが見わからない場合、例外を投げずに AI へのヒントを返して自律復旧を促す
-            return f"Error: Path '{path}' not found. Please check the directory structure (e.g., did you mean 'src/{path}'?)."
-        
+            return f"Error: Path '{path}' not found."
         output = []
         for root, dirs, files in os.walk(full_path):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             rel_root = os.path.relpath(root, full_path)
             prefix = "" if rel_root == "." else rel_root + "/"
-            
-            # 整形
-            output_items = []
-            for d in sorted(dirs):
-                output_items.append(f"[DIR]  {prefix}{d}/")
+            for d in sorted(dirs): output.append(f"[DIR]  {prefix}{d}/")
             for f in sorted(files):
-                if not f.startswith("."):
-                    output_items.append(f"[FILE] {prefix}{f}")
-            
-            output.extend(output_items)
-            
-            # 深さ制限
-            current_depth = 0 if rel_root == "." else rel_root.count(os.sep) + 1
-            if current_depth >= max_depth:
-                del dirs[:]
-        
-        if not output:
-            return "(Empty directory)"
-            
-        return "\n".join(output)
+                if not f.startswith("."): output.append(f"[FILE] {prefix}{f}")
+            depth = 0 if rel_root == "." else rel_root.count(os.sep) + 1
+            if depth >= max_depth: del dirs[:]
+        return "\n".join(output) or "(Empty directory)"
 
     async def read_file(self, path: str) -> str:
-        """ファイル内容を読み取る"""
-        full_path = self._get_full_path(path, rw=False)
-        if not os.path.exists(full_path):
-            return f"Error: File '{path}' not found. Please check if you missed a directory prefix (e.g., 'src/{path}'). Verify with list_files."
-        if os.path.isdir(full_path):
-            return f"Error: '{path}' is a directory. Use list_files to list its contents."
-        
-        # macOS などの大文字小文字を区別しないファイルシステムへの対策（厳密チェック）
-        dirname, basename = os.path.split(os.path.realpath(full_path))
-        if basename and basename not in os.listdir(dirname):
-            return f"Error: File '{path}' not found (case-sensitive check failed). Verify the exact spelling."
-        
+        full_path = self._get_full_path(path)
+        if not os.path.exists(full_path): return f"Error: File '{path}' not found."
         with open(full_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            if not content:
-                return f"(File {path} is empty)"
-            return f"--- Contents of {path} (Full) ---\n{content}\n--- End of {path} ---"
+            return f"--- Contents of {path} ---\n{f.read()}\n--- End ---"
 
     async def write_file(self, path: str, content: str) -> str:
-        """ファイルに内容を書き込む"""
         full_path = self._get_full_path(path, rw=True)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
         with open(full_path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"Successfully written to {path}."
 
-    def _get_container_config(
-        self,
-        image: str,
-        command: str,
+    async def run_command(
+        self, 
+        command: str, 
+        image: str = "python:3.11-slim", 
         environment: Optional[Dict[str, str]] = None
     ) -> Dict[str, Any]:
-        """Docker コンテナの起動オプションを構築する内部ヘルパー"""
-        return {
-            "image": image,
-            "command": command,
-            "volumes": {
-                str(self.context.root_path): {"bind": "/workspace", "mode": "rw"}
-            },
-            "working_dir": "/workspace",
-            "user": f"{self.user_id}:{self.group_id}",
-            "environment": environment,
-            "detach": False,
-            "stdout": True,
-            "stderr": True,
-            "remove": True,
-            "network_disabled": True
-        }
-
-    async def run_command(self, command: str, image: str = "python:3.11-slim", environment: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """
-        サンドボックス（Dockerコンテナ）内でコマンドを実行する。
-        """
+        """Testcontainers を用いたサンドボックス内コマンド実行"""
         if not self.context or not self.context.root_path:
-            raise RuntimeError("Workspace root is not set. Cannot run sandbox command.")
+            raise RuntimeError("Workspace root is not set.")
 
-        logger.info(f"Running sandbox command: {command} in image: {image}")
-        config = self._get_container_config(image, command, environment)
+        logger.info(f"Starting Sandbox Container (Testcontainers) with image: {image}")
         
+        # Testcontainers による宣言的なコンテナ構築
+        container = (
+            DockerContainer(image)
+            .with_bind_mount(str(self.context.root_path), "/workspace", mode="rw")
+            .with_env("HOME", "/tmp")
+        )
+        
+        if environment:
+            for k, v in environment.items():
+                container.with_env(k, v)
+
+        # セキュリティ制約の適用
+        # 1. ネットワーク遮断
+        # 2. 非Rootユーザー実行
+        # 3. ワーキングディレクトリ設定
+        container._container_proxy.params.update({
+            "network_disabled": True,
+            "user": f"{self.user_id}:{self.group_id}",
+            "working_dir": "/workspace"
+        })
+
         try:
-            # 非特権ユーザーで実行
-            container = self.client.containers.run(**config)
-            
-            # 同期的実行の場合、戻り値は bytes 型の stdout/stderr
-            output = container.decode("utf-8") if isinstance(container, bytes) else str(container)
-            
-            return {
-                "exit_code": 0,
-                "stdout": output,
-                "stderr": ""
-            }
-        except docker.errors.ContainerError as e:
-            logger.error(f"Sandbox command failed with exit code {e.exit_status}")
-            return {
-                "exit_code": e.exit_status,
-                "stdout": e.stdout.decode("utf-8") if e.stdout else "",
-                "stderr": e.stderr.decode("utf-8") if e.stderr else ""
-            }
+            with container as c:
+                logger.info(f"Executing inside sandbox: {command}")
+                # コマンド実行
+                result = c.get_wrapped_container().exec_run(
+                    cmd=["/bin/sh", "-c", command],
+                    user=f"{self.user_id}:{self.group_id}",
+                    workdir="/workspace"
+                )
+                
+                output = result.output.decode("utf-8")
+                return {
+                    "exit_code": result.exit_code,
+                    "stdout": output,
+                    "stderr": "" # exec_run combines stdout/stderr by default
+                }
         except Exception as e:
-            logger.error(f"Failed to run sandbox command: {e}")
-            return {
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": str(e)
-            }
+            logger.error(f"Sandbox execution failed: {e}")
+            return {"exit_code": -1, "stdout": "", "stderr": str(e)}
 
     async def lint_code(self, path: str = ".") -> str:
-        """リンターをサンドボックス内で実行する"""
-        if not self.context or not self.context.root_path:
-            return "Error: Workspace root is not set."
-            
-        linter = LinterEngine(self.context.root_path)
+        linter = LinterEngine(str(self.context.root_path))
         cmd = linter.get_lint_command(path)
-        if not cmd:
-            return "No linter found for this path."
-            
+        if not cmd: return "No linter found."
         res = await self.run_command(cmd)
-        return f"Lint Results (Sandbox):\nStatus: {res['exit_code']}\nOutput: {res['stdout'] or res['stderr']}"
+        return f"Lint Results:\nStatus: {res['exit_code']}\nOutput: {res['stdout']}"
 
     async def format_code(self, path: str = ".") -> str:
-        """フォーマッターをサンドボックス内で実行する"""
-        if not self.context or not self.context.root_path:
-            return "Error: Workspace root is not set."
-
-        linter = LinterEngine(self.context.root_path)
+        linter = LinterEngine(str(self.context.root_path))
         cmd = linter.get_format_command(path)
-        if not cmd:
-            return "No formatter found for this path."
-
+        if not cmd: return "No formatter found."
         res = await self.run_command(cmd)
-        return f"Format Results (Sandbox):\nStatus: {res['exit_code']}\nOutput: {res['stdout'] or res['stderr']}"
+        return f"Format Results:\nStatus: {res['exit_code']}\nOutput: {res['stdout']}"
 
     async def scan_security(self, path: str = ".") -> str:
-        """セキュリティスキャンをサンドボックス内で実行する"""
-        if not self.context or not self.context.root_path:
-            return "Error: Workspace root is not set."
-
-        linter = LinterEngine(self.context.root_path)
+        linter = LinterEngine(str(self.context.root_path))
         cmd = linter.get_security_command(path)
-        if not cmd:
-            return "No security scanner found for this path."
-
+        if not cmd: return "No security scanner found."
         res = await self.run_command(cmd)
-        return f"Security Scan Results (Sandbox):\nStatus: {res['exit_code']}\nOutput: {res['stdout'] or res['stderr']}"
-
-    async def run_semgrep(self, target: str = ".") -> Dict[str, Any]:
-        """Semgrep による静的解析をサンドボックス（Docker）内で実行する"""
-        if not self.context or not self.context.root_path:
-            return {"exit_code": -1, "logs": "Error: Workspace root is not set."}
-
-        # セマンティック解析を実行
-        # イメージは Semgrep 公式を使用
-        res = await self.run_command(
-            command="semgrep scan --config=auto --json .",
-            image="returntocorp/semgrep",
-            environment={"HOME": "/tmp"}
-        )
-        return {
-            "status": "success" if res["exit_code"] in (0, 1) else "failed",
-            "exit_code": res["exit_code"],
-            "logs": res["stdout"] or res["stderr"]
-        }
+        return f"Security Scan Results:\nStatus: {res['exit_code']}\nOutput: {res['stdout']}"
 
     def cleanup_orphans(self):
-        """オーファンコンテナ・ボリュームの定期GC (設計書 8.4 浄化)"""
-        containers = self.client.containers.list(all=True, filters={"label": "brownie_task_id"})
-        for c in containers:
-            if c.status != "running":
-                logger.debug(f"Removing orphan container: {c.id}")
-                try:
-                    c.remove()
-                except Exception:
-                    pass
-        
-        self.client.volumes.prune()
+        """Testcontainers がコンテキストマネージャ経由でクリーンアップするため、
+        明示的なオーファン消去は補助的な役割となる。
+        """
+        logger.info("Testcontainers will handle container lifecycle automatically.")

@@ -34,7 +34,7 @@ class TaskState(TypedDict):
     validated_plan: Dict[str, Any]
     
     # Phase 3: Execution
-    execution_tasks: List[str] # Huey に投入予定のタスクID
+    execution_tasks: List[str] # タスクキューに投入予定のタスクID
     execution_logs: List[Dict[str, Any]]
     execution_result_summary: str
     

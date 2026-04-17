@@ -1,5 +1,6 @@
 import os
 import sys
+import pluggy
 from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 
@@ -9,13 +10,14 @@ from fastmcp.client.transports.stdio import StdioTransport
 from loguru import logger
 
 from src.core.config import get_settings
+from src.core.plugin_specs import MCPPluginSpec
+from src.core.default_plugins import DirectoryDiscoveryPlugin
 
 
 class MCPServerManager:
     """
     MCP サーバーのライフサイクルを管理する。
-    コアサーバー（Workspace, Knowledge）と、タスクごとにJITロードされる解析用プラグインを管理する。
-    AsyncExitStack を用いて、プロセスの確実なクリーンアップを保証する。
+    プラグイン管理には Pluggy を使用し、拡張性と保守性を確保する。
     """
     def __init__(self, project_root: str, config_path: Optional[str] = None):
         self.project_root = project_root
@@ -33,6 +35,14 @@ class MCPServerManager:
         self._memory_path: str = ""
         self._repo_name: str = ""
 
+        # Pluggy の初期化
+        self.pm = pluggy.PluginManager("brownie")
+        self.pm.add_hookspecs(MCPPluginSpec)
+        
+        # デフォルトのプラグイン発見器を登録
+        self.pm.register(DirectoryDiscoveryPlugin(project_root))
+
+    # --- Properties (Client accessors) ---
     @property
     def workspace_client(self) -> Optional[Client]: return self.clients.get("workspace")
     @property
@@ -90,6 +100,7 @@ class MCPServerManager:
         logger.info(f"{name} MCP Server connected successfully.")
         return client
 
+    # --- Core Servers ---
     async def start_workspace_server(self, repo_path: str, reference_path: str, user_id: int, group_id: int):
         self._repo_path = repo_path
         self._reference_path = reference_path
@@ -128,24 +139,11 @@ class MCPServerManager:
             {"GITHUB_PERSONAL_ACCESS_TOKEN": token or "", "GITHUB_TOKEN": token or ""}
         )
 
-    async def start_github_notifications_server(self):
-        token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
-        return await self._start_server(
-            "github_notifications",
-            "npx",
-            ["-y", "github-notifications-mcp-server"],
-            {"GITHUB_PERSONAL_ACCESS_TOKEN": token or "", "GITHUB_TOKEN": token or ""}
-        )
-
     async def start_repo_provision_server(self):
         return await self._start_server("repo_provision", sys.executable, ["-m", "src.mcp_server.repository_provision_server"])
 
     async def start_persistence_server(self):
-        return await self._start_server(
-            "persistence",
-            sys.executable,
-            ["-m", "src.mcp_server.persistence_server"]
-        )
+        return await self._start_server("persistence", sys.executable, ["-m", "src.mcp_server.persistence_server"])
 
     async def start_history_server(self):
         return await self._start_server("history", sys.executable, ["-m", "src.mcp_server.history_server"])
@@ -165,48 +163,9 @@ class MCPServerManager:
     async def start_task_reasoning_server(self) -> Client:
         return await self._start_server("task_reasoning", sys.executable, ["-m", "src.mcp_server.task_reasoning_server"])
 
-    async def start_fetch_server(self):
-        """公式の fetch サーバーを起動し、高品質な Markdown 取得を実現する"""
-        return await self._start_server(
-            "fetch",
-            "npx",
-            ["-y", "@modelcontextprotocol/server-fetch"]
-        )
-
-    async def start_memory_server(self):
-        """公式の memory サーバーを起動し、知識グラフ管理を委譲する"""
-        return await self._start_server(
-            "memory",
-            "npx",
-            ["-y", "@modelcontextprotocol/server-memory"]
-        )
-
-    async def start_sequential_thinking_server(self):
-        """公式の sequential-thinking サーバーを起動し、論理的推論を強化する"""
-        return await self._start_server(
-            "sequential_thinking",
-            "npx",
-            ["-y", "@modelcontextprotocol/server-sequential-thinking"]
-        )
-
-    async def start_sqlite_server(self, db_path: str):
-        """公式の sqlite サーバーを起動し、DB解析を委譲する"""
-        return await self._start_server(
-            "sqlite",
-            "npx",
-            ["-y", "@modelcontextprotocol/server-sqlite", "--db", db_path]
-        )
-
-    async def start_postgres_server(self, connection_string: str):
-        """公式の postgres サーバーを起動し、DB解析を委譲する"""
-        return await self._start_server(
-            "postgres",
-            "npx",
-            ["-y", "@modelcontextprotocol/server-postgres", connection_string]
-        )
-
+    # --- Official & Dynamic Plugins via Pluggy ---
     async def provision_servers(self, server_names: List[str]):
-        """要求されたJITロードMCPサーバー群をオンデマンドで起動する"""
+        """Pluggy Hook を用いてプラグインをオンデマンドで起動する"""
         if not self._exit_stack:
             logger.error("AsyncExitStack is not initialized.")
             return
@@ -214,29 +173,34 @@ class MCPServerManager:
         requested = set(server_names)
         current_plugins = {k for k in self.clients.keys() if k.startswith("plugin_")}
         
-        # 不要なプラグインを停止（実際には ExitStack 単位での管理が必要だが、一旦辞書から削除）
+        # 不要なプラグインを停止
         for name in (current_plugins - {f"plugin_{s}" for s in requested}):
-            logger.info(f"De-provisioning JIT Server: {name}")
+            logger.info(f"De-provisioning plugin context: {name}")
             del self.clients[name]
 
-        # 新規プラグインを起動
+        # Pluggy Hook を呼び出して設定を取得し、起動する
         for name in requested:
             plugin_key = f"plugin_{name}"
             if plugin_key not in self.clients:
-                await self._start_server(
-                    plugin_key,
-                    sys.executable,
-                    ["-m", f"src.mcp_server.plugins.{name}"],
-                    {"BROWNIE_WORKSPACE_ROOT": self._repo_path}
-                )
+                # 全ての登録済みプラグインに対して Hook を呼び出す
+                configs = self.pm.hook.get_server_config(name=name)
+                # 最初に Non-None を返したものを採用
+                config = next((c for c in configs if c), None)
+                
+                if config:
+                    await self._start_server(
+                        plugin_key,
+                        config["command"],
+                        config["args"],
+                        {**(config.get("env") or {}), "BROWNIE_WORKSPACE_ROOT": self._repo_path}
+                    )
+                else:
+                    logger.warning(f"Plugin configuration for '{name}' not found via Pluggy Hooks.")
 
-
-
-
+    # --- Public APIs ---
     async def get_langchain_tools(self) -> List[Any]:
-        """全アクティブサーバーから提供されるツールを LangChain 形式に変換して取得する"""
+        """全アクティブサーバーのツールを抽出する"""
         from langchain_mcp_adapters.tools import load_mcp_tools
-        
         all_tools = []
         for name, client in self.clients.items():
             if client and client.session:

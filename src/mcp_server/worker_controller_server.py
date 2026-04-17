@@ -25,14 +25,14 @@ async def enqueue_task(
         issue_number: Issue 番号
         payload: タスクに渡す追加データ (プラン等)
     """
-    logger.info(f"Enqueuing {task_type} task for {task_id}")
+    logger.info(f"Enqueuing {task_type} task for {task_id} via Taskiq kiq")
     
     if task_type == "execution":
-        execution_task(task_id, repo_name, issue_number, payload)
+        await execution_task.kiq(task_id, repo_name, issue_number, payload)
     elif task_type == "analysis":
-        analysis_task(task_id, repo_name, issue_number, payload)
+        await analysis_task.kiq(task_id, repo_name, issue_number, payload)
     elif task_type == "repair":
-        repair_task(task_id, repo_name, issue_number, payload)
+        await repair_task.kiq(task_id, repo_name, issue_number, payload)
     else:
         raise ValueError(f"Unknown task_type: {task_type}")
 

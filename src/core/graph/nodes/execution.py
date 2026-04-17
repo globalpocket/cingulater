@@ -10,7 +10,7 @@ logger = logging.getLogger("brownie.nodes.execution")
 async def execution_delegation_node(state: TaskState) -> Dict[str, Any]:
     """
     Phase 3: Execution Delegation
-    Huey に実行タスクを Pull させる。
+    Taskiq に実行タスクを投入する。
     """
     print(f"--- Phase 3: Execution Delegation ({state['task_id']}) ---")
 

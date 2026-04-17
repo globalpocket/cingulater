@@ -1,7 +1,9 @@
+from typing import Literal
+
 from langgraph.graph import END, StateGraph
 
 from src.core.graph.nodes.analysis import core_analysis_node
-from src.core.graph.nodes.completion import completion_node  # 追加
+from src.core.graph.nodes.completion import completion_node
 from src.core.graph.nodes.execution import execution_delegation_node
 from src.core.graph.nodes.governance import governance_node
 from src.core.graph.nodes.handshake import dynamic_handshake_node
@@ -11,96 +13,89 @@ from src.core.state_manager import TaskState
 
 def create_brownie_graph():
     """
-    Brownie 5-Phase ワークフローの構築
+    BROWNIE 5-Phase ワークフローの構築 (Prebuilt 最適化版)
     """
-    builder = StateGraph(TaskState)
+    workflow = StateGraph(TaskState)
 
-    # ノードの追加
-    builder.add_node("intent_alignment", intent_alignment_node)
-    builder.add_node("core_analysis", core_analysis_node)
-    builder.add_node("dynamic_handshake", dynamic_handshake_node)
-    builder.add_node("execution_delegation", execution_delegation_node)
-    builder.add_node("governance", governance_node)
-    builder.add_node("completion", completion_node)  # 追加
+    # 1. 意図調整 (Intent Alignment)
+    workflow.add_node("intent_alignment", intent_alignment_node)
+    # 2. コア解析 (Core Analysis)
+    workflow.add_node("core_analysis", core_analysis_node)
+    # 3. 動的ハンドシェイク (Dynamic Handshake)
+    workflow.add_node("dynamic_handshake", dynamic_handshake_node)
+    # 4. 実行委譲 (Execution Delegation)
+    workflow.add_node("execution_delegation", execution_delegation_node)
+    # 5. ガバナンス/検証 (Governance)
+    workflow.add_node("governance", governance_node)
+    # 6. 完了処理 (Completion)
+    workflow.add_node("completion", completion_node)
 
-    # エッジと遷移ロジック
-    builder.set_entry_point("intent_alignment")
+    # --- グラフ配線 ---
+    workflow.set_entry_point("intent_alignment")
 
-    # Phase 0 -> Phase 1 または 待機
-    def route_after_intent(state: TaskState) -> str:
-        if state.get("intent_confirmed"):
-            return "core_analysis"
-        return END
-
-    builder.add_conditional_edges(
+    # Phase 0 -> Phase 1 分岐
+    workflow.add_conditional_edges(
         "intent_alignment",
-        route_after_intent,
-        {"core_analysis": "core_analysis", END: END},
+        lambda state: "core_analysis" if state.get("intent_confirmed") else END,
+        {"core_analysis": "core_analysis", END: END}
     )
 
-    # Phase 1: Analysis Waiting Loop
-    def route_after_analysis(state: TaskState) -> str:
-        if state.get("status") == "Phase1_Completed":
-            return "dynamic_handshake"
-        # 修正: ループして待機するのではなく、一旦ワークフローを終了して外部からの再開を待つ
-        return END
-
-    builder.add_conditional_edges(
+    # Phase 1 -> Phase 2 分岐 (外部再開待機時は END)
+    workflow.add_conditional_edges(
         "core_analysis",
-        route_after_analysis,
-        {"dynamic_handshake": "dynamic_handshake", END: END},
+        lambda state: "dynamic_handshake" if state.get("status") == "Phase1_Completed" else END,
+        {"dynamic_handshake": "dynamic_handshake", END: END}
     )
 
     # Phase 2 -> Phase 3
-    builder.add_edge("dynamic_handshake", "execution_delegation")
+    workflow.add_edge("dynamic_handshake", "execution_delegation")
 
-    # Phase 3: Execution Waiting Loop
-    def route_after_execution(state: TaskState) -> str:
-        status = state.get("status")
-        if status in ["Execution_Completed", "Execution_Failed"]:
-            return "governance"
-        # 修正: 待機時はグラフを抜ける
-        return END
-
-    builder.add_conditional_edges(
+    # Phase 3 -> Phase 4 分岐 (外部再開待機時は END)
+    workflow.add_conditional_edges(
         "execution_delegation",
-        route_after_execution,
-        {"governance": "governance", END: END},
+        lambda state: "governance" if state.get("status") in ["Execution_Completed", "Execution_Failed"] else END,
+        {"governance": "governance", END: END}
     )
 
-    # Phase 4 からの条件分岐
-    def route_after_governance(state: TaskState) -> str:
-        status = state.get("status")
+    # Phase 4 -> ループ or 完了
+    def route_governance(state: TaskState) -> Literal["completion", "intent_alignment", "governance"]:
         decision = state.get("governance_decision")
+        status = state.get("status")
 
         if decision == "Approve":
-            return "completion"  # 承認時は完了ノード（PR作成）へ
-        elif decision == "Reject":
-            return "intent_alignment"  # 却下時は最初に戻る
-        elif status == "Waiting_Repair" or status == "Repair_Completed":
+            return "completion"
+        if decision == "Reject":
+            return "intent_alignment"
+        
+        # 修復中または再検証が必要な場合は自己ループ
+        if status in ["Waiting_Repair", "Repair_Completed"]:
             return "governance"
+            
         return "governance"
 
-    builder.add_conditional_edges(
+    workflow.add_conditional_edges(
         "governance",
-        route_after_governance,
+        route_governance,
         {
             "completion": "completion",
             "intent_alignment": "intent_alignment",
-            "governance": "governance",
-        },
+            "governance": "governance"
+        }
     )
 
-    # Completion -> END
-    builder.add_edge("completion", END)
+    # 完了 -> 終了
+    workflow.add_edge("completion", END)
 
-    return builder
+    return workflow
 
 
 def compile_workflow(checkpointer=None):
     """
     ワークフローのコンパイル。
-    Phase 4 (Governance) の直前で割り込む。
+    ガバナンスフェーズ（人間または再検証の介入）の直前で割り込む設定。
     """
     builder = create_brownie_graph()
-    return builder.compile(checkpointer=checkpointer, interrupt_before=["governance"])
+    return builder.compile(
+        checkpointer=checkpointer,
+        interrupt_before=["governance"]
+    )
