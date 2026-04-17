@@ -28,23 +28,24 @@ _config = {
     "language": os.environ.get("BROWNIE_LANGUAGE", "Japanese")
 }
 
-from jinja2 import Environment, FileSystemLoader
+from pydantic import BaseModel
+from pydantic_ai import Agent
+from src.prompts.library import EXECUTOR_SYSTEM_PROMPT
+from src.utils.llm import get_robust_model, wait_for_llm_ready
 
-# Jinja2 設定
-_template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
-_jinja_env = Environment(loader=FileSystemLoader(_template_dir))
+# --- 型定義 ---
+class Blueprint(BaseModel):
+    logic_constraints: list[str]
+    prohibited_actions: list[str]
+    context_snippets: list[dict[str, str]] | None = None
 
 def _get_agent():
     """Executor Agent インスタンスの生成"""
     model = get_robust_model(_config["model_name"], base_url=_config["endpoint"])
     
-    # テンプレートの読み込みとレンダリング
-    template = _jinja_env.get_template("executor_system.j2")
-    system_prompt = template.render(language=_config["language"])
-    
     agent = Agent(
         model,
-        system_prompt=system_prompt
+        system_prompt=EXECUTOR_SYSTEM_PROMPT
     )
     return agent
 

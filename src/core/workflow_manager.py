@@ -2,7 +2,6 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Dict, List, Optional, TypedDict
 
 import yaml
-from jinja2 import Template
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
@@ -126,34 +125,7 @@ class WorkflowRegistry:
 
                     prompt_path = tool.source_path.parent / prompt_file_name
                     
-                    def make_node(p_path, m_name, e_point, current_node_name):
-                        async def node_func(state: DynamicWorkflowState):
-                            p_content = (
-                                p_path.read_text(encoding="utf-8")
-                                if p_path.exists()
-                                else f"Prompt file not found: {p_path}"
-                            )
-                            template = Template(p_content)
-                            prompt = template.render(
-                                input_data=state.get("input_data"),
-                                results=state.get("results"),
-                                history=[m.content for m in state.get("messages", [])]
-                            )
-
-                            model = get_robust_model(m_name, base_url=e_point)
-                            agent = Agent(model, system_prompt=prompt)
-                            
-                            res = await agent.run(str(state.get("input_data", "")))
-                            output = res.output
-
-                            return {
-                                "messages": [AIMessage(content=str(output))],
-                                "results": {current_node_name: output},
-                                "current_status": f"Completed {current_node_name}"
-                            }
-                        return node_func
-
-                    builder.add_node(node_name, make_node(prompt_path, model_name, endpoint, node_name))
+                    builder.add_node(node_name, self._create_node_func(node_name, prompt_path, model_name, endpoint))
                     
                     if next_node == "END":
                         builder.set_finish_point(node_name)
@@ -181,6 +153,54 @@ class WorkflowRegistry:
         workflow_runner.__name__ = tool.name
         workflow_runner.__doc__ = tool.description
         return workflow_runner
+
+    def _create_node_func(self, node_id: str, prompt_path: Path, model_name: str, endpoint: str):
+        """
+        特定のノードに対する Pydantic AI Agent 実行関数を生成する。
+        (Jinja2 テンプレートを廃止し、標準的な文字列処理に移行)
+        """
+        async def node_func(state: DynamicWorkflowState) -> DynamicWorkflowState:
+            logger.info(f"--- Node: {node_id} ---")
+            
+            p_content = (
+                prompt_path.read_text(encoding="utf-8")
+                if prompt_path.exists()
+                else f"Prompt file not found: {prompt_path}"
+            )
+
+            # コンテキストデータの準備
+            context = {
+                "input_data": state.get("input_data"),
+                "results": state.get("results", {}),
+                "vars": state.get("vars", {})
+            }
+
+            # 簡易的な変数置換 ( {{ var }} -> value )
+            system_prompt = p_content
+            for key, val in context.items():
+                if isinstance(val, dict):
+                    for sub_key, sub_val in val.items():
+                        placeholder = f"{{{{ {key}.{sub_key} }}}}"
+                        if placeholder in system_prompt:
+                            system_prompt = system_prompt.replace(placeholder, str(sub_val))
+                placeholder = f"{{{{ {key} }}}}"
+                if placeholder in system_prompt:
+                    system_prompt = system_prompt.replace(placeholder, str(val))
+
+            model = get_robust_model(model_name, base_url=endpoint)
+
+            # Pydantic AI Agent の実行
+            agent = Agent(model, system_prompt=system_prompt)
+            
+            prompt_data = str(state.get("input_data"))
+            result = await agent.run(prompt_data)
+            
+            output = result.output
+            state["results"][node_id] = output
+            logger.debug(f"Node {node_id} output: {str(output)[:100]}...")
+            return state
+
+        return node_func
 
     def get_tool_dict(self) -> Dict[str, Callable]:
         return self._callables

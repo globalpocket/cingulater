@@ -110,37 +110,105 @@ async def execute_reasoning_loop(
     # 思考ツールの名称変更を避けるため、そのまま注入
     # 実際には Pydantic AI のツールとしてラップする（簡略化のため一旦スタブ的に扱う）
     
-    from jinja2 import Environment, FileSystemLoader
-    _template_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
-    _jinja_env = Environment(loader=FileSystemLoader(_template_dir))
-    template = _jinja_env.get_template("reasoning_system.j2")
-    system_prompt = template.render(instruction=instruction)
+from pydantic_ai import Agent
+from src.prompts.library import PLANNER_SYSTEM_PROMPT
+from src.utils.llm import get_robust_model, wait_for_llm_ready
 
-    # 推論ツール群（動的ツール + 公式思考ツール）
-    combined_tools = list(dynamic_tools.values())
+from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
+
+# --- 型定義 ---
+
+class BlueprintFile(BaseModel):
+    path: str = Field(..., description="修正または作成対象のファイルパス")
+    purpose: str = Field(..., description="そのファイルに対する変更の目的")
+
+class Blueprint(BaseModel):
+    """
+    Planner から Executor へ渡される厳格な設計図。
+    """
+    logic_constraints: List[str] = Field(
+        ..., description="実装すべきロジックの制約条件"
+    )
+    prohibited_actions: List[str] = Field(
+        ..., description="禁止事項・変更不可な箇所"
+    )
+    context_snippets: Optional[List[Dict[str, str]]] = Field(
+        None, description="参考にするコード片"
+    )
+
+mcp = create_mcp_server("TaskReasoning")
+
+# --- 思考プロセス管理用のプロキシ ---
+class SequentialThinkingProxy:
+    def __init__(self):
+        self.client: Optional[Client] = None
+
+    async def _get_client(self) -> Client:
+        if self.client:
+            return self.client
+        
+        logger.info("Initializing official Sequential Thinking MCP sub-server...")
+        transport = StdioTransport(
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-sequential-thinking"]
+        )
+        self.client = Client(transport)
+        await self.client.initialize()
+        return self.client
+
+thinking_proxy = SequentialThinkingProxy()
+
+# ロギング設定
+logger = setup_logging("task_reasoning_server")
+
+@mcp.tool()
+@mcp_tool_errorhandler
+async def execute_reasoning_loop(
+    instruction: str,
+    task_id: str,
+    repo_name: str,
+    issue_number: int,
+    model_name: str,
+    endpoint: str,
+    context: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    タスクを解決するための自律的な推論ループ（Planner）を実行し、設計図（Blueprint）を生成します。
+    (Pydantic-AI を使用して型安全に推論します)
+    """
+    logger.info(f"Starting reasoning loop for {task_id} using {model_name}")
     
-    # ノード実行用の Pydantic AI Agent (Planner)
+    # LLM の準備を待機
+    ready = await wait_for_llm_ready(endpoint)
+    if not ready:
+        return {"error": "LLM server not ready", "status": "failed"}
+
+    # モデルの初期化
+    _model = get_robust_model(model_name, base_url=endpoint)
+    
+    # 公式 Sequential Thinking ツールの取得 (将来的な Pydantic AI ツール統合の準備)
+    _thinking_client = await thinking_proxy._get_client()
+
+    # Pydantic AI Agent (Planner) の構築
     agent = Agent(
         _model,
-        tools=combined_tools,
-        system_prompt=system_prompt
+        result_type=Blueprint,
+        system_prompt=PLANNER_SYSTEM_PROMPT
     )
-    _ = agent
+
+    # 実行 (現在は同期的な Blueprint 生成をデモ)
+    result = await agent.run(instruction)
+    blueprint = result.output
     
-    # ダミーの Blueprint 生成 (Sequential Thinking を経て生成される想定)
-    # 実装が進むにつれ、実際に Agent.run() を呼ぶように拡張する
-    blueprint = Blueprint(
-        logic_constraints=["Use professional tone", "Adhere to architectural rules"],
-        prohibited_actions=["Do not delete existing sections"]
-    )
-    blueprint_files = [BlueprintFile(path="README.md", purpose="Update documentation")]
+    # ダミーのファイルリスト生成 (実際の推論結果に基づいて生成される想定)
+    blueprint_files = [BlueprintFile(path="Implementation", purpose="Apply planned changes")]
     
     return {
         "status": "finished",
         "task_id": task_id,
         "blueprint": blueprint.model_dump(),
         "files": [f.model_dump() for f in blueprint_files],
-        "summary": "Reasoning loop completed with official Sequential Thinking integrated."
+        "summary": "Reasoning loop completed with structured Blueprint output."
     }
 
 if __name__ == "__main__":

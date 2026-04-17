@@ -16,46 +16,61 @@ class WorkerService:
     def __init__(self, project_root: str):
         self.project_root = project_root
         self.consumer_proc: Optional[subprocess.Popen] = None
+        self.scheduler_proc: Optional[subprocess.Popen] = None
         self.active_tasks: Dict[str, str] = {} # task_id -> taskiq_task_id
 
     async def start_consumer(self):
-        """Taskiq コンシューマーを起動"""
+        """Taskiq コンシューマーとスケジューラーを起動"""
         if self.consumer_proc and self.consumer_proc.poll() is None:
             return "Already running"
 
-        # Taskiq ワーカーの起動コマンド
-        # .venv 内の python -m taskiq を使用するか、直接 taskiq コマンドを叩く
         venv_python = os.path.join(self.project_root, ".venv", "bin", "python")
         if not os.path.exists(venv_python):
             venv_python = "python"
 
-        logger.info(f"Starting Taskiq worker from {self.project_root}...")
+        logger.info(f"Starting Taskiq worker and scheduler from {self.project_root}...")
         
         os.makedirs(os.path.join(self.project_root, "logs"), exist_ok=True)
-        stdout_log = open(os.path.join(self.project_root, "logs", "taskiq_stdout.log"), "a")
-        stderr_log = open(os.path.join(self.project_root, "logs", "taskiq_stderr.log"), "a")
+        
+        # ログファイルの設定
+        worker_log = open(os.path.join(self.project_root, "logs", "taskiq_worker.log"), "a")
+        sched_log = open(os.path.join(self.project_root, "logs", "taskiq_scheduler.log"), "a")
 
-        # taskiq worker <path.to.module:broker>
+        # 1. Taskiq Worker の起動
         self.consumer_proc = subprocess.Popen(
             [venv_python, "-m", "taskiq", "worker", "src.core.workers.tasks:broker"],
             cwd=self.project_root,
-            stdout=stdout_log,
-            stderr=stderr_log,
+            stdout=worker_log,
+            stderr=worker_log,
             env={**os.environ, "PYTHONPATH": self.project_root}
         )
-        return f"Started Taskiq worker (PID: {self.consumer_proc.pid})"
+
+        # 2. Taskiq Scheduler の起動
+        self.scheduler_proc = subprocess.Popen(
+            [venv_python, "-m", "taskiq", "scheduler", "src.core.workers.tasks:broker", "src.core.workers.pool:schedule_source"],
+            cwd=self.project_root,
+            stdout=sched_log,
+            stderr=sched_log,
+            env={**os.environ, "PYTHONPATH": self.project_root}
+        )
+
+        return f"Started Taskiq worker (PID: {self.consumer_proc.pid}) and scheduler (PID: {self.scheduler_proc.pid})"
 
     def stop_consumer(self):
+        status = []
         if self.consumer_proc:
             logger.info("Stopping Taskiq worker...")
             self.consumer_proc.terminate()
-            try:
-                self.consumer_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.consumer_proc.kill()
             self.consumer_proc = None
-            return "Stopped"
-        return "Not running"
+            status.append("Worker stopped")
+        
+        if self.scheduler_proc:
+            logger.info("Stopping Taskiq scheduler...")
+            self.scheduler_proc.terminate()
+            self.scheduler_proc = None
+            status.append("Scheduler stopped")
+            
+        return ", ".join(status) if status else "Not running"
 
     async def enqueue_task(self, task_id: str, repo_name: str, issue_number: int, payload: dict = None):
         from src.core.workers.tasks import analysis_task

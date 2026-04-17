@@ -11,8 +11,29 @@ from loguru import logger
 
 from src.core.config import get_settings
 from src.core.trigger_manager import WorkflowTriggerManager
-from src.core.workers.pool import broker
+from src.core.workers.pool import broker, schedule_source
 from src.core.workflow_manager import WorkflowLoader
+
+# スケジュールの登録
+async def setup_schedules():
+    settings = get_settings()
+    
+    # 1. メンション監視 (polling_interval_sec)
+    await poll_mentions_task.kiq().schedule(
+        schedule_source, 
+        cron=f"*/{settings.agent.polling_interval_sec} * * * * *" # 秒単位の cron (taskiq 支持)
+    )
+    
+    # 2. LLM ヘルスチェック (1分)
+    await llm_health_check_task.kiq().schedule(schedule_source, cron="* * * * *")
+    
+    # 3. リソース監視 (30秒)
+    await resource_monitor_task.kiq().schedule(schedule_source, cron="*/30 * * * * *")
+    
+    # 4. マスタートリガー (1分)
+    await master_trigger_dispatcher.kiq().schedule(schedule_source, cron="* * * * *")
+    
+    logger.info("All periodic tasks registered in Taskiq Scheduler source.")
 
 # プロセスごとに1つのオーケストレーターを使い回す
 _orchestrator = None
@@ -124,9 +145,27 @@ async def execute_workflow_task(workflow_name: str, input_data: Any = None):
         logger.error(f"Error in execute_workflow_task: {e}")
 
 @broker.task
+async def poll_mentions_task():
+    """GitHub メールの監視とタスク投入を実行する定期タスク"""
+    orch = await get_orchestrator()
+    await orch._poll_mentions()
+
+@broker.task
+async def llm_health_check_task():
+    """LLM サーバーの死活監視と自動復旧を実行する定期タスク"""
+    orch = await get_orchestrator()
+    await orch._llm_health_loop_job()
+
+@broker.task
+async def resource_monitor_task():
+    """ワーカーのリソース状況監視とストール検知を実行する定期タスク"""
+    orch = await get_orchestrator()
+    await orch._resource_monitor_loop_job()
+
+@broker.task
 async def master_trigger_dispatcher():
     """
-    1分ごとに起動することを想定したタスク（外部スケジューラから喚起）。
+    1分ごとに起動することを想定したタスク。
     """
     now = datetime.now()
     logger.debug(f"⏰ Master trigger dispatcher running at {now.isoformat()}")

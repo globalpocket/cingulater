@@ -9,7 +9,6 @@ from typing import Optional
 
 import httpx
 import redis.asyncio as aioredis
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
 
 from src.core.agent import GitHubClientWrapper, TaskAbortedException
@@ -54,8 +53,7 @@ class Orchestrator:
         self._llm_startup_lock = asyncio.Lock()
         self.is_running = False
         
-        # APScheduler の初期化
-        self.scheduler = AsyncIOScheduler()
+        # APScheduler は廃止され、Taskiq Scheduler に統合されました
 
         self.workspace_base = os.path.expanduser(self.settings.workspace.base_dir)
         os.makedirs(self.workspace_base, exist_ok=True)
@@ -91,19 +89,16 @@ class Orchestrator:
             await self.mcp_manager.start_intent_interpreter_server()
             await self.mcp_manager.start_governance_server()
 
-            # Worker Server の起動（Taskiq ワーカーのライフサイクル管理）
+            # Taskiq スケジュールの確立
+            from src.core.workers.tasks import setup_schedules
+            await setup_schedules()
+
+            # Worker Server の起動（Taskiq ワーカー & スケジューラのライフサイクル管理）
             worker_client = await self.mcp_manager.start_worker_server()
             await worker_client.call_tool("start_worker")
 
             self.is_running = True
-            
-            # 定期ジョブの登録
-            self.scheduler.add_job(self._poll_mentions, "interval", seconds=self.settings.agent.polling_interval_sec)
-            self.scheduler.add_job(self._llm_health_loop_job, "interval", minutes=1)
-            self.scheduler.add_job(self._resource_monitor_loop_job, "interval", seconds=30)
-            
-            self.scheduler.start()
-            logger.info("Scheduler and Workers are online.")
+            logger.info("Taskiq Workers and Scheduler are online.")
 
             async with self.state_manager as sm:
                 self._workflow_app = sm.workflow_app
@@ -118,7 +113,6 @@ class Orchestrator:
     async def shutdown(self):
         logger.info("Shutting down Orchestrator...")
         self.is_running = False
-        self.scheduler.shutdown()
         await self.http_client.aclose()
         # MCP サーバー停止時にワーカープロセス等のクリーンアップも行われる
         await self.mcp_manager.stop_all()

@@ -5,12 +5,13 @@ from typing import Any, Dict, List, Literal
 
 from loguru import logger
 
-from src.core.workflow_manager import WorkflowLoader
-from src.utils.llm import wait_for_llm_ready
+from pydantic_ai import Agent
+from src.prompts.library import INTENT_DIRECTOR_PROMPT
+from src.utils.llm import get_robust_model, wait_for_llm_ready
 
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
-# --- 型定義 (Core から分散) ---
+# --- 型定義 ---
 
 class IntentDraft(BaseModel):
     """
@@ -41,22 +42,6 @@ class IntentDraft(BaseModel):
 logger = setup_logging("intent_interpreter_server")
 mcp = create_mcp_server("IntentInterpreter")
 
-# 動的ワークフローローダーの初期化
-# ルート直下の workflows ディレクトリをスキャン
-project_root = Path(os.getcwd())
-loader = WorkflowLoader(project_root)
-# 初期化時にワークフローをロードしておく
-workflow_registry = loader.load_all()
-
-@mcp.tool()
-@mcp_tool_errorhandler
-async def reload_workflows() -> str:
-    """登録されている動的ワークフローを再読み込みし、最新の状態に更新します。"""
-    global workflow_registry
-    workflow_registry = loader.reload()
-    logger.info(f"Workflows reloaded. Current count: {len(workflow_registry)}")
-    return f"Workflows reloaded. {len(workflow_registry)} workflows found."
-
 @mcp.tool()
 @mcp_tool_errorhandler
 async def interpret_intent(
@@ -64,54 +49,30 @@ async def interpret_intent(
 ) -> Dict[str, Any]:
     """
     ユーザーの指示を分析し、実行フェーズに進むべきか確認が必要かを判断します。
-    (動的ワークフロー 'intent_alignment' を使用して実行します)
+    (Pydantic-AI を使用して型安全に解析します)
     """
-    logger.info(f"Interpreting intent via dynamic workflow: {instruction[:100]}...")
+    logger.info(f"Interpreting intent via Pydantic-AI Agent: {instruction[:100]}...")
 
     # LLM の準備を待機
     ready = await wait_for_llm_ready(endpoint)
     if not ready:
         return {"error": "LLM server not ready", "status": "pending"}
 
-    # ワークフローの取得
-    workflow_tool = workflow_registry.get("intent_alignment")
-    if not workflow_tool:
-        logger.error("Workflow 'intent_alignment' not found in registry.")
-        return {
-            "status": "pending",
-            "intent_summary": "Workflow error",
-            "draft_comment": "エラー：意図解析ワークフローが見つかりませんでした。構成を確認してください。",
-            "evaluation_axes": [],
-            "required_mcp_servers": []
-        }
-
-    # ワークフローの実行
-    # DynamicWorkflowState が返される
-    state_result = await workflow_tool(
-        input_data=instruction,
-        model_name=model_name,
-        endpoint=endpoint
+    # モデルの取得
+    model = get_robust_model(model_name, base_url=endpoint)
+    
+    # Intent Analysis Agent の構築
+    agent = Agent(
+        model,
+        result_type=IntentDraft,
+        system_prompt=INTENT_DIRECTOR_PROMPT
     )
-    
-    # 最終ノード 'node3_draft_reply' の出力を取得
-    results = state_result.get("results", {})
-    final_output = results.get("node3_draft_reply", "")
-    
-    if not final_output:
-        raise ValueError("Final node output is empty.")
 
-    # JSON を抽出 (AI が Markdown ブロックを作ってしまう可能性を考慮)
-    clean_json = str(final_output).strip()
-    if "```json" in clean_json:
-        clean_json = clean_json.split("```json")[-1].split("```")[0].strip()
-    elif "```" in clean_json:
-        clean_json = clean_json.split("```")[-1].split("```")[0].strip()
+    # 実行
+    result = await agent.run(instruction)
+    draft = result.output
 
-    logger.debug(f"Raw workflow output: {final_output}")
-    data = json.loads(clean_json)
-    
-    # Pydantic モデルでバリデーション
-    draft = IntentDraft.model_validate(data)
+    logger.debug(f"Intent analysis completed: {draft.status}")
     return draft.model_dump()
 
 if __name__ == "__main__":
