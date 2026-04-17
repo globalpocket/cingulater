@@ -1,6 +1,7 @@
 from typing import Literal
 
 from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 
 from src.core.graph.nodes.analysis import core_analysis_node
 from src.core.graph.nodes.completion import completion_node
@@ -11,79 +12,80 @@ from src.core.graph.nodes.intent import intent_alignment_node
 from src.core.state_manager import TaskState
 
 
-def create_brownie_graph():
+async def create_brownie_graph():
     """
-    BROWNIE 5-Phase ワークフローの構築 (Prebuilt 最適化版)
+    BROWNIE 5-Phase ワークフローの構築 (LangGraph Prebuilt 最適化版)
     """
     workflow = StateGraph(TaskState)
 
-    # 1. 意図調整 (Intent Alignment)
+    # 1. 基本ノードの登録
     workflow.add_node("intent_alignment", intent_alignment_node)
-    # 2. コア解析 (Core Analysis)
     workflow.add_node("core_analysis", core_analysis_node)
-    # 3. 動的ハンドシェイク (Dynamic Handshake)
     workflow.add_node("dynamic_handshake", dynamic_handshake_node)
-    # 4. 実行委譲 (Execution Delegation)
     workflow.add_node("execution_delegation", execution_delegation_node)
-    # 5. ガバナンス/検証 (Governance)
     workflow.add_node("governance", governance_node)
-    # 6. 完了処理 (Completion)
     workflow.add_node("completion", completion_node)
 
-    # --- グラフ配線 ---
+    # 2. ツール実行ノード (Prebuilt)
+    # BROWNIE のプロスキャナや解析ツール群を ToolNode として一括登録
+    from src.core.orchestrator import global_orchestrator
+    if global_orchestrator and hasattr(global_orchestrator, "tools"):
+        tools = global_orchestrator.tools
+        workflow.add_node("tools", ToolNode(tools))
+
+    # --- グラフ配線 (宣言的ルーティング) ---
     workflow.set_entry_point("intent_alignment")
 
-    # Phase 0 -> Phase 1 分岐
+    # Phase 0: Intent (承認されたら Analysis へ、そうでなければ終了)
     workflow.add_conditional_edges(
         "intent_alignment",
         lambda state: "core_analysis" if state.get("intent_confirmed") else END,
         {"core_analysis": "core_analysis", END: END}
     )
 
-    # Phase 1 -> Phase 2 分岐 (外部再開待機時は END)
+    # Phase 1: Core Analysis -> Handshake
     workflow.add_conditional_edges(
         "core_analysis",
         lambda state: "dynamic_handshake" if state.get("status") == "Phase1_Completed" else END,
         {"dynamic_handshake": "dynamic_handshake", END: END}
     )
 
-    # Phase 2 -> Phase 3
+    # Phase 2: Handshake -> Execution
     workflow.add_edge("dynamic_handshake", "execution_delegation")
 
-    # Phase 3 -> Phase 4 分岐 (外部再開待機時は END)
+    # Phase 3: Execution -> Governance (ツールの結果を待つ場合はツールノードへ)
+    # ここに tools_condition を適用し、エージェントがツール呼び出しを選択した際の
+    # 自動的なルーティングを OSS 側に委譲する
     workflow.add_conditional_edges(
         "execution_delegation",
-        lambda state: "governance" if state.get("status") in ["Execution_Completed", "Execution_Failed"] else END,
-        {"governance": "governance", END: END}
+        tools_condition,  # Prebuilt による自動ツールルーティング
+        {
+            "tools": "tools",  # ツール実行が必要な場合
+            "governance": "governance",  # 完了して検証に進む場合
+            END: END             # 待機中
+        }
     )
+    
+    # ツール実行後は Execution ノードに戻って結果を処理する
+    if "tools" in workflow.nodes:
+        workflow.add_edge("tools", "execution_delegation")
 
-    # Phase 4 -> ループ or 完了
-    def route_governance(state: TaskState) -> Literal["completion", "intent_alignment", "governance"]:
+    # Phase 4: Governance -> Completion / Loop / Repair
+    def route_governance(state: TaskState) -> Literal["completion", "intent_alignment", "governance", END]:
         decision = state.get("governance_decision")
         status = state.get("status")
 
-        if decision == "Approve":
-            return "completion"
-        if decision == "Reject":
-            return "intent_alignment"
+        if decision == "Approve": return "completion"
+        if decision == "Reject": return "intent_alignment"
         
-        # 修復中または再検証が必要な場合は自己ループ
-        if status in ["Waiting_Repair", "Repair_Completed"]:
-            return "governance"
+        # 外部の介入や待機が必要な場合はグラフを抜ける
+        if status == "Waiting_Human_Feedback": return END
             
-        return "governance"
+        return "governance" # 自己修復ループ
 
-    workflow.add_conditional_edges(
-        "governance",
-        route_governance,
-        {
-            "completion": "completion",
-            "intent_alignment": "intent_alignment",
-            "governance": "governance"
-        }
-    )
+    workflow.add_conditional_edges("governance", route_governance)
 
-    # 完了 -> 終了
+    # Completion -> END
     workflow.add_edge("completion", END)
 
     return workflow
@@ -92,7 +94,7 @@ def create_brownie_graph():
 def compile_workflow(checkpointer=None):
     """
     ワークフローのコンパイル。
-    ガバナンスフェーズ（人間または再検証の介入）の直前で割り込む設定。
+    ガバナンス（承認）プロセスでの割り込み設定を維持。
     """
     builder = create_brownie_graph()
     return builder.compile(
