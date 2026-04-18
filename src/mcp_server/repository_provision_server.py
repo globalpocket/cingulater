@@ -33,10 +33,11 @@ async def _get_git_client() -> Client:
     _git_client = client
     return client
 
-@mcp.on_shutdown()
-async def on_shutdown():
-    logger.info("Stopping Git MCP client...")
-    await _exit_stack.aclose()
+# @mcp.on_shutdown()
+# async def on_shutdown():
+#     logger.info("Stopping Git MCP client...")
+#     await _exit_stack.aclose()
+
 
 # ============================================================
 # Git Operations Logic (Delegated to MCP)

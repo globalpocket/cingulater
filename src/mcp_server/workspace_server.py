@@ -245,13 +245,14 @@ async def create_dynamic_workflow(
 # ============================================================
 # シャットダウン・フック
 # ============================================================
-@mcp.on_shutdown()
-async def on_shutdown():
-    """サーバー停止時にサンドボックス（および内蔵 MCP クライアント）を停止"""
-    global _sandbox
-    if _sandbox:
-        logger.info("Stopping Sandbox and internal MCP clients...")
-        await _sandbox.stop()
+# @mcp.on_shutdown()
+# async def on_shutdown():
+#     """サーバー停止時にサンドボックス（および内蔵 MCP クライアント）を停止"""
+#     global _sandbox
+#     if _sandbox:
+#         logger.info("Stopping Sandbox and internal MCP clients...")
+#         await _sandbox.stop()
+
 # サーバー起動エントリーポイント
 # ============================================================
 def _init_from_args():
