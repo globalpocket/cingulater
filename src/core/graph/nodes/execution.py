@@ -1,10 +1,9 @@
+import os
 from typing import Any, Dict
 
 from loguru import logger
 
 from src.core.state_manager import TaskState
-
-logger = logging.getLogger("brownie.nodes.execution")
 
 
 async def execution_delegation_node(state: TaskState) -> Dict[str, Any]:

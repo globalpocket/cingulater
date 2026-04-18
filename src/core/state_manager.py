@@ -68,20 +68,18 @@ class StateManager:
         self._saver: Optional[AsyncRedisSaver] = None
         self._workflow_app = None
 
-    async def __aenter__(self):
-        """async with ステートメントでチェックポインタを有効化する"""
+    async def connect(self):
+        """チェックポインタに接続する（外部ドライバやツール用）"""
         if not self._saver:
             logger.debug(f"Connecting to Redis Checkpointer at {self.redis_host}:{self.redis_port}")
-            self._pool = redis.ConnectionPool(
-                host=self.redis_host, 
-                port=self.redis_port, 
-                db=0,
-                decode_responses=False # Checkpointer internally handles bytes
-            )
-            # aio クライアントを使用
-            client = redis.Redis(connection_pool=self._pool)
-            self._saver = AsyncRedisSaver(client)
-        
+            url = f"redis://{self.redis_host}:{self.redis_port}"
+            # ソースコード定義(L88)に基づき redis_url を使用
+            self._saver = AsyncRedisSaver(redis_url=url)
+        return self
+
+    async def __aenter__(self):
+        """async with ステートメントでチェックポインタを有効化する"""
+        await self.connect()
         # ワークフローのコンパイル (循環参照を避けるためにメソッド内でインポート)
         from src.core.graph.builder import compile_workflow
         self._workflow_app = compile_workflow(checkpointer=self._saver)
@@ -112,6 +110,16 @@ class StateManager:
         """指定した thread_id の最新状態を取得する"""
         config = {"configurable": {"thread_id": thread_id}}
         state = await self.workflow_app.aget_state(config)
+        return state.values if state else {}
+
+    async def get_state_lightweight(self, thread_id: str) -> Dict[str, Any]:
+        """
+        グラフのコンパイル（Orchestrator のロード）を行わずに、
+        チェックポインタから直接最新状態を取得する。
+        多重起動（密結合）を避けるために MCP サーバー等のドライバで使用する。
+        """
+        config = {"configurable": {"thread_id": thread_id}}
+        state = await self._saver.aget(config)
         return state.values if state else {}
 
     async def get_current_status(self, thread_id: str) -> str:

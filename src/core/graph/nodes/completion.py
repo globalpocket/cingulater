@@ -1,7 +1,7 @@
 import os
 from typing import Any, Dict
 
-from src.utils.config_loader import get_footer
+from src.core.config import get_settings
 
 from src.core.agent import GitHubClientWrapper
 from src.core.state_manager import TaskState
@@ -55,7 +55,7 @@ async def completion_node(state: TaskState) -> Dict[str, Any]:
             pr_url = pr.html_url if pr else "Failed to get PR URL"
 
             msg = f"✅ PR を作成しました: {pr_url}\n承認ありがとうございました。"
-            await gh.post_comment(repo_name, issue_number, msg + get_footer())
+            await gh.post_comment(repo_name, issue_number, msg + get_settings().footer)
 
             return {
                 "status": "Completed",

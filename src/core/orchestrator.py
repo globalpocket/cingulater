@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import resource
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -337,7 +338,7 @@ class Orchestrator:
                     repo_name,
                     issue_number,
                     f"### ❌ 実行エラーが発生しました\n\n原因: {error_msg}\n内部的な問題により処理を継続できないか、リソースが不足しています。"
-                    + get_footer(),
+                    + self.settings.footer,
                 )
                 await self.state_manager.update_state(
                     task_id, {"status": "Failed"}, as_node="intent_alignment"

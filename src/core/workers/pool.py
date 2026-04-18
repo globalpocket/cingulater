@@ -1,8 +1,7 @@
 import os
 
 from loguru import logger
-from taskiq import RedisAsyncResultBackend
-from taskiq_redis import RedisBroker, RedisScheduleSource
+from taskiq_redis import RedisAsyncResultBackend, ListQueueBroker, RedisScheduleSource
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -15,4 +14,4 @@ result_backend = RedisAsyncResultBackend(redis_url=REDIS_URL)
 schedule_source = RedisScheduleSource(REDIS_URL)
 
 # Redis ブローカーの初期化
-broker = RedisBroker(url=REDIS_URL).with_result_backend(result_backend)
+broker = ListQueueBroker(url=REDIS_URL).with_result_backend(result_backend)

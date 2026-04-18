@@ -2,7 +2,7 @@ import os
 from typing import Any, Dict
 
 from loguru import logger
-from src.utils.config_loader import get_footer
+from src.core.config import get_settings
 
 from src.core.agent import GitHubClientWrapper
 from src.core.state_manager import TaskState
@@ -76,7 +76,7 @@ async def governance_node(state: TaskState) -> Dict[str, Any]:
             await gh.post_comment(
                 repo_name,
                 issue_number,
-                f"### [Risk: {risk_level}]\n{ringi_content}\n{get_footer()}",
+                f"### [Risk: {risk_level}]\n{ringi_content}\n{get_settings().footer}",
             )
 
             return {

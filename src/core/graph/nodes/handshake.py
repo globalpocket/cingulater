@@ -44,9 +44,9 @@ async def dynamic_handshake_node(state: TaskState) -> Dict[str, Any]:
         repo_name = state["task_id"].split("#")[0]
         issue_number = int(state["task_id"].split("#")[1])
 
-        from src.utils.config_loader import get_footer
+        from src.core.config import get_settings
 
-        await gh.post_comment(repo_name, issue_number, f"{greeting}\n{get_footer()}")
+        await gh.post_comment(repo_name, issue_number, f"{greeting}\n{get_settings().footer}")
 
         return {
             "status": "Phase2_HandshakeDone",

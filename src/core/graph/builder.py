@@ -12,7 +12,7 @@ from src.core.graph.nodes.intent import intent_alignment_node
 from src.core.state_manager import TaskState
 
 
-async def create_brownie_graph():
+def create_brownie_graph():
     """
     BROWNIE 5-Phase ワークフローの構築 (LangGraph Prebuilt 最適化版)
     """
@@ -54,16 +54,17 @@ async def create_brownie_graph():
     workflow.add_edge("dynamic_handshake", "execution_delegation")
 
     # Phase 3: Execution -> Governance (ツールの結果を待つ場合はツールノードへ)
-    # ここに tools_condition を適用し、エージェントがツール呼び出しを選択した際の
-    # 自動的なルーティングを OSS 側に委譲する
+    path_map = {
+        "governance": "governance",
+        END: END
+    }
+    if "tools" in workflow.nodes:
+        path_map["tools"] = "tools"
+
     workflow.add_conditional_edges(
         "execution_delegation",
         tools_condition,  # Prebuilt による自動ツールルーティング
-        {
-            "tools": "tools",  # ツール実行が必要な場合
-            "governance": "governance",  # 完了して検証に進む場合
-            END: END             # 待機中
-        }
+        path_map
     )
     
     # ツール実行後は Execution ノードに戻って結果を処理する
