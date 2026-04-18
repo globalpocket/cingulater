@@ -21,14 +21,21 @@ if sys.platform == 'darwin' and 'DOCKER_HOST' not in os.environ:
 # 仮想環境 (uv) の Python を強制使用する再実行ロジック
 venv_python = os.path.join(base_dir, ".venv", "bin", "python")
 
-# macOS のパス補完 (Docker や Homebrew バイナリの解決用)
+# macOS のパス補完 (Docker や Homebrew バイナリの解決用) と仮想環境のパス追加
+extra_paths = []
 if sys.platform == 'darwin':
     extra_paths = ["/opt/homebrew/bin", "/usr/local/bin"]
-    current_path = os.environ.get('PATH', '')
-    for p in extra_paths:
-        if p not in current_path:
-            current_path = f"{p}:{current_path}"
-    os.environ['PATH'] = current_path
+
+# 仮想環境の bin フォルダを優先的に PATH に追加 (exec: "python" 回避用)
+venv_bin = os.path.join(base_dir, ".venv", "bin")
+if os.path.exists(venv_bin):
+    extra_paths.insert(0, venv_bin)
+
+current_path = os.environ.get('PATH', '')
+for p in extra_paths:
+    if p not in current_path:
+        current_path = f"{p}:{current_path}"
+os.environ['PATH'] = current_path
 
 if os.path.exists(venv_python) and sys.executable != venv_python:
     os.execv(venv_python, [venv_python] + sys.argv)

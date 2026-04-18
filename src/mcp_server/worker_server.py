@@ -24,7 +24,7 @@ class WorkerService:
 
         venv_python = os.path.join(self.project_root, ".venv", "bin", "python")
         if not os.path.exists(venv_python):
-            venv_python = "python"
+            venv_python = "python3"
 
         logger.info(f"Starting Taskiq worker and scheduler from {self.project_root}...")
         
