@@ -346,8 +346,14 @@ def run_command(args):
         print("Starting cleanup process...")
         subprocess.run([venv_python, "src/utils/reset_system.py"])
 
+    elif args.action == "serve":
+        # Brownie Agent Server (MCP) を stdio モードで起動
+        # このモードでは外部の MCP クライアントがライフサイクルを管理します
+        print(f"Starting Brownie Agent MCP Server (Build: {BUILD_ID})...", file=sys.stderr)
+        os.execv(venv_python, [venv_python, "-m", "src.mcp_server.brownie_agent_server"])
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Brownie CLI")
-    parser.add_argument("action", choices=["start", "stop", "restart", "status", "logs", "log", "queue", "debug", "reset", "logout"])
+    parser.add_argument("action", choices=["start", "stop", "restart", "status", "logs", "log", "queue", "debug", "reset", "logout", "serve"])
     args = parser.parse_args()
     run_command(args)

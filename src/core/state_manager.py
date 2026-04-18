@@ -3,7 +3,7 @@ import os
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 import redis.asyncio as redis
-from langgraph.checkpoint.redis.aio import RedisSaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from loguru import logger
 
 
@@ -65,7 +65,7 @@ class StateManager:
         self.redis_host = os.getenv("REDIS_HOST", "localhost")
         self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
         self._pool: Optional[redis.ConnectionPool] = None
-        self._saver: Optional[RedisSaver] = None
+        self._saver: Optional[AsyncRedisSaver] = None
         self._workflow_app = None
 
     async def __aenter__(self):
@@ -80,7 +80,7 @@ class StateManager:
             )
             # aio クライアントを使用
             client = redis.Redis(connection_pool=self._pool)
-            self._saver = RedisSaver(client)
+            self._saver = AsyncRedisSaver(client)
         
         # ワークフローのコンパイル (循環参照を避けるためにメソッド内でインポート)
         from src.core.graph.builder import compile_workflow
