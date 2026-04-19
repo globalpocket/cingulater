@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import shlex
 import subprocess
 from typing import Dict, List, Optional, Union
 
@@ -23,17 +24,21 @@ def run_command(
 ) -> CommandResult:
     """
     同期的にコマンドを実行し、結果を返す。
+    セキュリティ確保のため、shell=True は内部で False に強制され、
+    文字列引数は shlex.split で安全に分割されます。
     """
+    # 安全のため shell=True を無効化し、shlex で分割する
+    final_args = shlex.split(args) if isinstance(args, str) else args
     cmd_str = args if isinstance(args, str) else " ".join(args)
     logger.debug(f"Running command: {cmd_str}")
 
     try:
         result = subprocess.run(
-            args,
+            final_args,
             cwd=cwd,
             timeout=timeout,
             env=env,
-            shell=shell,
+            shell=False,
             capture_output=True,
             text=True,
         )
@@ -74,27 +79,21 @@ async def run_command_async(
 ) -> CommandResult:
     """
     非同期（asyncio）でコマンドを実行し、結果を返す。
+    セキュリティ確保のため、常に create_subprocess_exec を使用します。
     """
+    final_args = shlex.split(args) if isinstance(args, str) else args
     cmd_str = args if isinstance(args, str) else " ".join(args)
     logger.debug(f"Running command (async): {cmd_str}")
 
     try:
-        if shell:
-            process = await asyncio.create_subprocess_shell(
-                args if isinstance(args, str) else cmd_str,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
-        else:
-            process = await asyncio.create_subprocess_exec(
-                *args if isinstance(args, list) else args.split(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
+        # 常に exec 版を使用し、shell 経由の実行を避ける
+        process = await asyncio.create_subprocess_exec(
+            *final_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+        )
 
         stdout_b, stderr_b = await process.communicate()
         stdout = stdout_b.decode().strip()
