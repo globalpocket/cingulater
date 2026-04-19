@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 
 import yaml
 
@@ -51,7 +52,7 @@ def reset():
                     print(f"Error removing log {f}: {e}")
 
     # 4. 一時ワークスペース削除
-    tmp_ws = "/tmp/brownie_workspace"
+    tmp_ws = os.path.join(tempfile.gettempdir(), "brownie_workspace")
     if os.path.exists(tmp_ws):
         print(f"Removing temporary workspace: {tmp_ws}")
         try:
