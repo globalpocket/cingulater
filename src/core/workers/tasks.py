@@ -19,7 +19,7 @@ _orchestrator = None
 
 async def get_orchestrator():
     from src.core.base import get_global_orchestrator, set_global_orchestrator
-    
+
     orch = get_global_orchestrator()
     if orch is not None:
         return orch
@@ -28,8 +28,9 @@ async def get_orchestrator():
     get_settings()
     if not os.getenv("GITHUB_TOKEN"):
         logger.error("FATAL: GITHUB_TOKEN not found in worker process.")
-    
+
     from src.core.orchestrator import Orchestrator
+
     orch = Orchestrator(os.getenv("BROWNIE_CONFIG", "config/config.yaml"))
     set_global_orchestrator(orch)
     return orch
@@ -44,7 +45,8 @@ async def _async_heartbeat(orch, task_id):
 
     import redis.asyncio as aioredis
 
-    from src.core.workers.pool import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+    from src.core.workers.pool import REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
+
     redis_client = aioredis.Redis(
         host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD
     )

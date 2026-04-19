@@ -32,6 +32,7 @@ log_file = os.path.normpath(
 os.makedirs(os.path.dirname(log_file), exist_ok=True)
 log_level = "DEBUG" if os.environ.get("BROWNIE_DEBUG") == "1" else "INFO"
 
+
 # Loguru の初期化 (stderr とファイルの両方に出力)
 # 標準 logging を Loguru にリダイレクトするためのハンドラ設定
 class InterceptHandler(logging.Handler):
@@ -46,13 +47,14 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(
-            depth=depth, exception=record.exc_info
-        ).log(level, record.getMessage())
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
+
 
 def setup_logging():
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
-    
+
     # 既存のハンドラをクリアして Loguru で再構築
     logger.remove()
     log_format = (
@@ -61,22 +63,15 @@ def setup_logging():
         "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
         "<level>{message}</level>"
     )
-    logger.add(
-        sys.stderr, 
-        level=log_level,
-        format=log_format
-    )
+    logger.add(sys.stderr, level=log_level, format=log_format)
     file_format = (
         "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
         "{name}:{function}:{line} - {message}"
     )
     logger.add(
-        log_file,
-        rotation="5 MB",
-        retention="3 days",
-        level="DEBUG",
-        format=file_format
+        log_file, rotation="5 MB", retention="3 days", level="DEBUG", format=file_format
     )
+
 
 setup_logging()
 logger.info(f"Loguru initialized. Level: {log_level}, File: {log_file}")
@@ -94,9 +89,7 @@ class BrownieApp:
         logger.info(
             f"Starting Brownie Main Process (Build: {self.settings.build_id})..."
         )
-        agent_path = os.path.abspath(
-            CoderAgent.__module__.replace('.', '/') + '.py'
-        )
+        agent_path = os.path.abspath(CoderAgent.__module__.replace(".", "/") + ".py")
         logger.info(f"  - Loaded Agent from: {CoderAgent.__module__} in {agent_path}")
         logger.info(f"  - Loaded Orchestrator from: {Orchestrator.__module__}")
         logger.info(f"  - Loaded Sandbox from: {SandboxManager.__module__}")
@@ -164,9 +157,8 @@ class BrownieApp:
 
 def main(
     config: Annotated[
-        Optional[str], 
-        typer.Option("--config", "-c", help="Path to config yaml file")
-    ] = None
+        Optional[str], typer.Option("--config", "-c", help="Path to config yaml file")
+    ] = None,
 ):
     """
     BROWNIE: Autonomous AI Coding Agent 🚀

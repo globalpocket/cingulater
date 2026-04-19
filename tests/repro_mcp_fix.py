@@ -10,11 +10,11 @@ async def main():
     repo_path = os.getcwd()
     memory_path = "/tmp/brownie_mem"
     repo_name = "test-repo"
-    
+
     command = sys.executable
     args = ["-m", "src.mcp_server.knowledge_server", repo_path, memory_path, repo_name]
     env = {**os.environ, "PYTHONPATH": "."}
-    
+
     print(f"Connecting client with StdioTransport: {command} {args}")
     try:
         # 明示的に StdioTransport を使用する
@@ -29,9 +29,11 @@ async def main():
     except Exception as e:
         print(f"Failed: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         print("Done.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

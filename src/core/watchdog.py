@@ -160,9 +160,7 @@ class Watchdog:
 
         venv_python = os.path.join(base_dir, ".venv", "bin", "python")
         # メインプロセスを起動 (将来的な拡張の余地を残す)
-        self.process = subprocess.Popen(
-            [venv_python, self.main_script], cwd=base_dir
-        )
+        self.process = subprocess.Popen([venv_python, self.main_script], cwd=base_dir)
 
         self.crash_count += 1
         self.last_survival_time = time.time()

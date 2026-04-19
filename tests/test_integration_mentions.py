@@ -2,16 +2,17 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 # プロジェクトルートをパスに追加
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.core.orchestrator import Orchestrator
 
+
 async def main():
     print("Testing Orchestrator initialization and mention flow...")
-    
+
     # 1. Orchestrator インスタンス化
     # config はデフォルト (config/config.yaml) を使用
     config_path = "config/config.yaml"
@@ -24,6 +25,7 @@ async def main():
     except Exception as e:
         print(f"❌ FAILED: Initialization error: {e}")
         import traceback
+
         traceback.print_exc()
         return
 
@@ -35,21 +37,21 @@ async def main():
             "number": 1,
             "comment_id": "test-comment-id",
             "body": "Hello Brownie!",
-            "updated_at": "2026-04-20T00:00:00Z"
+            "updated_at": "2026-04-20T00:00:00Z",
         }
     ]
     orch.gh_client.mark_issue_notifications_as_read = AsyncMock()
-    
+
     # mcp_manager をモック
     orch.mcp_manager = MagicMock()
-    
+
     # persistence_client を AsyncMock に設定
     orch.mcp_manager.persistence_client = AsyncMock()
     orch.mcp_manager.persistence_client.call_tool.return_value = "NEW"
-    
+
     # worker_controller_client を AsyncMock に設定
     orch.mcp_manager.worker_controller_client = AsyncMock()
-    
+
     # settings モック (exclude_repositories 回避用)
     orch.settings.agent.exclude_repositories = []
 
@@ -59,9 +61,10 @@ async def main():
     except Exception as e:
         print(f"❌ FAILED: Error during _poll_mentions: {e}")
         import traceback
+
         traceback.print_exc()
         return
-    
+
     # 3. 検証
     # _queue_task が呼ばれ、最終的に worker_controller_client.call_tool が呼ばれたか
     if orch.mcp_manager.worker_controller_client.call_tool.called:
@@ -70,6 +73,7 @@ async def main():
         print(f"   Task details: {kwargs}")
     else:
         print("❌ FAILED: Mention processing flow was interrupted.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

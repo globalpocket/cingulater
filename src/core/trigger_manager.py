@@ -166,7 +166,6 @@ class WorkflowTriggerManager:
 
         raise ValueError(f"Forbidden syntax: {type(node).__name__}")
 
-
     def get_due_workflows(
         self, tools_metadata: Dict[str, Any], now: datetime
     ) -> List[Dict[str, Any]]:

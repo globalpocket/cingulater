@@ -111,7 +111,8 @@ class WorkflowRegistry:
                 if existing.file_type == "yaml" and tool.file_type == "md":
                     return
                 logger.warning(
-                    f"Skipping redundant tool '{tool.name}' in same scope ({tool.scope})."
+                    f"Skipping redundant tool '{tool.name}' "
+                    f"in same scope ({tool.scope})."
                 )
                 return
 
@@ -199,10 +200,12 @@ class WorkflowRegistry:
             agent = Agent(model, deps_type=WorkflowDeps)
 
             from src.core.base import get_global_orchestrator
+
             gorch = get_global_orchestrator()
             if gorch:
                 all_tools = gorch.mcp_manager.get_all_tools()
                 for tool_node in all_tools:
+
                     def _make_mcp_tool(node):
                         async def mcp_tool_wrapper(
                             ctx: RunContext[WorkflowDeps], **kwargs
@@ -210,9 +213,11 @@ class WorkflowRegistry:
                             return await gorch.mcp_manager.call_tool_by_name(
                                 node.name, **kwargs
                             )
+
                         mcp_tool_wrapper.__name__ = node.name
                         mcp_tool_wrapper.__doc__ = node.description
                         return mcp_tool_wrapper
+
                     agent.tool(_make_mcp_tool(tool_node))
 
             @agent.system_prompt
@@ -225,9 +230,11 @@ class WorkflowRegistry:
                 }
                 try:
                     import re
+
                     def replacer(match):
                         key = match.group(1).strip()
                         return str(format_ctx.get(key, match.group(0)))
+
                     return re.sub(r"\{(.+?)\}", replacer, prompt)
                 except Exception as e:
                     logger.warning(f"Prompt formatting failed: {e}")

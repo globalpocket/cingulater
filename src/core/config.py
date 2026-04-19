@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -93,9 +94,10 @@ class Settings(BaseSettings):
         """現在のGitコミットハッシュを取得し、ビルドIDとして返す"""
         try:
             project_root = Path(__file__).parent.parent.parent
+            git_path = shutil.which("git") or "git"
             build_id = (
                 subprocess.check_output(
-                    ["git", "rev-parse", "--short", "HEAD"],
+                    [git_path, "rev-parse", "--short", "HEAD"],
                     cwd=project_root,
                     stderr=subprocess.DEVNULL,
                 )

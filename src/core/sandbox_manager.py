@@ -100,9 +100,10 @@ class LinterEngine:
     ) -> List[str]:
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
         rel_path = os.path.relpath(target_path, self.repo_root)
-        
+
         full_cmd = base_cmd if base_cmd else default_cmd
         import shlex
+
         parts = shlex.split(full_cmd)
         parts.append(rel_path)
         return parts
@@ -270,9 +271,7 @@ class SandboxManager:
         try:
             with container as c:
                 cmd_to_run = (
-                    ["/bin/sh", "-c", command]
-                    if isinstance(command, str)
-                    else command
+                    ["/bin/sh", "-c", command] if isinstance(command, str) else command
                 )
                 logger.info(f"Executing inside sandbox: {cmd_to_run}")
                 # コマンド実行

@@ -33,7 +33,7 @@ async def governance_node(
         repo_name = state["task_id"].split("#")[0]
         issue_number = int(state["task_id"].split("#")[1])
         err_ctx = state.get("error_context", "Unknown error")
-        
+
         # tasks.py への依存を避けるため、Worker Controller MCP 経由でタスクを投入する
         if mcp_manager.worker_controller_client:
             await mcp_manager.worker_controller_client.call_tool(
@@ -42,9 +42,9 @@ async def governance_node(
                 task_id=state["task_id"],
                 repo_name=repo_name,
                 issue_number=issue_number,
-                payload={"error_context": err_ctx}
+                payload={"error_context": err_ctx},
             )
-        
+
         return {
             "status": "Waiting_Repair",
             "history": [{"node": "governance", "status": "repair_enqueued"}],

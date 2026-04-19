@@ -1,6 +1,6 @@
+import inspect
 import os
 import sys
-import inspect
 import traceback
 from pathlib import Path
 
@@ -8,25 +8,26 @@ from pathlib import Path
 base_dir = Path(__file__).parent.parent.parent
 sys.path.append(str(base_dir))
 
+
 def trace_initialization():
     print(f"--- Brownie Diagnostic Tool (Build: {os.getpid()}) ---")
     print(f"CWD: {os.getcwd()}")
     print(f"Python Executable: {sys.executable}")
-    
+
     try:
         # 1. builder モジュールの調査
         print("\n[1] Investigating src.core.graph.builder...")
         import src.core.graph.builder as builder
-        
+
         builder_file = inspect.getsourcefile(builder)
         print(f"  - Source file: {builder_file}")
-        
+
         # create_brownie_graph の調査
         func = builder.create_brownie_graph
         is_async = inspect.iscoroutinefunction(func)
         print(f"  - create_brownie_graph: {func}")
         print(f"  - Is Async (coroutinefunction): {is_async}")
-        
+
         if is_async:
             print("  - WARNING: create_brownie_graph is still ASYNC at runtime!")
         else:
@@ -51,8 +52,10 @@ def trace_initialization():
         # 3. workflow_manager の調査 (別の .compile() 呼び出し箇所)
         print("\n[3] Investigating src.core.workflow_manager...")
         try:
-            import src.core.workflow_manager as wm
             from langgraph.graph import StateGraph
+
+            import src.core.workflow_manager as wm
+
             builder_inst = StateGraph(wm.DynamicWorkflowState)
             print(f"  - StateGraph.compile: {builder_inst.compile}")
         except Exception as e:
@@ -64,6 +67,7 @@ def trace_initialization():
     except Exception as e:
         print(f"\n[!] Unexpected Error: {e}")
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     trace_initialization()

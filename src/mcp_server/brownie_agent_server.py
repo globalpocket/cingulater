@@ -34,9 +34,7 @@ async def submit_task(
     logger.info(f"Submitting task to Taskiq: {repo_name}#{issue_number}")
     task_id = f"{repo_name}#{issue_number}"
 
-    await analysis_task.kiq(
-        task_id, repo_name, issue_number, task_description or {}
-    )
+    await analysis_task.kiq(task_id, repo_name, issue_number, task_description or {})
 
     msg = (
         f"Successfully submitted task: {task_id}. "

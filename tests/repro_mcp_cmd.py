@@ -9,10 +9,17 @@ async def main():
     repo_path = os.getcwd()
     memory_path = "/tmp/brownie_mem"
     repo_name = "test-repo"
-    
-    cmd = [sys.executable, "-m", "src.mcp.knowledge_server", repo_path, memory_path, repo_name]
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "src.mcp.knowledge_server",
+        repo_path,
+        memory_path,
+        repo_name,
+    ]
     env = {**os.environ, "PYTHONPATH": "."}
-    
+
     print(f"Connecting client with cmd: {cmd}")
     try:
         # Popen オブジェクトではなくコマンドリストを直接渡す
@@ -26,9 +33,11 @@ async def main():
     except Exception as e:
         print(f"Failed: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         print("Done.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

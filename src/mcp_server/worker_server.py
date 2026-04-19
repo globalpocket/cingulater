@@ -25,9 +25,7 @@ class WorkerService:
         if not os.path.exists(venv_python):
             venv_python = "python3"
 
-        logger.info(
-            f"Starting Taskiq worker and scheduler from {self.project_root}..."
-        )
+        logger.info(f"Starting Taskiq worker and scheduler from {self.project_root}...")
 
         os.makedirs(os.path.join(self.project_root, "logs"), exist_ok=True)
 
@@ -166,8 +164,7 @@ async def cancel_task(task_id: str) -> str:
 async def get_worker_status() -> Dict[str, Any]:
     """Worker の健康状態とアクティブタスク一覧を取得します。"""
     is_running = (
-        _service.consumer_proc is not None
-        and _service.consumer_proc.poll() is None
+        _service.consumer_proc is not None and _service.consumer_proc.poll() is None
     )
     return {
         "status": "RUNNING" if is_running else "STOPPED",

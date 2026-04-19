@@ -68,6 +68,7 @@ class StateManager:
         self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
         self._pool: Optional[redis.ConnectionPool] = None
         self._saver: Optional[AsyncRedisSaver] = None
+
     @property
     def saver(self) -> Optional[AsyncRedisSaver]:
         """チェックポインタ（セーバー）を取得する"""

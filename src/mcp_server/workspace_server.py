@@ -288,9 +288,7 @@ def _init_from_args():
     _sandbox.set_workspace_root(repo_path)
     _sandbox.set_reference_root(reference_path)
 
-    logger.info(
-        f"Workspace initialized: repo={repo_path}"
-    )
+    logger.info(f"Workspace initialized: repo={repo_path}")
 
 
 if __name__ == "__main__":

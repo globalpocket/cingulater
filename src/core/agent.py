@@ -15,6 +15,7 @@ class GitHubRateLimitException(Exception):  # noqa: N818
         super().__init__(message)
         self.reset_at = reset_at
 
+
 class GitHubClientWrapper:
     """
     GitHub 操作を提供するラッパー。
@@ -110,8 +111,6 @@ class GitHubClientWrapper:
             raise
 
 
-
-
 class AgentDeps:
     def __init__(
         self,
@@ -151,6 +150,7 @@ class CoderAgent:
 
         # WorkflowManager の初期化 (Circular dependency を避けるためローカルインポート)
         from src.core.workflow_manager import WorkflowLoader
+
         project_root = Path(mcp_manager.project_root)
         workspace_root = (
             Path(workspace_context.repo_path) if workspace_context else None

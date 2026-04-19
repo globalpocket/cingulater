@@ -77,17 +77,23 @@ class FlowTracer:
             tree = ast.parse(content)
             # ファイルノードを追加
             self.graph.add_node(file_path, type="file")
-            
+
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     self._add_symbol(
-                        node.name, file_path, "func", node.lineno,
-                        getattr(node, "end_lineno", node.lineno)
+                        node.name,
+                        file_path,
+                        "func",
+                        node.lineno,
+                        getattr(node, "end_lineno", node.lineno),
                     )
                 elif isinstance(node, ast.ClassDef):
                     self._add_symbol(
-                        node.name, file_path, "class", node.lineno,
-                        getattr(node, "end_lineno", node.lineno)
+                        node.name,
+                        file_path,
+                        "class",
+                        node.lineno,
+                        getattr(node, "end_lineno", node.lineno),
                     )
                 elif isinstance(node, ast.Import):
                     for name in node.names:
@@ -125,7 +131,7 @@ class FlowTracer:
             file_path=file_path,
             type=stype,
             start_line=start,
-            end_line=end
+            end_line=end,
         )
         self.graph.add_edge(file_path, symbol_id, type="contains")
 
@@ -135,27 +141,27 @@ class FlowTracer:
         for n, d in self.graph.nodes(data=True):
             if d.get("name") == entry_symbol:
                 relevant_nodes.append(n)
-        
+
         if not relevant_nodes:
             return "Participant Not Found"
-            
+
         lines = ["sequenceDiagram"]
         visited = set()
-        
+
         def walk(node, current_depth):
             if current_depth > depth or node in visited:
                 return
             visited.add(node)
-                
+
             for successor in self.graph.successors(node):
                 u_name = self.graph.nodes[node].get("name", node)
                 v_name = self.graph.nodes[successor].get("name", successor)
                 lines.append(f"    {u_name}->>+{v_name}: calls")
                 walk(successor, current_depth + 1)
-        
+
         for root in relevant_nodes:
             walk(root, 0)
-            
+
         return "\n".join(lines)
 
 
@@ -368,9 +374,9 @@ def _query_statistics() -> dict:
         nodes = tracer.graph.nodes(data=True)
         files_count = len([n for n, d in nodes if d.get("type") == "file"])
         symbols_count = len([n for n, d in nodes if d.get("type") in ("func", "class")])
-        calls_count = len([
-            e for e in tracer.graph.edges(data=True) if e[2].get("type") == "import"
-        ])
+        calls_count = len(
+            [e for e in tracer.graph.edges(data=True) if e[2].get("type") == "import"]
+        )
         return {"files": files_count, "symbols": symbols_count, "calls": calls_count}
     except Exception as e:
         logger.error(f"統計取得失敗: {e}")
@@ -385,7 +391,8 @@ def _query_top_symbols(symbol_type: str, limit: int) -> list:
 
     try:
         nodes = [
-            (n, d) for n, d in tracer.graph.nodes(data=True)
+            (n, d)
+            for n, d in tracer.graph.nodes(data=True)
             if d.get("type") == symbol_type
         ]
         sorted_nodes = sorted(
@@ -395,8 +402,9 @@ def _query_top_symbols(symbol_type: str, limit: int) -> list:
             {
                 "name": d["name"],
                 "file": d["file_path"],
-                "references": tracer.graph.in_degree(n)
-            } for n, d in sorted_nodes[:limit]
+                "references": tracer.graph.in_degree(n),
+            }
+            for n, d in sorted_nodes[:limit]
         ]
     except Exception as e:
         logger.error(f"シンボル取得失敗: {e}")
@@ -411,8 +419,10 @@ def _detect_hotspots() -> list:
 
     try:
         from collections import Counter
+
         nodes = [
-            d.get("file_path", "") for n, d in tracer.graph.nodes(data=True)
+            d.get("file_path", "")
+            for n, d in tracer.graph.nodes(data=True)
             if d.get("type") == "file"
         ]
         dirs = [os.path.dirname(p) or "." for p in nodes]
@@ -435,12 +445,14 @@ def _detect_entry_points() -> list:
         for n, d in tracer.graph.nodes(data=True):
             if d.get("name") in entry_names:
                 deps = list(tracer.graph.successors(n))
-                entries.append({
-                    "name": d["name"],
-                    "file": d["file_path"],
-                    "type": d.get("type", "unknown"),
-                    "dependencies": deps[:10]
-                })
+                entries.append(
+                    {
+                        "name": d["name"],
+                        "file": d["file_path"],
+                        "type": d.get("type", "unknown"),
+                        "dependencies": deps[:10],
+                    }
+                )
         return entries
     except Exception as e:
         logger.error(f"エントリーポイント検出失敗: {e}")

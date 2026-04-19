@@ -25,6 +25,7 @@ class Orchestrator:
     インフラ制御は各 MCP サーバーに委譲され、
     本クラスは状態遷移とイベント駆動の指令に専念する。
     """
+
     def __init__(self, config_path: str):
         self.settings = get_settings(config_path)
         self.project_root = os.path.dirname(
@@ -52,9 +53,9 @@ class Orchestrator:
 
         # WorkflowLoader の初期化 (Phase 8: 純粋エンジン化)
         from src.core.workflow_manager import WorkflowLoader
+
         self.workflow_loader = WorkflowLoader(
-            Path(self.project_root),
-            Path(self.workspace_base)
+            Path(self.project_root), Path(self.workspace_base)
         )
         # 全てのワークフロー定義 (YAML/MD) をロード
         self.dynamic_workflows = self.workflow_loader.load_all()
@@ -62,7 +63,7 @@ class Orchestrator:
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._llm_startup_lock = asyncio.Lock()
         self.is_running = False
-        
+
         # APScheduler は廃止され、Taskiq Scheduler に統合されました
 
         self.workspace_base = os.path.expanduser(self.settings.workspace.base_dir)
@@ -101,6 +102,7 @@ class Orchestrator:
 
             # Taskiq スケジュールの確立
             from src.core.workers.scheduler import setup_schedules
+
             await setup_schedules()
 
             # Worker Server の起動（Taskiq ワーカー & スケジューラのライフサイクル管理）
@@ -113,10 +115,11 @@ class Orchestrator:
             async with self.state_manager as sm:
                 # ワークフローのコンパイル (司令塔が主導)
                 from src.core.graph.builder import compile_workflow
+
                 self._workflow_app = compile_workflow(
                     workflows=self.dynamic_workflows,
                     mcp_manager=self.mcp_manager,
-                    checkpointer=sm.saver
+                    checkpointer=sm.saver,
                 )
 
                 try:
@@ -138,11 +141,12 @@ class Orchestrator:
 
     async def _resource_monitor_loop_job(self):
         try:
-            from src.core.workers.pool import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+            from src.core.workers.pool import REDIS_HOST, REDIS_PASSWORD, REDIS_PORT
+
             redis_client = aioredis.Redis(
                 host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD
             )
-            
+
             keys = await redis_client.keys("brownie:heartbeat:*")
             monitor_client = self.mcp_manager.resource_monitor_client
 
@@ -151,14 +155,14 @@ class Orchestrator:
                 if not data:
                     continue
                 hb = json.loads(data)
-                
+
                 # ストール検知 (Resource Monitor MCP に委譲)
                 is_stalled = await monitor_client.call_tool(
-                    "check_stall", 
-                    last_heartbeat=hb.get("timestamp", 0), 
-                    timeout_sec=300
+                    "check_stall",
+                    last_heartbeat=hb.get("timestamp", 0),
+                    timeout_sec=300,
                 )
-                
+
                 if is_stalled:
                     task_id = hb.get("task_id")
                     logger.error(f"Task {task_id} STALLED. Revoking via Worker MCP...")
@@ -168,7 +172,7 @@ class Orchestrator:
                     await self.update_state(
                         task_id, {"status": "Failed"}, as_node="intent_alignment"
                     )
-            
+
             await redis_client.aclose()
         except Exception as e:
             logger.error(f"Resource monitor failed: {e}")
@@ -187,7 +191,7 @@ class Orchestrator:
                         continue
                 except Exception as e:
                     logger.warning(f"LLM health check for {role} failed: {e}")
-                
+
                 logger.info(f"LLM Server ({role}) down. Restarting MLX...")
                 self._restart_mlx(role, port)
 
@@ -203,19 +207,22 @@ class Orchestrator:
                 task_id = f"{m['repo_name']}#{m['number']}"
                 if m["repo_name"] in self.settings.agent.exclude_repositories:
                     continue
-                
+
                 # Persistence MCP で状態確認
                 status = await self.mcp_manager.persistence_client.call_tool(
-                    "check_mention_status", 
-                    mention_id=str(m.get("comment_id")), 
-                    updated_at=m.get("updated_at")
+                    "check_mention_status",
+                    mention_id=str(m.get("comment_id")),
+                    updated_at=m.get("updated_at"),
                 )
                 if status == "UNCHANGED":
                     continue
 
                 await self._queue_task(
-                    task_id, m["repo_name"], m["number"], 
-                    str(m.get("comment_id")), m.get("body")
+                    task_id,
+                    m["repo_name"],
+                    m["number"],
+                    str(m.get("comment_id")),
+                    m.get("body"),
                 )
                 await self.mcp_manager.persistence_client.call_tool(
                     "register_processed_mention", mention_data=m
@@ -227,20 +234,24 @@ class Orchestrator:
             logger.error(f"Polling failed: {e}")
 
     async def _queue_task(
-        self, task_id: str, repo_name: str, issue_number: int, 
-        comment_id: str, body: str
+        self,
+        task_id: str,
+        repo_name: str,
+        issue_number: int,
+        comment_id: str,
+        body: str,
     ):
         """Worker Controller 経由でタスクを投入"""
         state = await self.get_state(task_id)
         payload = state if state else {}
-        
+
         await self.mcp_manager.worker_controller_client.call_tool(
-            "enqueue_task", 
-            task_type="analysis", 
-            task_id=task_id, 
-            repo_name=repo_name, 
-            issue_number=issue_number, 
-            payload=payload
+            "enqueue_task",
+            task_type="analysis",
+            task_id=task_id,
+            repo_name=repo_name,
+            issue_number=issue_number,
+            payload=payload,
         )
 
     async def _execute_task(
@@ -298,7 +309,7 @@ class Orchestrator:
                                     {
                                         "node": node_name,
                                         "output": output,
-                                        "task_id": task_id
+                                        "task_id": task_id,
                                     },
                                 )
 
@@ -436,7 +447,7 @@ class Orchestrator:
                     )
                     if resp.status_code == 200:
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"LLM readiness check failed (expected): {e}")
                 logger.info("Waiting for LLM servers to be online...")
                 await asyncio.sleep(5)
