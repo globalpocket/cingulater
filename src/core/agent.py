@@ -80,33 +80,46 @@ class GitHubClientWrapper:
         except Exception as e:
             logger.error(f"Failed to mark notifications as read via ghapi: {e}")
 
-    async def get_issue(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
-        client = self.mcp_manager.github_sdk_client
+
+class InfrastructureBridge:
+    """
+    システムのインフラ操作 (MCPツール) を一元管理するブリッジ。
+    各ノードが直接 call_tool を叩くのを避け、Semantic なメソッド経由で操作する。
+    """
+
+    def __init__(self, mcp_manager: MCPServerManager, token: str):
+        self.mcp_manager = mcp_manager
+        self._token = token
+
+    async def enqueue_repair_task(
+        self, task_id: str, repo_name: str, issue_number: int, error_context: str
+    ):
+        """Worker Controller MCP を通じて修復タスクをキューイングする"""
+        client = self.mcp_manager.worker_controller_client
         if not client:
-            return {}
-        owner, repo = repo_name.split("/")
+            logger.error("Worker Controller MCP is not available.")
+            return False
         try:
-            res = await client.call_tool(
-                "issue_read",
-                method="get",
-                owner=owner,
-                repo=repo,
+            await client.call_tool(
+                "enqueue_task",
+                task_type="repair",
+                task_id=task_id,
+                repo_name=repo_name,
                 issue_number=issue_number,
+                payload={"error_context": error_context},
             )
-            return {
-                "title": res.get("title"),
-                "body": res.get("body"),
-                "state": res.get("state"),
-            }
+            return True
         except Exception as e:
-            logger.error(f"Failed to get issue via MCP: {e}")
-            return {}
+            logger.error(f"Failed to enqueue repair task: {e}")
+            return False
 
     async def ensure_repo_cloned(
         self, repo_name: str, repo_path: str, branch_name: Optional[str] = None
     ):
+        """Repository Provision MCP を通じてリポジトリをクローン/最新化する"""
         client = self.mcp_manager.repo_provision_client
         if not client:
+            logger.error("Repo Provision MCP is not available.")
             return
         try:
             await client.call_tool(
@@ -120,6 +133,35 @@ class GitHubClientWrapper:
             logger.error(f"Failed to provision repository via MCP: {e}")
             raise
 
+    async def execute_reasoning_loop(
+        self,
+        instruction: str,
+        task_id: str,
+        repo_name: str,
+        issue_number: int,
+        model_name: str,
+        endpoint: str,
+    ) -> Dict[str, Any]:
+        """Task Reasoning MCP を介して推論ループを実行する"""
+        client = self.mcp_manager.task_reasoning_client
+        if not client:
+            logger.error("Task Reasoning MCP Client is not available.")
+            return {"status": "failed", "error": "MCP not ready"}
+
+        try:
+            return await client.call_tool(
+                "execute_reasoning_loop",
+                instruction=instruction,
+                task_id=task_id,
+                repo_name=repo_name,
+                issue_number=issue_number,
+                model_name=model_name,
+                endpoint=endpoint,
+            )
+        except Exception as e:
+            logger.error(f"Reasoning loop delegation failed: {e}")
+            return {"status": "failed", "error": str(e)}
+
 
 class AgentDeps:
     def __init__(
@@ -127,12 +169,14 @@ class AgentDeps:
         config: Dict[str, Any],
         sandbox: SandboxManager,
         gh_client: GitHubClientWrapper,
+        infra_bridge: "InfrastructureBridge",
         mcp_manager: MCPServerManager,
         workspace_context: Optional[WorkspaceContext] = None,
     ):
         self.config = config
         self.sandbox = sandbox
         self.gh_client = gh_client
+        self.infra_bridge = infra_bridge
         self.mcp_manager = mcp_manager
         self.workspace_context = workspace_context
         self.current_task_id: Optional[str] = None
@@ -172,43 +216,31 @@ class CoderAgent:
     async def run(
         self, task_id: str, repo_name: str, issue_number: int, **kwargs
     ) -> Union[bool, str]:
-        """TaskReasoning MCP を介して推論ループを実行"""
+        """推論ループを委任実行"""
         instruction = kwargs.get(
             "task_description", f"Issue #{issue_number} を解決してください。"
         )
 
-        client = self.deps.mcp_manager.task_reasoning_client
-        if not client:
-            logger.error("Task Reasoning MCP Client is not available.")
-            return False
-
         planner_model = self.config["llm"]["models"]["planner"]
         planner_endpoint = self.config["llm"]["planner_endpoint"]
 
-        try:
-            # MCP サーバーへ委譲
-            logger.info(
-                f"[{task_id}] Delegating reasoning loop to TaskReasoningServer..."
-            )
-            result = await client.call_tool(
-                "execute_reasoning_loop",
-                instruction=instruction,
-                task_id=task_id,
-                repo_name=repo_name,
-                issue_number=issue_number,
-                model_name=planner_model,
-                endpoint=planner_endpoint,
-            )
+        # InfrastructureBridge を通じて実行
+        logger.info(f"[{task_id}] Delegating reasoning loop via bridge...")
+        result = await self.deps.infra_bridge.execute_reasoning_loop(
+            instruction=instruction,
+            task_id=task_id,
+            repo_name=repo_name,
+            issue_number=issue_number,
+            model_name=planner_model,
+            endpoint=planner_endpoint,
+        )
 
-            status = result.get("status")
-            if status == "finished":
-                return True
-            elif status == "waiting_for_clarification":
-                return "WAITING"
-            elif "blueprint" in result:
-                return "BLUEPRINT_GENERATED"
+        status = result.get("status")
+        if status == "finished":
+            return True
+        elif status == "waiting_for_clarification":
+            return "WAITING"
+        elif "blueprint" in result:
+            return "BLUEPRINT_GENERATED"
 
-            return False
-        except Exception as e:
-            logger.error(f"Reasoning loop delegation failed: {e}")
-            return False
+        return False

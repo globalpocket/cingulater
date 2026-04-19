@@ -41,6 +41,11 @@ class Orchestrator:
         self.gh_client = GitHubClientWrapper(
             os.getenv("GITHUB_TOKEN", ""), mcp_manager=self.mcp_manager
         )
+        from src.core.agent import InfrastructureBridge
+
+        self.infra_bridge = InfrastructureBridge(
+            self.mcp_manager, token=os.getenv("GITHUB_TOKEN", "")
+        )
         # SandboxManager は内部で Testcontainers を使用するよう抽象化済み
         self.sandbox = SandboxManager(
             self.settings.workspace.sandbox_user_id,
@@ -113,6 +118,18 @@ class Orchestrator:
             logger.info("Taskiq Workers and Scheduler are online.")
 
             async with self.state_manager as sm:
+                # CoderAgent の初期化 (推論ループの管理)
+                from src.core.agent import CoderAgent
+
+                self.agent = CoderAgent(
+                    config=self.settings.dict(),
+                    sandbox=self.sandbox,
+                    gh_client=self.gh_client,
+                    infra_bridge=self.infra_bridge,
+                    mcp_manager=self.mcp_manager,
+                    workspace_context=self.workspace_base,
+                )
+
                 # ワークフローのコンパイル (司令塔が主導)
                 from src.core.graph.builder import compile_workflow
 

@@ -31,15 +31,16 @@ async def governance_node(
         issue_number = int(state["task_id"].split("#")[1])
         err_ctx = state.get("error_context", "Unknown error")
 
-        # tasks.py への依存を避けるため、Worker Controller MCP 経由でタスクを投入する
-        if mcp_manager.worker_controller_client:
-            await mcp_manager.worker_controller_client.call_tool(
-                "enqueue_task",
-                task_type="repair",
+        # 一元化された InfrastructureBridge を使用して修復タスクを投入
+        from src.core.base import get_global_orchestrator
+
+        gorch = get_global_orchestrator()
+        if gorch:
+            await gorch.infra_bridge.enqueue_repair_task(
                 task_id=state["task_id"],
                 repo_name=repo_name,
                 issue_number=issue_number,
-                payload={"error_context": err_ctx},
+                error_context=err_ctx,
             )
 
         return {
