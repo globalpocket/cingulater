@@ -44,7 +44,7 @@ async def get_orchestrator():
     global _orchestrator
     if _orchestrator is None:
         # get_settings() は内部で BROWNIE_CONFIG を参照する
-        settings = get_settings()
+        get_settings()
         if not os.getenv("GITHUB_TOKEN"):
             logger.error("FATAL: GITHUB_TOKEN not found in worker process.")
         from src.core.orchestrator import Orchestrator
@@ -174,7 +174,7 @@ async def poll_mentions_task():
 
         for m in mentions:
             task_id = f"git_monitor_{m['repo_name'].replace('/', '_')}_{m['number']}"
-
+ 
             # イベントペイロードを準備
             workflow_input = {
                 "repo_name": m["repo_name"],
