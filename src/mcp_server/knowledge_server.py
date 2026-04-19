@@ -13,13 +13,14 @@ stdio トランスポートで Orchestrator のサブプロセスとして動作
   - brownie://repo/context: WDCA コンテキスト（プロジェクト概要）
 """
 
+import ast
 import asyncio
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
-import duckdb
+import networkx as nx
 import tree_sitter_go
 import tree_sitter_javascript
 import tree_sitter_python
@@ -36,45 +37,14 @@ logger = setup_logging("knowledge_server")
 class FlowTracer:
     """
     AST 解析とコード構造分析（Flow）を管理するクラス。
-    DuckDB をバックエンドとして使用し、シンボルや関数呼び出しの情報を永続化・クエリする。
+    NetworkX をバックエンドとして使用し、シンボルや関数呼び出しの情報を
+    インメモリで管理する。
     """
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.conn = duckdb.connect(db_path)
-        self._initialize_schema()
+    def __init__(self, repo_path: str):
+        self.repo_path = repo_path
+        self.graph = nx.DiGraph()
         self.parsers = self._init_parsers()
-
-    def _initialize_schema(self):
-        """データベーススキーマの初期化"""
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS files (
-                path TEXT PRIMARY KEY,
-                last_scanned TIMESTAMP
-            )
-        """)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS symbols (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                file_path TEXT,
-                type TEXT, -- 'class', 'func', 'method'
-                start_line INTEGER,
-                end_line INTEGER
-            )
-        """)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS calls (
-                caller_name TEXT,
-                callee_name TEXT,
-                file_path TEXT,
-                line INTEGER
-            )
-        """)
-        try:
-            self.conn.execute("CREATE SEQUENCE sym_id_seq")
-        except:
-            pass  # すでに存在する場合
 
     def _init_parsers(self) -> Dict[str, Parser]:
         """各種言語の Tree-sitter パーサーを初期化"""
@@ -98,61 +68,95 @@ class FlowTracer:
         return parsers
 
     def scan_file(self, file_path: str, content: str):
-        """ファイルを解析して情報を DuckDB に保存 (Phase 9: LLM 抽出への委譲)"""
-        logger.info(f"Scanning file via knowledge_extractor: {file_path}")
+        """Python ファイルを解析して情報を NetworkX グラフに登録します。"""
+        logger.info(f"Scanning file: {file_path}")
+        if not file_path.endswith(".py"):
+            return
 
         try:
-            # ワークフローをロードして実行 (MCP サーバー内でも WorkflowLoader を利用可能にする)
-            from pathlib import Path
-
-            from src.core.workflow_manager import WorkflowLoader
-
-            # オーケストレーターのグローバルインスタンスが使えない可能性があるため、個別にロード
-            project_root = Path(os.getcwd())
-            loader = WorkflowLoader(project_root)
-            extract_wf = loader.load_all().get("knowledge_extractor")
-
-            if not extract_wf:
-                logger.error("knowledge_extractor workflow not found.")
-                return
-
-            # LLM による構造解析の実行 (同期コンテキストでの実行に対応するため run_sync 等を検討)
-            # ここでは asyncio ループ内であることを想定
-            wf_result = asyncio.run_coroutine_threadsafe(
-                extract_wf(input_data=content), asyncio.get_event_loop()
-            ).result()
-
-            results = wf_result.get("results", {})
-            chunks = results.get("chunks", [])
-
-            # DuckDB への保存 (symbols テーブル等を流用)
-            self.conn.execute("DELETE FROM symbols WHERE file_path = ?", (file_path,))
-            for chunk in chunks:
-                meta = chunk.get("metadata", {})
-                self._add_symbol(
-                    name=meta.get("name", "anonymous"),
-                    file_path=file_path,
-                    stype=meta.get("type", "chunk"),
-                    start=0,  # LLM 抽出の場合は行番号が不定なこともあるため 0 で開始
-                    end=0,
-                )
-
-            # 最終的なスキャン日時の更新
-            self.conn.execute(
-                "INSERT OR REPLACE INTO files (path, last_scanned) VALUES (?, CURRENT_TIMESTAMP)",
-                (file_path,),
-            )
+            tree = ast.parse(content)
+            # ファイルノードを追加
+            self.graph.add_node(file_path, type="file")
+            
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    self._add_symbol(
+                        node.name, file_path, "func", node.lineno,
+                        getattr(node, "end_lineno", node.lineno)
+                    )
+                elif isinstance(node, ast.ClassDef):
+                    self._add_symbol(
+                        node.name, file_path, "class", node.lineno,
+                        getattr(node, "end_lineno", node.lineno)
+                    )
+                elif isinstance(node, ast.Import):
+                    for name in node.names:
+                        self.graph.add_edge(file_path, name.name, type="import")
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        self.graph.add_edge(file_path, node.module, type="import")
         except Exception as e:
-            logger.error(f"LLM によるファイル解析エラー ({file_path}): {e}")
+            logger.error(f"Error scanning file {file_path}: {e}")
+
+    def refresh_graph(self):
+        """プロジェクト全体を走査してグラフを再構築します。"""
+        logger.info(f"Refreshing knowledge graph: {self.repo_path}")
+        self.graph.clear()
+        src_path = os.path.join(self.repo_path, "src")
+        if not os.path.exists(src_path):
+            return
+
+        for root, _, files in os.walk(src_path):
+            for file in files:
+                if file.endswith(".py"):
+                    fpath = os.path.join(root, file)
+                    rel_path = os.path.relpath(fpath, self.repo_path)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            self.scan_file(rel_path, f.read())
+                    except Exception as e:
+                        logger.warning(f"Failed to read {fpath}: {e}")
 
     def _add_symbol(self, name: str, file_path: str, stype: str, start: int, end: int):
-        self.conn.execute(
-            """
-            INSERT INTO symbols (id, name, file_path, type, start_line, end_line)
-            VALUES (nextval('sym_id_seq'), ?, ?, ?, ?, ?)
-        """,
-            (name, file_path, stype, start, end),
+        symbol_id = f"{file_path}:{name}"
+        self.graph.add_node(
+            symbol_id,
+            name=name,
+            file_path=file_path,
+            type=stype,
+            start_line=start,
+            end_line=end
         )
+        self.graph.add_edge(file_path, symbol_id, type="contains")
+
+    def trace_flow(self, entry_symbol: str, depth: int = 5) -> str:
+        """指定されたシンボルからの依存/呼び出しフローを Mermaid 形式で生成します。"""
+        relevant_nodes = []
+        for n, d in self.graph.nodes(data=True):
+            if d.get("name") == entry_symbol:
+                relevant_nodes.append(n)
+        
+        if not relevant_nodes:
+            return "Participant Not Found"
+            
+        lines = ["sequenceDiagram"]
+        visited = set()
+        
+        def walk(node, current_depth):
+            if current_depth > depth or node in visited:
+                return
+            visited.add(node)
+                
+            for successor in self.graph.successors(node):
+                u_name = self.graph.nodes[node].get("name", node)
+                v_name = self.graph.nodes[successor].get("name", successor)
+                lines.append(f"    {u_name}->>+{v_name}: calls")
+                walk(successor, current_depth + 1)
+        
+        for root in relevant_nodes:
+            walk(root, 0)
+            
+        return "\n".join(lines)
 
 
 # --- サーバーインスタンスの生成 ---
@@ -176,15 +180,14 @@ def _validate_path(target: str, base: str) -> str:
 
 
 def _get_tracer():
-    """FlowTracer のレイジー初期化"""
+    """FlowTracer のレイジー初期化と初回スキャン"""
     global _tracer
     if _tracer is not None:
         return _tracer
 
-    db_path = os.path.join(_repo_path, ".brwn", "index.db")
-    if not os.path.exists(db_path):
-        return None
-    _tracer = FlowTracer(db_path)
+    _tracer = FlowTracer(_repo_path)
+    # 初回起動時にプロジェクトをスキャンしてグラフを構築
+    _tracer.refresh_graph()
     return _tracer
 
 
@@ -260,7 +263,10 @@ async def get_code_flow(entry_symbol: str, depth: int = 5) -> str:
     """
     tracer = _get_tracer()
     if tracer is None:
-        return "解析インデックスが見つかりません。.brwn/index.db が存在するか確認してください。"
+        return (
+            "解析インデックスが見つかりません。"
+            ".brwn/index.db が存在するか確認してください。"
+        )
 
     # CPU バウンドな追跡処理をスレッドで実行（既存の非同期性を維持）
     flow_data = await asyncio.to_thread(tracer.trace_flow, entry_symbol, int(depth))
@@ -353,45 +359,47 @@ def _detect_tech_stack() -> dict:
 
 
 def _query_statistics() -> dict:
-    """DuckDB からファイル数・シンボル数を集計"""
+    """NetworkX グラフからファイル数・シンボル数を集計"""
     tracer = _get_tracer()
     if tracer is None:
         return {"files": 0, "symbols": 0, "calls": 0}
 
     try:
-        files_count = tracer.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
-        symbols_count = tracer.conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[
-            0
-        ]
-        calls_count = tracer.conn.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
+        nodes = tracer.graph.nodes(data=True)
+        files_count = len([n for n, d in nodes if d.get("type") == "file"])
+        symbols_count = len([n for n, d in nodes if d.get("type") in ("func", "class")])
+        calls_count = len([
+            e for e in tracer.graph.edges(data=True) if e[2].get("type") == "import"
+        ])
         return {"files": files_count, "symbols": symbols_count, "calls": calls_count}
     except Exception as e:
-        logger.error(f"統計クエリ失敗: {e}")
+        logger.error(f"統計取得失敗: {e}")
         return {"files": 0, "symbols": 0, "calls": 0, "error": str(e)}
 
 
 def _query_top_symbols(symbol_type: str, limit: int) -> list:
-    """指定タイプの主要シンボルを取得"""
+    """参照数の多い（入次数が高い）主要シンボルを取得"""
     tracer = _get_tracer()
     if tracer is None:
         return []
 
     try:
-        rows = tracer.conn.execute(
-            """
-            SELECT s.name, s.file_path, COUNT(c.callee_name) as ref_count
-            FROM symbols s
-            LEFT JOIN calls c ON s.name = c.callee_name
-            WHERE s.type = ?
-            GROUP BY s.name, s.file_path
-            ORDER BY ref_count DESC
-            LIMIT ?
-        """,
-            (symbol_type, limit),
-        ).fetchall()
-        return [{"name": r[0], "file": r[1], "references": r[2]} for r in rows]
+        nodes = [
+            (n, d) for n, d in tracer.graph.nodes(data=True)
+            if d.get("type") == symbol_type
+        ]
+        sorted_nodes = sorted(
+            nodes, key=lambda x: tracer.graph.in_degree(x[0]), reverse=True
+        )
+        return [
+            {
+                "name": d["name"],
+                "file": d["file_path"],
+                "references": tracer.graph.in_degree(n)
+            } for n, d in sorted_nodes[:limit]
+        ]
     except Exception as e:
-        logger.error(f"シンボルクエリ失敗: {e}")
+        logger.error(f"シンボル取得失敗: {e}")
         return []
 
 
@@ -402,21 +410,14 @@ def _detect_hotspots() -> list:
         return []
 
     try:
-        # ディレクトリごとのファイル数を集計
-        rows = tracer.conn.execute("""
-            SELECT
-                CASE
-                    WHEN POSITION('/' IN path) > 0
-                    THEN SUBSTRING(path, 1, POSITION('/' IN path) - 1)
-                    ELSE '.'
-                END as dir_name,
-                COUNT(*) as file_count
-            FROM files
-            GROUP BY dir_name
-            ORDER BY file_count DESC
-            LIMIT 10
-        """).fetchall()
-        return [{"directory": r[0], "file_count": r[1]} for r in rows]
+        from collections import Counter
+        nodes = [
+            d.get("file_path", "") for n, d in tracer.graph.nodes(data=True)
+            if d.get("type") == "file"
+        ]
+        dirs = [os.path.dirname(p) or "." for p in nodes]
+        counts = Counter(dirs).most_common(10)
+        return [{"directory": d, "file_count": c} for d, c in counts]
     except Exception as e:
         logger.error(f"ホットスポット検出失敗: {e}")
         return []
@@ -429,35 +430,17 @@ def _detect_entry_points() -> list:
         return []
 
     try:
-        # main, __main__, start, run 等のシンボルを検索
         entry_names = ["main", "__main__", "start", "run", "app", "serve"]
-        placeholders = ", ".join(["?" for _ in entry_names])
-        rows = tracer.conn.execute(
-            f"""
-            SELECT s.name, s.file_path, s.type
-            FROM symbols s
-            WHERE s.name IN ({placeholders})
-        """,
-            entry_names,
-        ).fetchall()
-
         entries = []
-        for name, fpath, stype in rows:
-            # このエントリーポイントが呼び出しているモジュールを取得
-            deps = tracer.conn.execute(
-                """
-                SELECT DISTINCT callee_name FROM calls WHERE caller_name = ? LIMIT 10
-            """,
-                (name,),
-            ).fetchall()
-            entries.append(
-                {
-                    "name": name,
-                    "file": fpath,
-                    "type": stype,
-                    "dependencies": [d[0] for d in deps],
-                }
-            )
+        for n, d in tracer.graph.nodes(data=True):
+            if d.get("name") in entry_names:
+                deps = list(tracer.graph.successors(n))
+                entries.append({
+                    "name": d["name"],
+                    "file": d["file_path"],
+                    "type": d.get("type", "unknown"),
+                    "dependencies": deps[:10]
+                })
         return entries
     except Exception as e:
         logger.error(f"エントリーポイント検出失敗: {e}")
@@ -485,7 +468,8 @@ def _init_from_args():
 
     if len(sys.argv) < 4:
         print(
-            "Usage: python -m src.mcp.knowledge_server <repo_path> <memory_path> <repo_name>",
+            "Usage: python -m src.mcp.knowledge_server "
+            "<repo_path> <memory_path> <repo_name>",
             file=sys.stderr,
         )
         sys.exit(1)
