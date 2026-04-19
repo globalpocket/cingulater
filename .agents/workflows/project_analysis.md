@@ -19,3 +19,12 @@ description: ソースコードの多角分析
 
 
 「プロジェクトの状態」を述べる際は、必ず「どのツールのどの出力に基づいているか」を明記してください。定性的な判断ではなく、ツールが算出した定量的なデータ（エラー数、循環参照の数、未定義の型等）を優先してください。
+
+## 標準ツールパス
+解析実行時は、原則として以下のパスに存在するバイナリを使用してください。
+- Python環境: `./.venv/bin/python`
+- Ruff (Lint): `./.venv/bin/ruff`
+- Bandit (Security): `./.venv/bin/bandit`
+- Semgrep (Static Analysis): `./.venv/bin/semgrep`
+- pytest (Testing): `./.venv/bin/pytest`
+- Repomix (Code Packing): `npx repomix` (Node.js環境)
