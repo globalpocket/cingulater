@@ -28,6 +28,8 @@ class Orchestrator:
         self.project_root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
+        self.workspace_base = self.settings.workspace.base_dir
+        logger.info(f"Workspace base directory set to: {self.workspace_base}")
 
         self._increase_max_files()
 

@@ -106,8 +106,8 @@ class BrownieApp:
             except asyncio.CancelledError:
                 pass
 
-        except Exception as e:
-            logger.error(f"Fatal error in main process: {e}")
+        except Exception:
+            logger.exception("Fatal error in main process")
         finally:
             logger.info("Brownie Main Process stopped.")
 
@@ -118,6 +118,7 @@ class BrownieApp:
         logger.info(f"Starting survival signal: {signal_file}")
         try:
             while not self.stop_event.is_set():
+                logger.debug(f"Writing survival signal to {signal_file}")
                 # PID をファイル名に含め、内容も JSON 化して詳細情報を付与する
                 with open(signal_file, "w") as f:
                     f.write(
@@ -129,6 +130,7 @@ class BrownieApp:
                             }
                         )
                     )
+                # 30秒ごとに更新
                 await asyncio.sleep(30)
         finally:
             if os.path.exists(signal_file):
