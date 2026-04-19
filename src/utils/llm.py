@@ -18,7 +18,8 @@ from tenacity import (
 
 # LiteLLM の基本設定
 litellm.telemetry = False
-litellm.drop_params = True # 未対応パラメータを自動でドロップ
+litellm.drop_params = True  # 未対応パラメータを自動でドロップ
+
 
 async def robust_response_hook(response: httpx.Response):
     """
@@ -52,7 +53,7 @@ async def robust_response_hook(response: httpx.Response):
                 data["usage"] = {
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
-                    "total_tokens": 0
+                    "total_tokens": 0,
                 }
                 modified = True
             else:
@@ -76,65 +77,59 @@ async def robust_response_hook(response: httpx.Response):
                     content = message.get("content", "")
                     if content and "<|tool_call" in content:
                         match = re.search(
-                            r"call:([a-zA-Z0-9_]+)([\{\(].*[\}\)])",
-                            content,
-                            re.DOTALL
+                            r"call:([a-zA-Z0-9_]+)([\{\(].*[\}\)])", content, re.DOTALL
                         )
                         if match:
                             tool_name = match.group(1)
                             tool_args_str = match.group(2).strip()
-                            if "<|\\\"|>" in tool_args_str:
-                                tool_args_str = tool_args_str.replace(
-                                "<|\\\"|>", "\\\""
-                            )
-                            if "<|\">" in tool_args_str:
-                                tool_args_str = tool_args_str.replace("<|\">", "\"")
+                            if '<|\\"|>' in tool_args_str:
+                                tool_args_str = tool_args_str.replace('<|\\"|>', '\\"')
+                            if '<|">' in tool_args_str:
+                                tool_args_str = tool_args_str.replace('<|">', '"')
                             tool_args_str = re.sub(
-                                r'([\{\s,])([a-zA-Z0-9_]+):',
-                                r'\1"\2":',
-                                tool_args_str
+                                r"([\{\s,])([a-zA-Z0-9_]+):", r'\1"\2":', tool_args_str
                             )
-                            
+
                             tool_call_id = "call_" + data.get("id", "placeholder")[-8:]
                             tool_call = {
                                 "id": tool_call_id,
                                 "type": "function",
                                 "function": {
                                     "name": tool_name,
-                                    "arguments": tool_args_str
-                                }
+                                    "arguments": tool_args_str,
+                                },
                             }
-                            has_no_tools = (
-                                not message.get("tool_calls") or
-                                not isinstance(message["tool_calls"], list)
-                            )
+                            has_no_tools = not message.get(
+                                "tool_calls"
+                            ) or not isinstance(message["tool_calls"], list)
                             if has_no_tools:
                                 message["tool_calls"] = []
                             message["tool_calls"].append(tool_call)
-                            message["content"] = "" 
+                            message["content"] = ""
                             modified = True
-                            logger.info(
-                                f"Converted and healed tool call '{tool_name}'"
-                            )
+                            logger.info(f"Converted and healed tool call '{tool_name}'")
 
             if modified:
                 response._content = json.dumps(data).encode("utf-8")
         except Exception as e:
             logger.warning(f"Failed to apply robustness fixes to LLM response: {e}")
 
+
 async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
     if not endpoint or "http" not in endpoint:
         return True
-    
+
     url = f"{endpoint.rstrip('/')}/models"
     logger.info(f"Waiting for LLM server at {url} (timeout: {timeout}s)...")
-    
+
     async with httpx.AsyncClient(trust_env=False) as client:
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_delay(timeout),
                 wait=wait_exponential(multiplier=1, min=2, max=10),
-                retry=retry_if_exception_type((httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)),
+                retry=retry_if_exception_type(
+                    (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)
+                ),
             ):
                 with attempt:
                     resp = await client.get(url, timeout=2.0)
@@ -147,6 +142,7 @@ async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
             return False
     return False
 
+
 def get_robust_model(model_name: str, base_url: Optional[str] = None) -> OpenAIModel:
     """
     LiteLLM を介して抽象化された Pydantic AI 用モデルを取得する。
@@ -154,39 +150,38 @@ def get_robust_model(model_name: str, base_url: Optional[str] = None) -> OpenAIM
     """
     if base_url and "localhost" in base_url:
         base_url = base_url.replace("localhost", "127.0.0.1")
-    
+
     http_client = httpx.AsyncClient(
         event_hooks={"response": [robust_response_hook]},
         timeout=httpx.Timeout(120.0, connect=10.0),
-        trust_env=False
+        trust_env=False,
     )
-    
+
     # LiteLLM が提供する OpenAI 互換レイヤーを利用する構成
     provider = OpenAIProvider(
         base_url=base_url,
         api_key=os.getenv("OPENAI_API_KEY", "EMPTY"),
-        http_client=http_client
+        http_client=http_client,
     )
-    
+
     return OpenAIModel(model_name, provider=provider)
+
 
 @AsyncRetrying(
     stop=stop_after_delay(60),
     wait=wait_exponential(multiplier=1, min=4, max=20),
     retry=retry_if_exception_type(Exception),
-    reraise=True
+    reraise=True,
 )
-async def litellm_completion(model: str, messages: List[Dict[str, str]], **kwargs) -> Any:
+async def litellm_completion(
+    model: str, messages: List[Dict[str, str]], **kwargs
+) -> Any:
     """
     LiteLLM を用いた単一の美しいインターフェース。
     各種プロバイダへの振分けとリトライを統合。
     """
     try:
-        response = await litellm.acompletion(
-            model=model,
-            messages=messages,
-            **kwargs
-        )
+        response = await litellm.acompletion(model=model, messages=messages, **kwargs)
         return response
     except Exception as e:
         logger.error(f"LiteLLM completion failed: {e}")

@@ -9,11 +9,15 @@ async def core_analysis_node(state: TaskState) -> Dict[str, Any]:
     """
     # グローバルオーケストレーターからワークフローを取得 (Phase 8: 純粋エンジン化)
     from src.core.orchestrator import global_orchestrator
-    if not global_orchestrator or "planner" not in global_orchestrator.dynamic_workflows:
+
+    if (
+        not global_orchestrator
+        or "planner" not in global_orchestrator.dynamic_workflows
+    ):
         logger.error("Planner workflow is not available.")
         return {
             "status": "Failed",
-            "history": [{"node": "core_analysis", "status": "error"}]
+            "history": [{"node": "core_analysis", "status": "error"}],
         }
 
     planner_wf = global_orchestrator.dynamic_workflows["planner"]
@@ -29,13 +33,13 @@ async def core_analysis_node(state: TaskState) -> Dict[str, Any]:
         return {
             "status": "Phase1_Completed",
             "analysis_data": blueprint,
-            "validated_plan": blueprint, # Phase 2 への受け渡し
-            "history": [{"node": "core_analysis", "status": "completed"}]
+            "validated_plan": blueprint,  # Phase 2 への受け渡し
+            "history": [{"node": "core_analysis", "status": "completed"}],
         }
     except Exception as e:
         logger.error(f"Core analysis failed: {e}")
         return {
             "status": "Failed",
             "metadata": {"error": str(e)},
-            "history": [{"node": "core_analysis", "status": "failed"}]
+            "history": [{"node": "core_analysis", "status": "failed"}],
         }

@@ -5,21 +5,23 @@ import yaml
 
 
 def reset():
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    
+    base_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+
     print("🧹 Cleaning up system state...")
-    
+
     # 1. configを読み込んでパスを特定
     config_path = os.path.join(base_dir, "config", "config.yaml")
     db_path = "~/.local/share/brownie/brownie.db"
     mem_path = "~/.local/share/brownie/vector_db"
-    
+
     if os.path.exists(config_path):
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 cfg = yaml.safe_load(f)
-                db_path = cfg.get('database', {}).get('db_path', db_path)
-                mem_path = cfg.get('database', {}).get('memory_path', mem_path)
+                db_path = cfg.get("database", {}).get("db_path", db_path)
+                mem_path = cfg.get("database", {}).get("memory_path", mem_path)
         except Exception as e:
             print(f"Warning: Could not parse config.yaml: {e}")
 
@@ -58,6 +60,7 @@ def reset():
             print(f"Error removing workspace: {e}")
 
     print("✨ System reset complete. Ready for a fresh start!")
+
 
 if __name__ == "__main__":
     reset()

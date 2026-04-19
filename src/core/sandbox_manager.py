@@ -18,9 +18,13 @@ class WorkspaceContext:
         ワークスペースのコンテキストを管理する。
         """
         self.root_path = Path(os.path.realpath(root_path))
-        self.reference_path = Path(os.path.realpath(reference_path)) if reference_path else None
-        
-        logger.info(f"WorkspaceContext initialized. root={self.root_path}, reference={self.reference_path}")
+        self.reference_path = (
+            Path(os.path.realpath(reference_path)) if reference_path else None
+        )
+
+        logger.info(
+            f"WorkspaceContext initialized. root={self.root_path}, reference={self.reference_path}"
+        )
 
     def resolve_path(self, target_path: str, strict: bool = True) -> str:
         """
@@ -33,6 +37,7 @@ class WorkspaceContext:
         if p.is_absolute():
             return str(p.resolve())
         return str((self.root_path / p).resolve())
+
 
 class LinterEngine:
     """各種リンター・フォーマッター・セキュリティスキャナの一括実行エンジン"""
@@ -47,7 +52,7 @@ class LinterEngine:
             "lint_command": None,
             "format_command": None,
             "security_command": None,
-            "test_command": "pytest"
+            "test_command": "pytest",
         }
         if os.path.exists(config_path):
             try:
@@ -68,19 +73,22 @@ class LinterEngine:
             data = json.loads(result.stdout)
             findings = []
             for item in data.get("results", []):
-                findings.append({
-                    "path": item["path"],
-                    "line": item["start"]["line"],
-                    "message": item["extra"]["message"],
-                    "severity": item["extra"]["severity"]
-                })
+                findings.append(
+                    {
+                        "path": item["path"],
+                        "line": item["start"]["line"],
+                        "message": item["extra"]["message"],
+                        "severity": item["extra"]["severity"],
+                    }
+                )
             return {"findings": findings}
         except Exception as e:
             return {"error": f"Exception during semgrep scan: {e}"}
 
     async def run_lint(self, path: str = ".") -> str:
         cmd_str = self.get_lint_command(path)
-        if not cmd_str: return "No linter found."
+        if not cmd_str:
+            return "No linter found."
         result = run_command(cmd_str, cwd=self.repo_root, shell=True)
         return result.combined or "No issues found."
 
@@ -110,9 +118,10 @@ class LinterEngine:
         rel_path = os.path.relpath(target_path, self.repo_root)
         return f"{cmd} {rel_path}"
 
+
 class SandboxManager:
     """公式 Filesystem MCP を内部で活用するサンドボックス管理クラス"""
-    
+
     def __init__(self, user_id: int, group_id: int):
         self.user_id = user_id
         self.group_id = group_id
@@ -125,7 +134,7 @@ class SandboxManager:
         """Filesystem MCP クライアントを遅延起動・取得する"""
         if self._fs_client:
             return self._fs_client
-        
+
         if not self.context:
             raise RuntimeError("WorkspaceContext is not set.")
 
@@ -134,13 +143,15 @@ class SandboxManager:
         if self.context.reference_path:
             allowed_dirs.append(str(self.context.reference_path))
 
-        logger.info(f"Starting official Filesystem MCP server with allowed dirs: {allowed_dirs}")
-        
+        logger.info(
+            f"Starting official Filesystem MCP server with allowed dirs: {allowed_dirs}"
+        )
+
         transport = StdioTransport(
             command="npx",
-            args=["-y", "@modelcontextprotocol/server-filesystem"] + allowed_dirs
+            args=["-y", "@modelcontextprotocol/server-filesystem"] + allowed_dirs,
         )
-        
+
         client = Client(transport)
         await self._exit_stack.enter_async_context(client)
         self._fs_client = client
@@ -175,20 +186,20 @@ class SandboxManager:
     async def list_files(self, path: str = ".", max_depth: int = 1) -> str:
         client = await self._get_fs_client()
         full_path = self._get_full_path(path)
-        
+
         # 公式 MCP の list_directory を使用
         # 再帰的な探索が必要な場合はエミュレートする
         async def _recursive_list(current_path: str, depth: int) -> List[str]:
             if depth > max_depth:
                 return []
-            
+
             try:
                 # ツール名の取得（公式 MCP の定義に従う）
                 res = await client.call_tool("list_directory", {"path": current_path})
                 # 結果のパース
                 content = res if isinstance(res, str) else str(res)
                 lines = content.strip().split("\n")
-                
+
                 results = []
                 for line in lines:
                     results.append(line)
@@ -221,24 +232,24 @@ class SandboxManager:
         return f"Successfully written to {path}."
 
     async def run_command(
-        self, 
-        command: str, 
-        image: str = "python:3.11-slim", 
-        environment: Optional[Dict[str, str]] = None
+        self,
+        command: str,
+        image: str = "python:3.11-slim",
+        environment: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Testcontainers を用いたサンドボックス内コマンド実行"""
         if not self.context or not self.context.root_path:
             raise RuntimeError("Workspace root is not set.")
 
         logger.info(f"Starting Sandbox Container (Testcontainers) with image: {image}")
-        
+
         # Testcontainers による宣言的なコンテナ構築
         container = (
             DockerContainer(image)
             .with_bind_mount(str(self.context.root_path), "/workspace", mode="rw")
             .with_env("HOME", "/tmp")
         )
-        
+
         if environment:
             for k, v in environment.items():
                 container.with_env(k, v)
@@ -247,11 +258,13 @@ class SandboxManager:
         # 1. ネットワーク遮断
         # 2. 非Rootユーザー実行
         # 3. ワーキングディレクトリ設定
-        container._container_proxy.params.update({
-            "network_disabled": True,
-            "user": f"{self.user_id}:{self.group_id}",
-            "working_dir": "/workspace"
-        })
+        container._container_proxy.params.update(
+            {
+                "network_disabled": True,
+                "user": f"{self.user_id}:{self.group_id}",
+                "working_dir": "/workspace",
+            }
+        )
 
         try:
             with container as c:
@@ -260,14 +273,14 @@ class SandboxManager:
                 result = c.get_wrapped_container().exec_run(
                     cmd=["/bin/sh", "-c", command],
                     user=f"{self.user_id}:{self.group_id}",
-                    workdir="/workspace"
+                    workdir="/workspace",
                 )
-                
+
                 output = result.output.decode("utf-8")
                 return {
                     "exit_code": result.exit_code,
                     "stdout": output,
-                    "stderr": "" # exec_run combines stdout/stderr by default
+                    "stderr": "",  # exec_run combines stdout/stderr by default
                 }
         except Exception as e:
             logger.error(f"Sandbox execution failed: {e}")
@@ -276,21 +289,24 @@ class SandboxManager:
     async def lint_code(self, path: str = ".") -> str:
         linter = LinterEngine(str(self.context.root_path))
         cmd = linter.get_lint_command(path)
-        if not cmd: return "No linter found."
+        if not cmd:
+            return "No linter found."
         res = await self.run_command(cmd)
         return f"Lint Results:\nStatus: {res['exit_code']}\nOutput: {res['stdout']}"
 
     async def format_code(self, path: str = ".") -> str:
         linter = LinterEngine(str(self.context.root_path))
         cmd = linter.get_format_command(path)
-        if not cmd: return "No formatter found."
+        if not cmd:
+            return "No formatter found."
         res = await self.run_command(cmd)
         return f"Format Results:\nStatus: {res['exit_code']}\nOutput: {res['stdout']}"
 
     async def scan_security(self, path: str = ".") -> str:
         linter = LinterEngine(str(self.context.root_path))
         cmd = linter.get_security_command(path)
-        if not cmd: return "No security scanner found."
+        if not cmd:
+            return "No security scanner found."
         res = await self.run_command(cmd)
         return f"Security Scan Results:\nStatus: {res['exit_code']}\nOutput: {res['stdout']}"
 

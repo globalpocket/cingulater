@@ -13,6 +13,7 @@ from pydantic_settings import (
 
 VERSION = "0.1.0--alpha"
 
+
 class AgentSettings(BaseSettings):
     polling_interval_sec: int = 30
     max_auto_retries: int = 30
@@ -23,10 +24,11 @@ class AgentSettings(BaseSettings):
     inference_priority: Dict[str, int] = {
         "manual_issue": 1,
         "review_comment": 2,
-        "auto_wiki": 3
+        "auto_wiki": 3,
     }
     repositories: List[str] = ["globalpocket/brownie"]
     exclude_repositories: List[str] = []
+
 
 class LLMSettings(BaseSettings):
     planner_endpoint: str = "http://localhost:8080/v1"
@@ -37,8 +39,9 @@ class LLMSettings(BaseSettings):
     model_dir: str = "~/.local/share/brownie/models"
     models: Dict[str, str] = {
         "planner": "mlx-community/gemma-4-26b-a4b-it-4bit",
-        "executor": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+        "executor": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
     }
+
 
 class WorkspaceSettings(BaseSettings):
     sandbox_user_id: int = 1000
@@ -46,11 +49,10 @@ class WorkspaceSettings(BaseSettings):
     lfs_enabled: bool = True
     base_dir: str = "~/.local/share/brownie/workspaces"
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_nested_delimiter="__",
-        env_prefix="BROWNIE_",
-        extra="ignore"
+        env_nested_delimiter="__", env_prefix="BROWNIE_", extra="ignore"
     )
 
     agent: AgentSettings = AgentSettings()
@@ -72,15 +74,17 @@ class Settings(BaseSettings):
         magic_path = config_path.parent / "magicvalues.yaml"
 
         sources = [init_settings, env_settings]
-        
+
         # magicvalues.yaml (優先度低)
         if magic_path.exists():
             sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=magic_path))
-        
+
         # config.yaml
         if config_path.exists():
-            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=config_path))
-            
+            sources.append(
+                YamlConfigSettingsSource(settings_cls, yaml_file=config_path)
+            )
+
         return tuple(sources)
 
     @computed_field
@@ -89,11 +93,15 @@ class Settings(BaseSettings):
         """現在のGitコミットハッシュを取得し、ビルドIDとして返す"""
         try:
             project_root = Path(__file__).parent.parent.parent
-            build_id = subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"], 
-                cwd=project_root,
-                stderr=subprocess.DEVNULL
-            ).decode("utf-8").strip()
+            build_id = (
+                subprocess.check_output(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=project_root,
+                    stderr=subprocess.DEVNULL,
+                )
+                .decode("utf-8")
+                .strip()
+            )
             return build_id
         except Exception:
             return VERSION
@@ -103,7 +111,9 @@ class Settings(BaseSettings):
         """GitHubコメント用の標準フッターを生成する"""
         return f"\n\n---\n> Built from: `{self.build_id}`"
 
+
 _settings: Optional[Settings] = None
+
 
 def get_settings(config_path: Optional[str] = None) -> Settings:
     """Settings のシングルトンインスタンスを取得します。"""

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-import logging
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import time
+
+import logging
 from logging.handlers import RotatingFileHandler
-from typing import Optional
 
 # プロジェクトルートをパスに追加
 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -101,15 +101,12 @@ class Watchdog:
                 # イベントを TriggerManager (Phase 10) 経由で発火
                 try:
                     import asyncio
+                    from src.core.trigger_manager import WorkflowTriggerManager
                     from pathlib import Path
 
-                    from src.core.trigger_manager import WorkflowTriggerManager
-
                     tm = WorkflowTriggerManager(Path(self.p_root))
-                    # asyncio.run は新しいループを作るため、投入に適している
-                    asyncio.run(
-                        tm.handle_event(event_name, {"file_path": p})
-                    )
+                    # asyncio.run は新しいループを作るため、短時間のタスク投入に適している
+                    asyncio.run(tm.handle_event(event_name, {"file_path": p}))
                 except Exception as e:
                     logger.error(f"Failed to dispatch file change event: {e}")
 
@@ -131,20 +128,18 @@ class Watchdog:
         while self.is_running:
             # 1. メインプロセスの起動・監視
             if self.process is None or self.process.poll() is not None:
-                if self.process is not None:
-                    logger.error(f"Exit code: {self.process.returncode}")
                 self._handle_restart()
 
-            # 2. 生存確認
+            # 2. 生存信号の確認
             self._check_survival()
 
-            # 3. ファイル変更検知
+            # --- 追加: ファイル変更検知の呼び出し ---
             self._check_file_changes()
 
             if not self.is_running:
                 break
 
-            time.sleep(15)
+            time.sleep(15)  # 反応速度を上げるために 30s -> 15s に短縮推奨
 
     def _handle_restart(self):
         """プロセス再起動と CrashLoopBackOff"""
@@ -162,7 +157,7 @@ class Watchdog:
         logger.info(f"Restarting main process (Attempt: {self.crash_count + 1})...")
 
         venv_python = os.path.join(base_dir, ".venv", "bin", "python")
-        # メインプロセスを起動 (親の死を検知できるようにする等)
+        # メインプロセスを起動 (親の死を検知できるようにする等、将来的な拡張の余地を残す)
         self.process = subprocess.Popen([venv_python, self.main_script], cwd=base_dir)
 
         self.crash_count += 1
@@ -182,8 +177,7 @@ class Watchdog:
             # (GitHub APIのBackoffが40分程度になるケースがあるため、余裕を持たせる)
             if time.time() - self.last_survival_time > 3600:
                 logger.warning(
-                    "Main process seems hung (No survival signal for 1 hour). "
-                    "Killing it..."
+                    "Main process seems hung (No survival signal for 1 hour). Killing it..."
                 )
                 if self.process:
                     self.process.terminate()
@@ -236,8 +230,8 @@ if __name__ == "__main__":
             if lock_path.exists():
                 try:
                     os.remove(lock_path)
-                except Exception as e:
-                    logger.warning(f"Failed to remove stale lock file: {e}")
+                except:
+                    pass
             lock_f = try_lock(lock_path)
             if lock_f is None:
                 print("Error: Could not acquire lock even after cleanup.")

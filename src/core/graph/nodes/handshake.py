@@ -46,7 +46,9 @@ async def dynamic_handshake_node(state: TaskState) -> Dict[str, Any]:
 
         from src.core.config import get_settings
 
-        await gh.post_comment(repo_name, issue_number, f"{greeting}\n{get_settings().footer}")
+        await gh.post_comment(
+            repo_name, issue_number, f"{greeting}\n{get_settings().footer}"
+        )
 
         return {
             "status": "Phase2_HandshakeDone",

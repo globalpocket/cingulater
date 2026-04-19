@@ -1,9 +1,8 @@
 import os
 from typing import Any, Dict
 
-from src.core.config import get_settings
-
 from src.core.agent import GitHubClientWrapper
+from src.core.config import get_settings
 from src.core.state_manager import TaskState
 
 

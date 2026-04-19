@@ -5,14 +5,15 @@ import pluggy
 hookspec = pluggy.HookspecMarker("brownie")
 hookimpl = pluggy.HookimplMarker("brownie")
 
+
 class MCPPluginSpec:
     """BROWNIE MCP プラグインの Hook Specification"""
-    
+
     @hookspec
     def get_server_config(self, name: str) -> Optional[Dict[str, Any]]:
         """
         指定された名前のプラグインサーバーの起動設定を返します。
-        
+
         Returns:
             Dict[str, Any]: {
                 "command": str,

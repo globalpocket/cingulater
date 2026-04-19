@@ -1,4 +1,3 @@
-import os
 from typing import Any, Dict
 
 from loguru import logger
@@ -17,15 +16,19 @@ async def execution_delegation_node(state: TaskState) -> Dict[str, Any]:
     current_status = state.get("status")
     if current_status not in ["Execution_Completed", "Execution_Failed"]:
         logger.info(f"Enqueuing execution_task for {state['task_id']} via MCP...")
-        
+
         # グローバルオーケストレーターから MCP マネージャーを取得
         from src.core.orchestrator import global_orchestrator
+
         mgr = global_orchestrator.mcp_manager if global_orchestrator else None
         client = mgr.worker_controller_client if mgr else None
-        
+
         if not client:
             logger.error("Worker Controller MCP Client is not available.")
-            return {"status": "Execution_Failed", "error": "Worker Controller not ready"}
+            return {
+                "status": "Execution_Failed",
+                "error": "Worker Controller not ready",
+            }
 
         plan = state.get("validated_plan", "No plan provided.")
         repo_name = state["task_id"].split("#")[0]
@@ -38,7 +41,7 @@ async def execution_delegation_node(state: TaskState) -> Dict[str, Any]:
             task_id=state["task_id"],
             repo_name=repo_name,
             issue_number=issue_number,
-            payload={"plan": str(plan)}
+            payload={"plan": str(plan)},
         )
 
         return {

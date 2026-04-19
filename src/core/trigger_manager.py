@@ -1,8 +1,7 @@
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import os
-import yaml
 
 from loguru import logger
 
@@ -60,18 +59,20 @@ class WorkflowTriggerManager:
                         condition_str, {"payload": payload, "__builtins__": {}}
                     )
                 except Exception as e:
-                    logger.error(f"Failed to evaluate condition '{condition_str}' in {wf_name}: {e}")
+                    logger.error(
+                        f"Failed to evaluate condition '{condition_str}' in {wf_name}: {e}"
+                    )
                     continue
 
                 if not is_matched:
                     continue
 
                 from src.core.workers.tasks import execute_workflow_task
+
                 logger.info(
                     f"🚀 Routing event '{event_type}' to workflow '{wf_name}' via internal trigger."
                 )
                 await execute_workflow_task.kiq(wf_name, input_data=payload)
-
 
     # --- Legacy Compat / Cron Support ---
     def check_cron_trigger(self, cron_expr: str, now: datetime) -> bool:

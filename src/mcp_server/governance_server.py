@@ -5,14 +5,17 @@ from pydantic import BaseModel, Field
 
 # --- 型定義 (Core から分散) ---
 
+
 class RingiDocument(BaseModel):
     """
     稟議書 (Phase 4)
     """
+
     summary: str = Field(..., description="発生した事象の概要")
     impact_analysis: str = Field(..., description="影響範囲の分析")
     proposed_fix: str = Field(..., description="具体的な修正案")
     risk_assessment: str = Field(..., description="リスク評価")
+
 
 # --- サーバー定義 ---
 
@@ -21,6 +24,7 @@ from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 logger = setup_logging("governance_server")
 mcp = create_mcp_server("Governance")
 
+
 @mcp.tool()
 @mcp_tool_errorhandler
 async def generate_ringi_sho(
@@ -28,7 +32,7 @@ async def generate_ringi_sho(
     status: str,
     has_changes: bool,
     topic_branch: str,
-    test_results_stdout: Optional[str] = None
+    test_results_stdout: Optional[str] = None,
 ) -> str:
     """
     タスクの実行結果をもとに、GitHub に投稿するための「稟議書 (Ringi-sho)」を
@@ -39,7 +43,7 @@ async def generate_ringi_sho(
     test_output = (
         test_results_stdout if test_results_stdout else "No test output available."
     )
-    
+
     next_action_msg = (
         "プルリクエストを作成します。" if has_changes else "タスクを完了報告します。"
     )
@@ -59,6 +63,7 @@ async def generate_ringi_sho(
 承認（ `/approve` ）が得られた場合、{next_action_msg}
 """
     return report
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

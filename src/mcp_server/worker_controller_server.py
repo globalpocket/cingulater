@@ -6,18 +6,15 @@ from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 logger = setup_logging("worker_controller_server")
 mcp = create_mcp_server("WorkerController")
 
+
 @mcp.tool()
 @mcp_tool_errorhandler
 async def enqueue_task(
-    task_type: str,
-    task_id: str,
-    repo_name: str,
-    issue_number: int,
-    payload: dict
+    task_type: str, task_id: str, repo_name: str, issue_number: int, payload: dict
 ) -> str:
     """
     バックグラウンドワーカーにタスクを投入します。
-    
+
     Args:
         task_type: "execution", "analysis", "repair" のいずれか
         task_id: ユニークなタスク識別子
@@ -26,7 +23,7 @@ async def enqueue_task(
         payload: タスクに渡す追加データ (プラン等)
     """
     logger.info(f"Enqueuing {task_type} task for {task_id} via Taskiq kiq")
-    
+
     if task_type == "execution":
         await execution_task.kiq(task_id, repo_name, issue_number, payload)
     elif task_type == "analysis":
@@ -37,6 +34,7 @@ async def enqueue_task(
         raise ValueError(f"Unknown task_type: {task_type}")
 
     return f"Successfully enqueued {task_type} task for {task_id}"
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")

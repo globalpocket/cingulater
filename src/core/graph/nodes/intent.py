@@ -12,7 +12,11 @@ async def intent_alignment_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # グローバルオーケストレーターからワークフローを取得 (Phase 8)
     from src.core.orchestrator import global_orchestrator
-    if not global_orchestrator or "interpreter" not in global_orchestrator.dynamic_workflows:
+
+    if (
+        not global_orchestrator
+        or "interpreter" not in global_orchestrator.dynamic_workflows
+    ):
         logger.error("Interpreter workflow is not available.")
         return {
             "status": "Phase0_WaitingForUserConfirmation",
@@ -20,7 +24,7 @@ async def intent_alignment_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "intent_draft": "システムエラー：意図解析ワークフローがロードされていません。",
             "evaluation_axes": [],
             "required_mcp_servers": [],
-            "history": [{"node": "intent_alignment", "status": "error"}]
+            "history": [{"node": "intent_alignment", "status": "error"}],
         }
 
     interpreter_wf = global_orchestrator.dynamic_workflows["interpreter"]
@@ -29,10 +33,10 @@ async def intent_alignment_node(state: Dict[str, Any]) -> Dict[str, Any]:
         # YAML ワークフローを実行
         # WorkflowManager は {'results': {'analyze': ...}, ...} 形式の辞書を返す
         wf_result = await interpreter_wf(input_data=state["instruction"])
-        
+
         # 'analyze' ノードの出力を取得 (Pydantic-AI の result.output)
         draft_data = wf_result.get("results", {}).get("analyze")
-        
+
         if not draft_data:
             raise ValueError("Interpreter workflow returned no analysis data.")
 

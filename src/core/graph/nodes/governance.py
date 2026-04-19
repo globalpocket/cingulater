@@ -2,9 +2,9 @@ import os
 from typing import Any, Dict
 
 from loguru import logger
-from src.core.config import get_settings
 
 from src.core.agent import GitHubClientWrapper
+from src.core.config import get_settings
 from src.core.state_manager import TaskState
 from src.core.workers.tasks import repair_task
 

@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport
+from loguru import logger
 
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
@@ -54,7 +55,7 @@ class GitOperations:
         # 公式 Git MCP に LFS 専用ツールがない場合は git_init 等を介して
         # カスタムコマンドを実行するか、あるいは限定的に shell で補完する。
         # ここでは既存の振る舞いを維持するため、可能な範囲で MCP を使用。
-        await _get_git_client()
+        client = await _get_git_client()
         logger.info("Syncing Git LFS via command delegation...")
         # Git MCP は任意の git コマンド実行ツールを持っていない場合があるため、
         # 必要に応じて git_status 等で代用するか、あるいは git コマンドを直接実行。
