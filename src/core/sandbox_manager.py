@@ -247,7 +247,7 @@ class SandboxManager:
         container = (
             DockerContainer(image)
             .with_bind_mount(str(self.context.root_path), "/workspace", mode="rw")
-            .with_env("HOME", "/tmp")
+            .with_env("HOME", "/tmp")  # nosec: B108 (Container-internal path)
         )
 
         if environment:

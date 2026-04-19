@@ -5,6 +5,7 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -114,7 +115,9 @@ class BrownieApp:
     async def _send_survival_signals(self):
         """Watchdogへの生存信号の送信 (設計書 3.2: 生存信号)"""
         pid = os.getpid()
-        signal_file = "/tmp/brownie_survival.signal"
+        data_dir = Path.home() / ".local" / "share" / "brownie"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        signal_file = str(data_dir / "survival.signal")
         logger.info(f"Starting survival signal: {signal_file}")
         try:
             while not self.stop_event.is_set():

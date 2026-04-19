@@ -242,5 +242,6 @@ if __name__ == "__main__":
     script_path = os.path.normpath(
         os.path.join(os.path.dirname(__file__), "..", "main.py")
     )
-    dog = Watchdog(script_path, "/tmp/brownie_survival.signal")
+    survival_path = data_dir / "survival.signal"
+    dog = Watchdog(script_path, str(survival_path))
     dog.start()
