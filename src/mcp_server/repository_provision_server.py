@@ -5,7 +5,6 @@ from typing import Optional
 
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport
-from loguru import logger
 
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 

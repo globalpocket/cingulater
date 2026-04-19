@@ -1,6 +1,5 @@
 from typing import Optional
 
-from loguru import logger
 from pydantic import BaseModel, Field
 
 # --- 型定義 (Core から分散) ---

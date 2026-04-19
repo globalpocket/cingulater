@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from loguru import logger
+
 
 from src.core.state_manager import StateManager
 

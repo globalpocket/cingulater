@@ -26,7 +26,6 @@ import sys
 from typing import Any, Dict, List, Optional
 
 import yaml as pyyaml
-from loguru import logger
 
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 

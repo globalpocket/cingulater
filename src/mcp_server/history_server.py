@@ -3,7 +3,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 import chromadb
-from loguru import logger
 
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
