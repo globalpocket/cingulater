@@ -31,6 +31,7 @@ log_file = os.path.normpath(
 os.makedirs(os.path.dirname(log_file), exist_ok=True)
 log_level = "DEBUG" if os.environ.get("BROWNIE_DEBUG") == "1" else "INFO"
 
+
 # Loguru の初期化 (stderr とファイルの両方に出力)
 # 標準 logging を Loguru にリダイレクトするためのハンドラ設定
 class InterceptHandler(logging.Handler):
@@ -45,25 +46,37 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
+
 
 def setup_logging():
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
-    
+
     # 既存のハンドラをクリアして Loguru で再構築
     logger.remove()
     logger.add(
-        sys.stderr, 
+        sys.stderr,
         level=log_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+        format=(
+            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+            "<level>{level: <8}</level> | "
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+            "<level>{message}</level>"
+        ),
     )
     logger.add(
         log_file,
         rotation="5 MB",
         retention="3 days",
         level="DEBUG",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
+        format=(
+            "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
+            "{name}:{function}:{line} - {message}"
+        ),
     )
+
 
 setup_logging()
 logger.info(f"Loguru initialized. Level: {log_level}, File: {log_file}")
@@ -77,10 +90,13 @@ class BrownieApp:
 
     async def run(self):
         """メインプロセスの実行 (設計書 3.2: 生存信号送信・LLM死活監視)"""
-        logger.info(f"Starting Brownie Main Process (Build: {self.settings.build_id})...")
         logger.info(
-            f"  - Loaded Agent from: {CoderAgent.__module__} in {os.path.abspath(CoderAgent.__module__.replace('.', '/') + '.py')}"
+            f"Starting Brownie Main Process (Build: {self.settings.build_id})..."
         )
+        agent_path = os.path.abspath(
+            CoderAgent.__module__.replace(".", "/") + ".py"
+        )
+        logger.info(f"  - Loaded Agent from: {CoderAgent.__module__} in {agent_path}")
         logger.info(f"  - Loaded Orchestrator from: {Orchestrator.__module__}")
         logger.info(f"  - Loaded Sandbox from: {SandboxManager.__module__}")
 
@@ -144,14 +160,34 @@ class BrownieApp:
 
 
 def main(
-    config: Annotated[Optional[str], typer.Option("--config", "-c", help="Path to config yaml file")] = None
+    config: Annotated[
+        Optional[str], typer.Option("--config", "-c", help="Path to config yaml file")
+    ] = None,
 ):
     """
     BROWNIE: Autonomous AI Coding Agent 🚀
     """
     config_file = config or os.getenv("BROWNIE_CONFIG", "config/config.yaml")
-    app = BrownieApp(config_file)
-    asyncio.run(app.run())
+    try:
+        # プロセス全体を一つのグループにまとめ、一括停止を可能にする
+        if hasattr(os, "setpgrp"):
+            os.setpgrp()
+            logger.debug("Process group ID set to current PID.")
+
+        app = BrownieApp(config_file)
+        asyncio.run(app.run())
+    except Exception:
+        logger.exception(
+            "FATAL ERROR: System is crashing. Killing all related processes."
+        )
+        # 自分を含むプロセスグループ全体に SIGTERM を送信して一括停止
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(0, signal.SIGTERM)
+            except Exception as e:
+                logger.error(f"Failed to kill process group: {e}")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     typer.run(main)

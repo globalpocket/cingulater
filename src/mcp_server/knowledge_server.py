@@ -17,7 +17,7 @@ import asyncio
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
 import duckdb
 import tree_sitter_go
@@ -35,8 +35,8 @@ logger = setup_logging("knowledge_server")
 
 class FlowTracer:
     """
-    AST 解析とコード構造分析（Flow）を管理するクラス。
-    DuckDB をバックエンドとして使用し、シンボルや関数呼び出しの情報を永続化・クエリする。
+    AST 解析とコード構造分析（Flow）を管理。
+    DuckDB を使用し、シンボル等の情報を永続化・クエリする。
     """
 
     def __init__(self, db_path: str):
@@ -73,8 +73,9 @@ class FlowTracer:
         """)
         try:
             self.conn.execute("CREATE SEQUENCE sym_id_seq")
-        except:
-            pass  # すでに存在する場合
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                logger.warning(f"Unexpected error during schema initialization: {e}")
 
     def _init_parsers(self) -> Dict[str, Parser]:
         """各種言語の Tree-sitter パーサーを初期化"""
@@ -102,12 +103,14 @@ class FlowTracer:
         logger.info(f"Scanning file via knowledge_extractor: {file_path}")
 
         try:
-            # ワークフローをロードして実行 (MCP サーバー内でも WorkflowLoader を利用可能にする)
+            # ワークフローをロードして実行
+            # (MCP サーバー内でも WorkflowLoader を利用可能にする)
             from pathlib import Path
 
             from src.core.workflow_manager import WorkflowLoader
 
-            # オーケストレーターのグローバルインスタンスが使えない可能性があるため、個別にロード
+            # オーケストレーターのグローバルインスタンスが使えない
+            # 可能性があるため、個別にロード
             project_root = Path(os.getcwd())
             loader = WorkflowLoader(project_root)
             extract_wf = loader.load_all().get("knowledge_extractor")
@@ -116,7 +119,8 @@ class FlowTracer:
                 logger.error("knowledge_extractor workflow not found.")
                 return
 
-            # LLM による構造解析の実行 (同期コンテキストでの実行に対応するため run_sync 等を検討)
+            # LLM による構造解析の実行
+            # (同期コンテキストでの実行に対応するため run_sync 等を検討)
             # ここでは asyncio ループ内であることを想定
             wf_result = asyncio.run_coroutine_threadsafe(
                 extract_wf(input_data=content), asyncio.get_event_loop()
@@ -139,7 +143,8 @@ class FlowTracer:
 
             # 最終的なスキャン日時の更新
             self.conn.execute(
-                "INSERT OR REPLACE INTO files (path, last_scanned) VALUES (?, CURRENT_TIMESTAMP)",
+                "INSERT OR REPLACE INTO files (path, last_scanned) "
+                "VALUES (?, CURRENT_TIMESTAMP)",
                 (file_path,),
             )
         except Exception as e:
@@ -260,7 +265,10 @@ async def get_code_flow(entry_symbol: str, depth: int = 5) -> str:
     """
     tracer = _get_tracer()
     if tracer is None:
-        return "解析インデックスが見つかりません。.brwn/index.db が存在するか確認してください。"
+        return (
+            "解析インデックスが見つかりません。"
+            ".brwn/index.db が存在するか確認してください。"
+        )
 
     # CPU バウンドな追跡処理をスレッドで実行（既存の非同期性を維持）
     flow_data = await asyncio.to_thread(tracer.trace_flow, entry_symbol, int(depth))
@@ -485,7 +493,8 @@ def _init_from_args():
 
     if len(sys.argv) < 4:
         print(
-            "Usage: python -m src.mcp.knowledge_server <repo_path> <memory_path> <repo_name>",
+            "Usage: python -m src.mcp.knowledge_server "
+            "<repo_path> <memory_path> <repo_name>",
             file=sys.stderr,
         )
         sys.exit(1)
