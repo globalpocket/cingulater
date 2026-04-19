@@ -422,3 +422,19 @@ class Orchestrator:
             return
         config = {"configurable": {"thread_id": thread_id}}
         return await self._workflow_app.aupdate_state(config, values, as_node=as_node)
+
+    async def _wait_for_llm_ready(self):
+        """LLM サーバーが利用可能になるまで待機する"""
+        async with self._llm_startup_lock:
+            while True:
+                try:
+                    # プランナーが応答するかチェック
+                    resp = await self.http_client.get(
+                        f"{self.settings.llm.planner_endpoint}/models", timeout=2.0
+                    )
+                    if resp.status_code == 200:
+                        break
+                except Exception:
+                    pass
+                logger.info("Waiting for LLM servers to be online...")
+                await asyncio.sleep(5)

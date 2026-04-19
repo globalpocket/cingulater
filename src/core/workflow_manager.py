@@ -7,7 +7,7 @@ from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from loguru import logger
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 
 from src.core.config import get_settings
 from src.utils.llm import get_robust_model
@@ -107,24 +107,19 @@ class WorkflowRegistry:
 
         if tool.name in self._tools:
             existing = self._tools[tool.name]
-            # 同一スコープ内での重複はスキップ
             if existing.scope == tool.scope:
                 if existing.file_type == "yaml" and tool.file_type == "md":
                     return
                 logger.warning(
-                    f"Skipping redundant tool '{tool.name}' "
-                    f"in same scope ({tool.scope})."
+                    f"Skipping redundant tool '{tool.name}' in same scope ({tool.scope})."
                 )
                 return
 
-            # 'workspace' スコープは 'core' スコープを
-            # オーバードライドできる (Phase 10: オーバーライド階層)
             if existing.scope == "core" and tool.scope == "workspace":
                 logger.info(
                     f"Overriding core tool '{tool.name}' with workspace version."
                 )
             else:
-                # すでに workspace 版がある場合などはスキップ
                 return
 
         self._tools[tool.name] = tool
@@ -134,7 +129,6 @@ class WorkflowRegistry:
         )
 
     def _create_callable(self, tool: WorkflowTool, content: str) -> Callable:
-
         async def workflow_runner(**kwargs):
             planner_model = self.settings.llm.models.get("planner", "gemma-4-26b-it")
             planner_endpoint = self.settings.llm.planner_endpoint
@@ -145,19 +139,14 @@ class WorkflowRegistry:
                     return f"Invalid workflow definition: {tool.name}"
 
                 builder = StateGraph(DynamicWorkflowState)
-
                 for node_name, node_cfg in wf.nodes.items():
-                    prompt_file_name = node_cfg.prompt_file
-                    next_node = node_cfg.next
-
                     model_name = planner_model
                     endpoint = planner_endpoint
                     if node_cfg.model == "executor":
                         model_name = self.settings.llm.models.get("executor")
                         endpoint = self.settings.llm.executor_endpoint
 
-                    prompt_path = tool.source_path.parent / prompt_file_name
-
+                    prompt_path = tool.source_path.parent / node_cfg.prompt_file
                     builder.add_node(
                         node_name,
                         self._create_node_func(
@@ -165,14 +154,13 @@ class WorkflowRegistry:
                         ),
                     )
 
-                    if next_node == "END":
+                    if node_cfg.next == "END":
                         builder.set_finish_point(node_name)
-                    elif next_node:
-                        builder.add_edge(node_name, next_node)
+                    elif node_cfg.next:
+                        builder.add_edge(node_name, node_cfg.next)
 
                 builder.set_entry_point(wf.start_node)
                 graph = builder.compile()
-
                 initial_state = {
                     "messages": [
                         HumanMessage(content=str(kwargs.get("input_data", "")))
@@ -181,9 +169,7 @@ class WorkflowRegistry:
                     "current_status": "starting",
                     "results": {},
                 }
-
                 return await graph.ainvoke(initial_state)
-
             else:
                 model = get_robust_model(planner_model, base_url=planner_endpoint)
                 agent = Agent(model, system_prompt=tool.markdown_content)
@@ -194,8 +180,68 @@ class WorkflowRegistry:
         workflow_runner.__doc__ = tool.description
         return workflow_runner
 
+    def _create_node_func(
+        self, node_id: str, prompt_path: Path, model_name: str, endpoint: str
+    ):
+        async def node_func(state: DynamicWorkflowState) -> DynamicWorkflowState:
+            logger.info(f"--- Node: {node_id} ---")
+            raw_prompt = (
+                prompt_path.read_text(encoding="utf-8")
+                if prompt_path.exists()
+                else f"Prompt file not found: {prompt_path}"
+            )
+            model = get_robust_model(model_name, base_url=endpoint)
+            deps = WorkflowDeps(
+                input_data=state.get("input_data"),
+                results=state.get("results", {}),
+                vars=state.get("vars", {}),
+            )
+            agent = Agent(model, deps_type=WorkflowDeps)
 
-from pydantic_ai import RunContext
+            from src.core.base import get_global_orchestrator
+            gorch = get_global_orchestrator()
+            if gorch:
+                all_tools = gorch.mcp_manager.get_all_tools()
+                for tool_node in all_tools:
+                    def _make_mcp_tool(node):
+                        async def mcp_tool_wrapper(
+                            ctx: RunContext[WorkflowDeps], **kwargs
+                        ):
+                            return await gorch.mcp_manager.call_tool_by_name(
+                                node.name, **kwargs
+                            )
+                        mcp_tool_wrapper.__name__ = node.name
+                        mcp_tool_wrapper.__doc__ = node.description
+                        return mcp_tool_wrapper
+                    agent.tool(_make_mcp_tool(tool_node))
+
+            @agent.system_prompt
+            def get_system_prompt(ctx: RunContext[WorkflowDeps]) -> str:
+                prompt = raw_prompt
+                format_ctx = {
+                    "input_data": ctx.deps.input_data,
+                    **ctx.deps.results,
+                    **ctx.deps.vars,
+                }
+                try:
+                    import re
+                    def replacer(match):
+                        key = match.group(1).strip()
+                        return str(format_ctx.get(key, match.group(0)))
+                    return re.sub(r"\{(.+?)\}", replacer, prompt)
+                except Exception as e:
+                    logger.warning(f"Prompt formatting failed: {e}")
+                    return prompt
+
+            prompt_data = str(state.get("input_data"))
+            result = await agent.run(prompt_data, deps=deps)
+            state["results"][node_id] = result.output
+            return state
+
+        return node_func
+
+    def get_tool_dict(self) -> Dict[str, Callable]:
+        return self._callables
 
 
 class WorkflowDeps(BaseModel):
@@ -204,97 +250,6 @@ class WorkflowDeps(BaseModel):
     input_data: Any
     results: Dict[str, Any] = Field(default_factory=dict)
     vars: Dict[str, Any] = Field(default_factory=dict)
-
-
-def _create_node_func(
-    self, node_id: str, prompt_path: Path, model_name: str, endpoint: str
-):
-    """
-    特定のノードに対する Pydantic AI Agent 実行関数を生成する。
-    RunContext を用いて、Markdown 内の変数を動的に解決する。
-    """
-
-    async def node_func(state: DynamicWorkflowState) -> DynamicWorkflowState:
-        logger.info(f"--- Node: {node_id} ---")
-
-        # 1. プロンプトの読み込み
-        raw_prompt = (
-            prompt_path.read_text(encoding="utf-8")
-            if prompt_path.exists()
-            else f"Prompt file not found: {prompt_path}"
-        )
-
-        # 2. モデルとエージェントの準備
-        model = get_robust_model(model_name, base_url=endpoint)
-        deps = WorkflowDeps(
-            input_data=state.get("input_data"),
-            results=state.get("results", {}),
-            vars=state.get("vars", {}),
-        )
-
-        # 3. Pydantic-AI Agent の定義 (動的システムプロンプト & ツール委譲)
-        agent = Agent(model, deps_type=WorkflowDeps)
-
-        # 全ての MCP ツールをエージェントに公開する (Phase 7 の核心)
-        # ※ 実際にはセキュリティ上、必要最小限にするのが望ましいが、
-        # ここでは強力な自律性を確保するため、利用可能な全 MCP ツールをバインドする。
-        # Note: Pydantic-AI で外部ツールを動的に追加する仕組みを利用。
-        from src.core.base import get_global_orchestrator
-        global_orchestrator = get_global_orchestrator()
-
-        if global_orchestrator:
-            all_tools = global_orchestrator.mcp_manager.get_all_tools()
-            for tool_node in all_tools:
-                def _make_mcp_tool(node):
-                    async def mcp_tool_wrapper(ctx: RunContext[WorkflowDeps], **kwargs):
-                        # 各ツールの実体は MCPServerManager で管理されている
-                        return await global_orchestrator.mcp_manager.call_tool_by_name(
-                            node.name, **kwargs
-                        )
-
-                    mcp_tool_wrapper.__name__ = node.name
-                    mcp_tool_wrapper.__doc__ = node.description
-                    return mcp_tool_wrapper
-
-                agent.tool(_make_mcp_tool(tool_node))
-
-        @agent.system_prompt
-        def get_system_prompt(ctx: RunContext[WorkflowDeps]) -> str:
-            """Markdown 内の {placeholder} を ctx.deps から解決する"""
-            prompt = raw_prompt
-            # 展開用コンテキストの作成
-            format_ctx = {
-                "input_data": ctx.deps.input_data,
-                **ctx.deps.results,
-                **ctx.deps.vars,
-            }
-            try:
-                # 正規表現による {key} 置換 (Jinja2 等は使わず標準機能で)
-                import re
-
-                def replacer(match):
-                    key = match.group(1).strip()
-                    return str(format_ctx.get(key, match.group(0)))
-
-                return re.sub(r"\{(.+?)\}", replacer, prompt)
-            except Exception as e:
-                logger.warning(f"Prompt formatting failed: {e}")
-                return prompt
-
-        # 4. 実行
-        prompt_data = str(state.get("input_data"))
-        # ツール呼び出しを許可して実行
-        result = await agent.run(prompt_data, deps=deps)
-
-        output = result.output
-        state["results"][node_id] = output
-        logger.debug(f"Node {node_id} output: {str(output)[:100]}...")
-        return state
-
-    return node_func
-
-    def get_tool_dict(self) -> Dict[str, Callable]:
-        return self._callables
 
 
 class WorkflowLoader:
@@ -327,13 +282,10 @@ class WorkflowLoader:
         return self.registry.get_tool_dict()
 
     def reload(self, mcp_tool_names: List[str] = None):
-        """
-        レジストリをクリアしてワークフローを再読み込みします。
-        """
         logger.info("Reloading workflows and refreshing registry...")
         self.registry = WorkflowRegistry(
             self.project_root, self.workspace_root, config_path=None
-        )  # シングルトンから取得
+        )
         return self.load_all(mcp_tool_names=mcp_tool_names)
 
     def _scan_dir(self, directory: Path, scope: str, pattern: str):
@@ -353,19 +305,10 @@ class WorkflowLoader:
                 if file_type == "yaml":
                     data = yaml.safe_load(content)
                     if isinstance(data, dict):
-                        # Workflow 定義に必要なフィールドがあるかチェック
                         if "start_node" in data and "nodes" in data:
-                            # Pydantic モデルでバリデーション
                             definition = WorkflowDefinition(**data)
                         else:
-                            logger.debug(
-                                "Skipping non-workflow YAML tool "
-                                f"(e.g. Agent definition): {file_path}"
-                            )
-                            # 後続の WorkflowTool 作成で definition が None でも
-                            # 許容される設計であれば続行。
-                            # 現状の WorkflowTool は definition がない場合は
-                            # MD ツール扱いになる。
+                            logger.debug(f"Skipping non-workflow YAML: {file_path}")
                 else:
                     markdown_content = content
 
