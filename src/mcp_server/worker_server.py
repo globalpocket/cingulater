@@ -25,7 +25,9 @@ class WorkerService:
         if not os.path.exists(venv_python):
             venv_python = "python3"
 
-        logger.info(f"Starting Taskiq worker and scheduler from {self.project_root}...")
+        logger.info(
+            f"Starting Taskiq worker and scheduler from {self.project_root}..."
+        )
 
         os.makedirs(os.path.join(self.project_root, "logs"), exist_ok=True)
 
@@ -62,7 +64,11 @@ class WorkerService:
             env={**os.environ, "PYTHONPATH": self.project_root},
         )
 
-        return f"Started Taskiq worker (PID: {self.consumer_proc.pid}) and scheduler (PID: {self.scheduler_proc.pid})"
+        msg = (
+            f"Started Taskiq worker (PID: {self.consumer_proc.pid}) "
+            f"and scheduler (PID: {self.scheduler_proc.pid})"
+        )
+        return msg
 
     def stop_consumer(self):
         status = []
@@ -105,7 +111,8 @@ class WorkerService:
             # 現時点では active_tasks からの削除のみ行い、後続の制御に任せる
             # (Taskiq レベルの強制キャンセルが必要な場合は追加の実装が必要)
             logger.warning(
-                f"Taskiq cancellation for {t_id} is a placeholder (Active tasks entry removed)."
+                f"Taskiq cancellation for {t_id} is a placeholder "
+                "(Active tasks entry removed)."
             )
             del self.active_tasks[task_id]
             return f"Removed tracking for {t_id}"
@@ -159,7 +166,8 @@ async def cancel_task(task_id: str) -> str:
 async def get_worker_status() -> Dict[str, Any]:
     """Worker の健康状態とアクティブタスク一覧を取得します。"""
     is_running = (
-        _service.consumer_proc is not None and _service.consumer_proc.poll() is None
+        _service.consumer_proc is not None
+        and _service.consumer_proc.poll() is None
     )
     return {
         "status": "RUNNING" if is_running else "STOPPED",

@@ -24,10 +24,13 @@ def run_command(
 ) -> CommandResult:
     """
     同期的にコマンドを実行し、結果を返す。
-    セキュリティ確保のため、shell=True は内部で False に強制され、
+    セキュリティ確保のため、shell=True は強制的に False となり、
     文字列引数は shlex.split で安全に分割されます。
     """
-    # 安全のため shell=True を無効化し、shlex で分割する
+    if shell:
+        logger.warning("shell=True was requested but ignored for security reasons.")
+
+    # 安全のため shell=False を強制し、shlex で分割する
     final_args = shlex.split(args) if isinstance(args, str) else args
     cmd_str = args if isinstance(args, str) else " ".join(args)
     logger.debug(f"Running command: {cmd_str}")
@@ -41,13 +44,15 @@ def run_command(
             shell=False,
             capture_output=True,
             text=True,
+            check=False,
         )
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
 
         if result.returncode != 0:
             logger.warning(
-                f"Command failed (exit {result.returncode}): {cmd_str}\nStderr: {stderr}"
+                f"Command failed (exit {result.returncode}): {cmd_str}\n"
+                f"Stderr: {stderr}"
             )
         else:
             logger.debug(f"Command success: {cmd_str}")
@@ -81,6 +86,10 @@ async def run_command_async(
     非同期（asyncio）でコマンドを実行し、結果を返す。
     セキュリティ確保のため、常に create_subprocess_exec を使用します。
     """
+    if shell:
+        logger.warning(
+            "shell=True was requested in run_command_async but ignored for security."
+        )
     final_args = shlex.split(args) if isinstance(args, str) else args
     cmd_str = args if isinstance(args, str) else " ".join(args)
     logger.debug(f"Running command (async): {cmd_str}")

@@ -17,7 +17,9 @@ async def intent_alignment_node(
         return {
             "status": "Phase0_WaitingForUserConfirmation",
             "intent_confirmed": False,
-            "intent_draft": "システムエラー：意図解析ワークフローがロードされていません。",
+            "intent_draft": (
+                "システムエラー：意図解析ワークフローがロードされていません。"
+            ),
             "evaluation_axes": [],
             "required_mcp_servers": [],
             "history": [{"node": "intent_alignment", "status": "error"}],

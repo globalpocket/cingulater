@@ -77,7 +77,8 @@ class StateManager:
         """チェックポインタに接続する（外部ドライバやツール用）"""
         if not self._saver:
             logger.debug(
-                f"Connecting to Redis Checkpointer at {self.redis_host}:{self.redis_port}"
+                "Connecting to Redis Checkpointer at "
+                f"{self.redis_host}:{self.redis_port}"
             )
             url = f"redis://{self.redis_host}:{self.redis_port}"
             self._saver = AsyncRedisSaver(redis_url=url)

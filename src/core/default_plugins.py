@@ -6,7 +6,10 @@ from .plugin_specs import hookimpl
 
 
 class DirectoryDiscoveryPlugin:
-    """src/mcp_server/plugins/ ディレクトリ下のファイルを MCP プラグインとして自動登録するデフォルト実装"""
+    """
+    src/mcp_server/plugins/ ディレクトリ下のファイルを
+    MCP プラグインとして自動登録するデフォルト実装
+    """
 
     def __init__(self, project_root: str):
         self.project_root = project_root

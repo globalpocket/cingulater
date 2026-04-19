@@ -56,7 +56,11 @@ async def completion_node(
                 "history": [{"node": "completion", "status": "pr_created"}],
             }
         else:
-            msg = "✅ タスクを完了しました（コード修正は不要と判断されました）。\n承認ありがとうございました。"
+            msg = (
+                "✅ タスクを完了しました"
+                "（コード修正は不要と判断されました）。\n"
+                "承認ありがとうございました。"
+            )
             await gh.post_comment(repo_name, issue_number, msg + get_settings().footer)
             return {
                 "status": "Completed",

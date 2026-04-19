@@ -22,7 +22,8 @@ from src.core.state_manager import StateManager
 class Orchestrator:
     """
     BROWNIE システムの中心的なオーケストレーター。
-    インフラ制御は各 MCP サーバーに委譲され、本クラスは状態遷移とイベント駆動の指令に専念する。
+    インフラ制御は各 MCP サーバーに委譲され、
+    本クラスは状態遷移とイベント駆動の指令に専念する。
     """
     def __init__(self, config_path: str):
         self.settings = get_settings(config_path)
@@ -81,7 +82,9 @@ class Orchestrator:
 
     async def start(self):
         """オーケストレーターの起動"""
-        logger.info(f"Orchestrator starting (Phase 5). Build ID: {self.settings.build_id}")
+        logger.info(
+            f"Orchestrator starting (Phase 5). Build ID: {self.settings.build_id}"
+        )
 
         set_global_orchestrator(self)
 
@@ -143,7 +146,8 @@ class Orchestrator:
 
             for key in keys:
                 data = await redis_client.get(key)
-                if not data: continue
+                if not data:
+                    continue
                 hb = json.loads(data)
                 
                 # ストール検知 (Resource Monitor MCP に委譲)
@@ -156,8 +160,12 @@ class Orchestrator:
                 if is_stalled:
                     task_id = hb.get("task_id")
                     logger.error(f"Task {task_id} STALLED. Revoking via Worker MCP...")
-                    await self.mcp_manager.worker_client.call_tool("cancel_task", task_id=task_id)
-                    await self.update_state(task_id, {"status": "Failed"}, as_node="intent_alignment")
+                    await self.mcp_manager.worker_client.call_tool(
+                        "cancel_task", task_id=task_id
+                    )
+                    await self.update_state(
+                        task_id, {"status": "Failed"}, as_node="intent_alignment"
+                    )
             
             await redis_client.aclose()
         except Exception as e:
@@ -173,7 +181,8 @@ class Orchestrator:
             for role, endpoint, port in models_config:
                 try:
                     resp = await self.http_client.get(f"{endpoint}/models", timeout=5.0)
-                    if resp.status_code == 200: continue
+                    if resp.status_code == 200:
+                        continue
                 except Exception as e:
                     logger.warning(f"LLM health check for {role} failed: {e}")
                 
@@ -190,21 +199,35 @@ class Orchestrator:
             all_mentions = await self.gh_client.get_mentions_to_process()
             for m in all_mentions:
                 task_id = f"{m['repo_name']}#{m['number']}"
-                if m["repo_name"] in self.settings.agent.exclude_repositories: continue
+                if m["repo_name"] in self.settings.agent.exclude_repositories:
+                    continue
                 
                 # Persistence MCP で状態確認
                 status = await self.mcp_manager.persistence_client.call_tool(
-                    "check_mention_status", mention_id=str(m.get("comment_id")), updated_at=m.get("updated_at")
+                    "check_mention_status", 
+                    mention_id=str(m.get("comment_id")), 
+                    updated_at=m.get("updated_at")
                 )
-                if status == "UNCHANGED": continue
+                if status == "UNCHANGED":
+                    continue
 
-                await self._queue_task(task_id, m["repo_name"], m["number"], str(m.get("comment_id")), m.get("body"))
-                await self.mcp_manager.persistence_client.call_tool("register_processed_mention", mention_data=m)
-                await self.gh_client.mark_issue_notifications_as_read(m["repo_name"], m["number"])
+                await self._queue_task(
+                    task_id, m["repo_name"], m["number"], 
+                    str(m.get("comment_id")), m.get("body")
+                )
+                await self.mcp_manager.persistence_client.call_tool(
+                    "register_processed_mention", mention_data=m
+                )
+                await self.gh_client.mark_issue_notifications_as_read(
+                    m["repo_name"], m["number"]
+                )
         except Exception as e:
             logger.error(f"Polling failed: {e}")
 
-    async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: str, body: str):
+    async def _queue_task(
+        self, task_id: str, repo_name: str, issue_number: int, 
+        comment_id: str, body: str
+    ):
         """Worker Controller 経由でタスクを投入"""
         state = await self.get_state(task_id)
         payload = state if state else {}
@@ -218,7 +241,9 @@ class Orchestrator:
             payload=payload
         )
 
-    async def _execute_task(self, task_id: str, repo_name: str, issue_number: int, payload: dict):
+    async def _execute_task(
+        self, task_id: str, repo_name: str, issue_number: int, payload: dict
+    ):
         """タスクキューのワーカーから呼び出される実行実体"""
         logger.info(f"==> _execute_task STARTED for {task_id} (Issue #{issue_number})")
 
@@ -248,7 +273,9 @@ class Orchestrator:
 
                     async def astream_gen():
                         config = {"configurable": {"thread_id": task_id}}
-                        async for event in self._workflow_app.astream(input_data, config=config):
+                        async for event in self._workflow_app.astream(
+                            input_data, config=config
+                        ):
                             yield event
 
                     async for event in astream_gen():
@@ -266,7 +293,11 @@ class Orchestrator:
                             if hasattr(self, "trigger_manager"):
                                 await self.trigger_manager.handle_event(
                                     f"on_{node_name}_completed",
-                                    {"node": node_name, "output": output, "task_id": task_id},
+                                    {
+                                        "node": node_name,
+                                        "output": output,
+                                        "task_id": task_id
+                                    },
                                 )
 
                             if node_name == "intent_alignment" and output.get(
@@ -336,18 +367,24 @@ class Orchestrator:
 
             except asyncio.TimeoutError:
                 logger.error(f"Task execution TIMEOUT: {task_id}")
+                err_msg = (
+                    "### ⚠️ タイムアウトによる中断\n"
+                    "ワークフローが一定時間内に完了しませんでした。"
+                    "特定の処理でループが発生したか、"
+                    "LLM の応答が停止した可能性があります。"
+                )
                 await self.gh_client.post_comment(
                     repo_name,
                     issue_number,
-                    "### ⚠️ タイムアウトによる中断\n処理時間が制限（10分）を超えたため、安全のために実行を中断しました。特定の処理でループが発生したか、LLM の応答が停止した可能性があります。"
-                    + self.settings.footer,
+                    err_msg + self.settings.footer,
                 )
                 await self.update_state(
                     task_id, {"status": "Failed"}, as_node="intent_alignment"
                 )
             except TaskAbortedException as tae:
                 logger.warning(f"Task {task_id} aborted by gate: {tae}")
-                # ユーザーが意図的にクローズしたため、Failed ではなく Skipped またはそのまま終了
+                # ユーザーが意図的にクローズしたため、
+                # Failed ではなく Skipped またはそのまま終了
                 await self.update_state(
                     task_id, {"status": "Aborted"}, as_node="intent_alignment"
                 )
@@ -355,11 +392,15 @@ class Orchestrator:
                 logger.error(f"Task execution error: {e}", exc_info=True)
                 # ルール 4 に基づき、エラー情報を簡潔に報告
                 error_msg = str(e)
+                err_msg = (
+                    f"### ❌ 実行エラーが発生しました\n\n原因: {error_msg}\n"
+                    "内部的な問題により処理を継続できないか、"
+                    "リソースが不足しています。"
+                )
                 await self.gh_client.post_comment(
                     repo_name,
                     issue_number,
-                    f"### ❌ 実行エラーが発生しました\n\n原因: {error_msg}\n内部的な問題により処理を継続できないか、リソースが不足しています。"
-                    + self.settings.footer,
+                    err_msg + self.settings.footer,
                 )
                 await self.update_state(
                     task_id, {"status": "Failed"}, as_node="intent_alignment"
@@ -373,7 +414,9 @@ class Orchestrator:
         state = await self._workflow_app.aget_state(config)
         return state.values if state else {}
 
-    async def update_state(self, thread_id: str, values: dict, as_node: Optional[str] = None):
+    async def update_state(
+        self, thread_id: str, values: dict, as_node: Optional[str] = None
+    ):
         """thread_id の状態を更新する"""
         if not self._workflow_app:
             return

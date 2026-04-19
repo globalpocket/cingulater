@@ -46,24 +46,36 @@ class InterceptHandler(logging.Handler):
             frame = frame.f_back
             depth += 1
 
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        logger.opt(
+            depth=depth, exception=record.exc_info
+        ).log(level, record.getMessage())
 
 def setup_logging():
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
     
     # 既存のハンドラをクリアして Loguru で再構築
     logger.remove()
+    log_format = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+        "<level>{message}</level>"
+    )
     logger.add(
         sys.stderr, 
         level=log_level,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+        format=log_format
+    )
+    file_format = (
+        "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
+        "{name}:{function}:{line} - {message}"
     )
     logger.add(
         log_file,
         rotation="5 MB",
         retention="3 days",
         level="DEBUG",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
+        format=file_format
     )
 
 setup_logging()
@@ -78,10 +90,14 @@ class BrownieApp:
 
     async def run(self):
         """メインプロセスの実行 (設計書 3.2: 生存信号送信・LLM死活監視)"""
-        logger.info(f"Starting Brownie Main Process (Build: {self.settings.build_id})...")
+        # メメインプロセスの起動ログ (Build 情報を含む)
         logger.info(
-            f"  - Loaded Agent from: {CoderAgent.__module__} in {os.path.abspath(CoderAgent.__module__.replace('.', '/') + '.py')}"
+            f"Starting Brownie Main Process (Build: {self.settings.build_id})..."
         )
+        agent_path = os.path.abspath(
+            CoderAgent.__module__.replace('.', '/') + '.py'
+        )
+        logger.info(f"  - Loaded Agent from: {CoderAgent.__module__} in {agent_path}")
         logger.info(f"  - Loaded Orchestrator from: {Orchestrator.__module__}")
         logger.info(f"  - Loaded Sandbox from: {SandboxManager.__module__}")
 
@@ -147,7 +163,10 @@ class BrownieApp:
 
 
 def main(
-    config: Annotated[Optional[str], typer.Option("--config", "-c", help="Path to config yaml file")] = None
+    config: Annotated[
+        Optional[str], 
+        typer.Option("--config", "-c", help="Path to config yaml file")
+    ] = None
 ):
     """
     BROWNIE: Autonomous AI Coding Agent 🚀

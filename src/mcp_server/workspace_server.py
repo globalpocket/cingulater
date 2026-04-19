@@ -41,7 +41,8 @@ def _get_sandbox():
     """SandboxManager のインスタンスを取得（初期化済みであること前提）"""
     if _sandbox is None:
         raise RuntimeError(
-            "SandboxManager が初期化されていません。サーバー起動引数を確認してください。"
+            "SandboxManager が初期化されていません。"
+            "サーバー起動引数を確認してください。"
         )
     return _sandbox
 
@@ -204,8 +205,8 @@ async def create_dynamic_workflow(
     Args:
         workflow_name: ワークフローの一意識別子（スネークケース、例: 'code_review'）
         description: このワークフローが何をするものかの説明
-        steps: 各ステップの定義リスト。各要素は 'node_name', 'prompt_content', 'next' を持つ。
-        triggers: スケジュール実行等のトリガー定義リスト（例: [{'type': 'cron', 'value': '* * * * *'}])
+        steps: ステップ定義リスト。'node_name', 'prompt_content', 'next' を持つ。
+        triggers: トリガー定義リスト（例: [{'type': 'cron', 'value': '* * * * *'}])
     """
     sandbox = _get_sandbox()
 
@@ -262,10 +263,11 @@ def _init_from_args():
     global _sandbox
 
     if len(sys.argv) < 5:
-        print(
-            "Usage: python -m src.mcp.workspace_server <repo_path> <reference_path> <user_id> <group_id>",
-            file=sys.stderr,
+        usage = (
+            "Usage: python -m src.mcp.workspace_server "
+            "<repo_path> <reference_path> <user_id> <group_id>"
         )
+        print(usage, file=sys.stderr)
         sys.exit(1)
 
     repo_path = sys.argv[1]
@@ -287,7 +289,7 @@ def _init_from_args():
     _sandbox.set_reference_root(reference_path)
 
     logger.info(
-        f"Workspace Server initialized: workspace={repo_path}, reference={reference_path}"
+        f"Workspace initialized: repo={repo_path}"
     )
 
 

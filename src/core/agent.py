@@ -5,11 +5,10 @@ from loguru import logger
 
 from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager, WorkspaceContext
-from src.core.workflow_manager import WorkflowLoader
 from src.gh_platform_client import GitHubClient
 
 
-class GitHubRateLimitException(Exception):
+class GitHubRateLimitException(Exception):  # noqa: N818
     """GitHubのレートリミットに達したことを示す例外"""
 
     def __init__(self, message: str, reset_at: float):
@@ -150,13 +149,14 @@ class CoderAgent:
         )
         self.config = config
 
-        # WorkflowManager の初期化
+        # WorkflowManager の初期化 (Circular dependency を避けるためローカルインポート)
+        from src.core.workflow_manager import WorkflowLoader
         project_root = Path(mcp_manager.project_root)
         workspace_root = (
             Path(workspace_context.repo_path) if workspace_context else None
         )
         self.workflow_loader = WorkflowLoader(project_root, workspace_root)
-        # 動的ツールのロード (MCPツールとの重複チェックはサーバー側と二重になるが同期のため実行)
+        # 動的ツールのロード (MCPツールとの重複チェックは同期のため実行)
         self.workflow_loader.load_all(config=config)
 
     async def run(

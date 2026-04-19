@@ -64,7 +64,8 @@ class ResourceGuardianLogic:
         metrics = self.get_system_metrics()
         if metrics["available_gb"] < min_available_gb:
             logger.warning(
-                f"CRITICAL: Low system memory! Available: {metrics['available_gb']:.2f}GB"
+                "CRITICAL: Low system memory! "
+                f"Available: {metrics['available_gb']:.2f}GB"
             )
             return False
         return True
@@ -88,12 +89,14 @@ class ResourceGuardianLogic:
             # 負荷があるなら推論中と判断し、さらに 5 分猶予
             if idle_time < timeout_sec + 300:
                 logger.info(
-                    f"Task heartbeat stopped, but CPU is active ({cpu_usage}%). Assuming activity in progress."
+                    "Task heartbeat stopped, but CPU is active "
+                    f"({cpu_usage}%). Assuming activity in progress."
                 )
                 return False
             else:
                 logger.warning(
-                    f"Task active for a long time without progress ({idle_time}s). Forcefully deciding as stall."
+                    f"Task active for a long time without progress ({idle_time}s). "
+                    "Forcefully deciding as stall."
                 )
                 return True
 
@@ -117,7 +120,7 @@ async def get_system_resources() -> Dict[str, Any]:
 @mcp_tool_errorhandler
 async def get_process_resources(pid: Optional[int] = None) -> Dict[str, Any]:
     """指定されたプロセスのメモリとCPU状態を取得します。
-    PID が指定されない場合は、このサーバーの親プロセス（監視対象の Worker や Orchestrator）を対象にします。
+    PID 指定がない場合は、親プロセス（監視対象）を対象にします。
     """
     target_pid = pid if pid is not None else os.getppid()
     return _logic.get_process_metrics(target_pid)
@@ -135,7 +138,7 @@ async def is_system_safe(min_available_gb: float = 4.0) -> bool:
 async def check_stall(
     last_heartbeat: float, timeout_sec: int = 300, pid: Optional[int] = None
 ) -> bool:
-    """プロセスの進捗状況と CPU 使用率から、処理がストール（ハング）しているかを判定します。"""
+    """プロセスの進捗状況から、ストールしているかを判定します。"""
     target_pid = pid if pid is not None else os.getppid()
     return _logic.check_for_stall(target_pid, last_heartbeat, timeout_sec)
 

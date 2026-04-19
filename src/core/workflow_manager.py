@@ -112,11 +112,13 @@ class WorkflowRegistry:
                 if existing.file_type == "yaml" and tool.file_type == "md":
                     return
                 logger.warning(
-                    f"Skipping redundant tool '{tool.name}' in same scope ({tool.scope})."
+                    f"Skipping redundant tool '{tool.name}' "
+                    f"in same scope ({tool.scope})."
                 )
                 return
 
-            # 'workspace' スコープは 'core' スコープをオーバーライドできる (Phase 10: オーバーライド階層)
+            # 'workspace' スコープは 'core' スコープを
+            # オーバードライドできる (Phase 10: オーバーライド階層)
             if existing.scope == "core" and tool.scope == "workspace":
                 logger.info(
                     f"Overriding core tool '{tool.name}' with workspace version."
@@ -357,10 +359,13 @@ class WorkflowLoader:
                             definition = WorkflowDefinition(**data)
                         else:
                             logger.debug(
-                                f"Skipping non-workflow YAML tool (e.g. Agent definition): {file_path}"
+                                "Skipping non-workflow YAML tool "
+                                f"(e.g. Agent definition): {file_path}"
                             )
-                            # 後続の WorkflowTool 作成で definition が None でも許容される設計であれば続行
-                            # ただし、現状の WorkflowTool は definition がない場合は MD ツール扱いになる
+                            # 後続の WorkflowTool 作成で definition が None でも
+                            # 許容される設計であれば続行。
+                            # 現状の WorkflowTool は definition がない場合は
+                            # MD ツール扱いになる。
                 else:
                     markdown_content = content
 

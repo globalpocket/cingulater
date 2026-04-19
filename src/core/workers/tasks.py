@@ -168,7 +168,8 @@ async def poll_mentions_task():
             # 'on_github_mention' というイベント名で発火させる
             trigger_manager = WorkflowTriggerManager(Path(orch.project_root))
             logger.info(
-                f"🔔 Dispatching event 'on_github_mention' for {m['repo_name']}#{m['number']}"
+                f"🔔 Dispatching event 'on_github_mention' "
+                f"for {m['repo_name']}#{m['number']}"
             )
             await trigger_manager.handle_event("on_github_mention", workflow_input)
 

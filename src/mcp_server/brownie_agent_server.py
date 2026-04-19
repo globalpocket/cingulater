@@ -1,7 +1,5 @@
 from typing import Any, Dict, Optional
 
-
-
 from src.core.state_manager import StateManager
 
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
@@ -29,21 +27,22 @@ async def submit_task(
 ) -> str:
     """
     Brownie に新しい開発タスクを依頼します。
-    バックグラウンドで待機している Orchestrator プロセスのキューへタスクを直接投入します。
+    ORCH プロセスのキューへタスクを直接投入します。
     """
     from src.core.workers.tasks import analysis_task
 
+    logger.info(f"Submitting task to Taskiq: {repo_name}#{issue_number}")
     task_id = f"{repo_name}#{issue_number}"
-    logger.info(f"Driver: Submitting task {task_id} to background worker...")
 
-    payload = {"description": task_description} if task_description else {}
-
-    # Taskiq キューへの直接投入（Orchestrator をロードせずに実行可能）
     await analysis_task.kiq(
-        task_id=task_id, repo_name=repo_name, issue_number=issue_number, payload=payload
+        task_id, repo_name, issue_number, task_description or {}
     )
 
-    return f"Successfully submitted task: {task_id}. The background Orchestrator is now starting analysis."
+    msg = (
+        f"Successfully submitted task: {task_id}. "
+        "The background Orchestrator is now starting analysis."
+    )
+    return msg
 
 
 @mcp.tool()

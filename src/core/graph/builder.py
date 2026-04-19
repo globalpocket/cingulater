@@ -20,12 +20,30 @@ def create_brownie_graph(workflows: Dict, mcp_manager: Any):
     workflow = StateGraph(TaskState)
 
     # 1. 基本ノードの登録
-    workflow.add_node("intent_alignment", partial(intent_alignment_node, workflows=workflows))
-    workflow.add_node("core_analysis", partial(core_analysis_node, workflows=workflows))
-    workflow.add_node("dynamic_handshake", partial(dynamic_handshake_node, workflows=workflows))
-    workflow.add_node("execution_delegation", partial(execution_delegation_node, mcp_manager=mcp_manager))
-    workflow.add_node("governance", partial(governance_node, workflows=workflows, mcp_manager=mcp_manager))
-    workflow.add_node("completion", partial(completion_node, workflows=workflows))
+    workflow.add_node(
+        "intent_alignment", 
+        partial(intent_alignment_node, workflows=workflows)
+    )
+    workflow.add_node(
+        "core_analysis", 
+        partial(core_analysis_node, workflows=workflows)
+    )
+    workflow.add_node(
+        "dynamic_handshake", 
+        partial(dynamic_handshake_node, workflows=workflows)
+    )
+    workflow.add_node(
+        "execution_delegation", 
+        partial(execution_delegation_node, mcp_manager=mcp_manager)
+    )
+    workflow.add_node(
+        "governance", 
+        partial(governance_node, workflows=workflows, mcp_manager=mcp_manager)
+    )
+    workflow.add_node(
+        "completion", 
+        partial(completion_node, workflows=workflows)
+    )
 
     # 2. ツール実行ノード (Prebuilt)
     if mcp_manager and hasattr(mcp_manager, "tools"):
