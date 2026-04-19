@@ -1,3 +1,4 @@
+import logging
 from typing import Any, Dict
 
 from src.core.state_manager import TaskState
@@ -28,7 +29,6 @@ async def dynamic_handshake_node(
         wf_result = await handshake_wf(input_data=state["instruction"])
         results = wf_result.get("results", {})
         greeting = results.get("greeting", "Hello! I'm starting the task.")
-        needs_info = results.get("needs_info", False)
 
         # GitHub に投稿 (エンジン側の共通機能を利用)
         import os
