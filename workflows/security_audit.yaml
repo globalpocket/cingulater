@@ -6,3 +6,7 @@ nodes:
     prompt_file: security_audit.md
     model: planner
     next: END
+triggers:
+  - type: event
+    value: on_py_file_changed
+

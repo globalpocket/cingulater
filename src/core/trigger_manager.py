@@ -20,29 +20,10 @@ class WorkflowTriggerManager:
 
     def __init__(self, project_root: Optional[Path] = None):
         self.project_root = project_root or Path(os.getcwd())
-        self.routing_rules = self._load_routing_rules()
-
-    def _load_routing_rules(self) -> List[Dict[str, Any]]:
-        """workflows/events_routing.yaml から ECA ルールをロード"""
-        routing_path = self.project_root / "workflows" / "events_routing.yaml"
-        if not routing_path.exists():
-            logger.warning(
-                f"Routing rules not found at {routing_path}. Using empty rules."
-            )
-            return []
-
-        try:
-            with open(routing_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-                return data.get("events", [])
-        except Exception as e:
-            logger.error(f"Failed to load routing rules: {e}")
-            return []
 
     async def handle_event(self, event_type: str, payload: Dict[str, Any]):
         """
-        イベントを受け取り、規約（Convention）またはルールに基づいてアクションを実行する。
-        (Phase 10: 設定より規約の実装)
+        イベントを受け取り、規約（Convention）または各ワークフロー内の定義に基づいてアクションを実行する。
         """
         logger.info(f"Handling event: {event_type}")
 
@@ -56,53 +37,41 @@ class WorkflowTriggerManager:
             logger.info(
                 f"✨ Convention matched: Routing event '{event_type}' directly to its namesake workflow."
             )
-            # 規約ベースの場合、ペイロードをそのまま input_data として渡す
             await execute_workflow_task.kiq(event_type, input_data=payload)
             return
 
-        # 2. 明示的なルールベースのルーティング (Fallback to Configuration)
-        for rule in self.routing_rules:
-            if rule.get("type") != event_type:
-                continue
+        # 2. 各ワークフロー定義に埋め込まれたトリガーに基づくルーティング
+        if not global_orchestrator:
+            return
 
-            # 条件評価
-            condition_str = rule.get("condition", "True")
-            try:
-                is_matched = eval(
-                    condition_str, {"payload": payload, "__builtins__": {}}
-                )
-            except Exception as e:
-                logger.error(f"Failed to evaluate condition '{condition_str}': {e}")
-                continue
+        for wf_name, tool in global_orchestrator.dynamic_workflows.items():
+            triggers = getattr(tool, "triggers", [])
+            for trigger in triggers:
+                # 'event' タイプのトリガーであり、かつイベント名（value）が一致するか確認
+                if trigger.get("type") != "event":
+                    continue
+                if trigger.get("value") != event_type:
+                    continue
 
-            if not is_matched:
-                continue
-
-            # アクション実行
-            action = rule.get("action")
-            if not action or action.get("type") != "run_workflow":
-                continue
-
-            wf_name = action.get("name")
-            mapping = action.get("params_mapping", {})
-            params = {}
-
-            for target_key, expr in mapping.items():
+                # 条件評価 (任意)
+                condition_str = trigger.get("condition", "True")
                 try:
-                    params[target_key] = eval(
-                        expr, {"payload": payload, "__builtins__": {}}
+                    is_matched = eval(
+                        condition_str, {"payload": payload, "__builtins__": {}}
                     )
                 except Exception as e:
-                    logger.error(
-                        f"Failed to map param '{target_key}' with expr '{expr}': {e}"
-                    )
+                    logger.error(f"Failed to evaluate condition '{condition_str}' in {wf_name}: {e}")
+                    continue
 
-            from src.core.workers.tasks import execute_workflow_task
+                if not is_matched:
+                    continue
 
-            logger.info(
-                f"🚀 Routing event '{event_type}' to workflow '{wf_name}' via explicit rule."
-            )
-            await execute_workflow_task.kiq(wf_name, input_data=params)
+                from src.core.workers.tasks import execute_workflow_task
+                logger.info(
+                    f"🚀 Routing event '{event_type}' to workflow '{wf_name}' via internal trigger."
+                )
+                await execute_workflow_task.kiq(wf_name, input_data=payload)
+
 
     # --- Legacy Compat / Cron Support ---
     def check_cron_trigger(self, cron_expr: str, now: datetime) -> bool:

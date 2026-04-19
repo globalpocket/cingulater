@@ -49,7 +49,8 @@ class WorkflowDefinition(BaseModel):
     description: Optional[str] = None
     start_node: str
     nodes: Dict[str, WorkflowNodeDefinition]
-    triggers: List[str] = Field(default_factory=list)
+    triggers: List[Dict[str, Any]] = Field(default_factory=list)
+
 
 
 class WorkflowTool:

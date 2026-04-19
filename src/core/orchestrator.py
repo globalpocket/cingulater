@@ -248,6 +248,12 @@ class Orchestrator:
                         reported = set(state_reported).union(locally_reported)
 
                         for node_name, output in event.items():
+                            # 内部イベントの発火 (Phase 11: 自律的な再帰的フック)
+                            await self.trigger_manager.handle_event(
+                                f"on_{node_name}_completed",
+                                {"node": node_name, "output": output, "task_id": task_id},
+                            )
+
                             if node_name == "intent_alignment" and output.get(
                                 "intent_draft"
                             ):

@@ -6,3 +6,7 @@ nodes:
     prompt_file: sync_wiki.md
     model: executor
     next: END
+triggers:
+  - type: cron
+    value: "0 0 * * *"
+
