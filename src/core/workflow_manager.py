@@ -52,7 +52,6 @@ class WorkflowDefinition(BaseModel):
     triggers: List[Dict[str, Any]] = Field(default_factory=list)
 
 
-
 class WorkflowTool:
     def __init__(
         self,
@@ -113,11 +112,13 @@ class WorkflowRegistry:
                 if existing.file_type == "yaml" and tool.file_type == "md":
                     return
                 logger.warning(
-                    f"Skipping redundant tool '{tool.name}' in same scope ({tool.scope})."
+                    f"Skipping redundant tool '{tool.name}' in same scope "
+                    f"({tool.scope})."
                 )
                 return
 
-            # 'workspace' スコープは 'core' スコープをオーバーライドできる (Phase 10: オーバーライド階層)
+            # 'workspace' スコープは 'core' をオーバーライドできる
+            # (Phase 10: オーバーライド階層)
             if existing.scope == "core" and tool.scope == "workspace":
                 logger.info(
                     f"Overriding core tool '{tool.name}' with workspace version."
@@ -289,7 +290,6 @@ def _create_node_func(
         return state
 
     return node_func
-
     def get_tool_dict(self) -> Dict[str, Callable]:
         return self._callables
 
@@ -356,10 +356,11 @@ class WorkflowLoader:
                             definition = WorkflowDefinition(**data)
                         else:
                             logger.debug(
-                                f"Skipping non-workflow YAML tool (e.g. Agent definition): {file_path}"
+                                f"Skipping non-workflow YAML tool: {file_path}"
                             )
-                            # 後続の WorkflowTool 作成で definition が None でも許容される設計であれば続行
-                            # ただし、現状の WorkflowTool は definition がない場合は MD ツール扱いになる
+                            # 後続の WorkflowTool 作成で definition が
+                            # None でも許容される設計であれば続行。
+                            # 現状の WorkflowTool は None の場合 MD 扱い。
                 else:
                     markdown_content = content
 
