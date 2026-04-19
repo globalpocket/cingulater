@@ -350,8 +350,16 @@ class WorkflowLoader:
                 if file_type == "yaml":
                     data = yaml.safe_load(content)
                     if isinstance(data, dict):
-                        # Pydantic モデルでバリデーション
-                        definition = WorkflowDefinition(**data)
+                        # Workflow 定義に必要なフィールドがあるかチェック
+                        if "start_node" in data and "nodes" in data:
+                            # Pydantic モデルでバリデーション
+                            definition = WorkflowDefinition(**data)
+                        else:
+                            logger.debug(
+                                f"Skipping non-workflow YAML tool (e.g. Agent definition): {file_path}"
+                            )
+                            # 後続の WorkflowTool 作成で definition が None でも許容される設計であれば続行
+                            # ただし、現状の WorkflowTool は definition がない場合は MD ツール扱いになる
                 else:
                     markdown_content = content
 

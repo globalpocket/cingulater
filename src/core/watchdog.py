@@ -6,7 +6,8 @@ import subprocess
 import sys
 import time
 
-from loguru import logger
+import logging
+from logging.handlers import RotatingFileHandler
 
 # プロジェクトルートをパスに追加
 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
