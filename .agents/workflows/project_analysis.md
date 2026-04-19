@@ -13,8 +13,8 @@ description: ソースコードの多角分析
 解析は最低でも以下の4フェーズ以上に分け、各フェーズのツール実行結果をユーザーに報告し、承認を得てから次へ進んでください。
 
 1. Repomix によるコード集約と構造把握
-2. Semgrep / ast-grep / Ruff / Bandit による静的解析と脆弱性診断
-3. DuckDB / NetworkX による依存関係および AST 分析
+2. Semgrep / ast-grep / Ruff / Bandit による静的解析とセキュリティ診断
+3. Dependency Audit (依存関係監査) および NetworkX による循環参照分析
 4. 上記すべてのデータを統合した重要度順の課題整理
 
 
