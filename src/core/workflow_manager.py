@@ -125,9 +125,16 @@ class WorkflowRegistry:
 
         self._tools[tool.name] = tool
         self._callables[tool.name] = self._create_callable(tool, content)
-        status = "workflow" if tool.definition else "markdown" if tool.file_type == "md" else "simple-tool"
+        if tool.definition:
+            status = "workflow"
+        elif tool.file_type == "md":
+            status = "markdown"
+        else:
+            status = "simple-tool"
+
         logger.info(
-            f"Registered {tool.file_type} {status} '{tool.name}' from {tool.scope} scope."
+            f"Registered {tool.file_type} {status} '{tool.name}' "
+            f"from {tool.scope} scope."
         )
 
     def _create_callable(self, tool: WorkflowTool, content: str) -> Callable:
@@ -318,18 +325,22 @@ class WorkflowLoader:
                             definition = WorkflowDefinition(**data)
                         elif "agent" in data:
                             # 単一エージェント形式 (自動変換)
-                            logger.debug(f"Converting single-agent YAML to workflow: {file_path}")
+                            logger.debug(
+                                f"Converting single-agent YAML to workflow: {file_path}"
+                            )
                             agent_cfg = data["agent"]
                             node_def = WorkflowNodeDefinition(
-                                prompt_file=agent_cfg.get("system_prompt", f"{tool_name}.md"),
+                                prompt_file=agent_cfg.get(
+                                    "system_prompt", f"{tool_name}.md"
+                                ),
                                 next="END",
-                                model="planner" # デフォルト
+                                model="planner",  # デフォルト
                             )
                             definition = WorkflowDefinition(
                                 name=data.get("name", tool_name),
                                 description=data.get("description"),
                                 start_node="main",
-                                nodes={"main": node_def}
+                                nodes={"main": node_def},
                             )
                         else:
                             logger.debug(f"Skipping non-workflow YAML: {file_path}")

@@ -23,6 +23,7 @@ class GitHubClientWrapper:
     """
 
     def __init__(self, token: str, mcp_manager: MCPServerManager):
+        self._token = token
         self._gh = GitHubClient(token=token)
         self.mcp_manager = mcp_manager
 
@@ -69,6 +70,15 @@ class GitHubClientWrapper:
         except Exception as e:
             logger.error(f"Failed to get mentions via ghapi: {e}")
             return []
+
+    async def mark_issue_notifications_as_read(self, repo_name: str, issue_number: int):
+        owner, repo = repo_name.split("/")
+        try:
+            await self._gh.mark_notifications_as_read(
+                owner=owner, repo=repo, issue_number=issue_number
+            )
+        except Exception as e:
+            logger.error(f"Failed to mark notifications as read via ghapi: {e}")
 
     async def get_issue(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
         client = self.mcp_manager.github_sdk_client

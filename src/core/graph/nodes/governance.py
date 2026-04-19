@@ -1,10 +1,7 @@
-import os
 from typing import Any, Dict
 
 from loguru import logger
 
-from src.core.agent import GitHubClientWrapper
-from src.core.config import get_settings
 from src.core.state_manager import TaskState
 
 
@@ -74,16 +71,24 @@ async def governance_node(
             ringi_content = results.get("ringi_document", "Review required.")
             risk_level = results.get("risk_level", "UNKNOWN")
 
-            # 2. GitHub に投稿
-            gh_token = os.getenv("GITHUB_TOKEN", "")
-            gh = GitHubClientWrapper(gh_token, mcp_manager)
+            # 2. GitHub に投稿 (一元化された GitHubClient を利用)
+            from src.core.base import get_global_orchestrator
+
+            gorch = get_global_orchestrator()
+            if not gorch:
+                logger.error("Global orchestrator not found in governance node.")
+                return {
+                    "status": "WaitingForApproval",
+                    "history": [{"node": "governance", "status": "failed"}],
+                }
+
             repo_name = state["task_id"].split("#")[0]
             issue_number = int(state["task_id"].split("#")[1])
 
-            await gh.post_comment(
+            await gorch.gh_client.post_comment(
                 repo_name,
                 issue_number,
-                f"### [Risk: {risk_level}]\n{ringi_content}\n{get_settings().footer}",
+                f"### [Risk: {risk_level}]\n{ringi_content}\n{gorch.settings.footer}",
             )
 
             return {

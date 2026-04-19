@@ -30,19 +30,22 @@ async def dynamic_handshake_node(
         results = wf_result.get("results", {})
         greeting = results.get("greeting", "Hello! I'm starting the task.")
 
-        # GitHub に投稿 (エンジン側の共通機能を利用)
-        import os
+        # GitHub に投稿 (一元化された GitHubClient を利用)
+        from src.core.base import get_global_orchestrator
 
-        from src.core.agent import GitHubClientWrapper
+        gorch = get_global_orchestrator()
+        if not gorch:
+            logger.error("Global orchestrator not found in handshake node.")
+            return {
+                "status": "Failed",
+                "history": [{"node": "dynamic_handshake", "status": "error"}],
+            }
 
-        gh = GitHubClientWrapper(os.getenv("GITHUB_TOKEN", ""))
         repo_name = state["task_id"].split("#")[0]
         issue_number = int(state["task_id"].split("#")[1])
 
-        from src.core.config import get_settings
-
-        await gh.post_comment(
-            repo_name, issue_number, f"{greeting}\n{get_settings().footer}"
+        await gorch.gh_client.post_comment(
+            repo_name, issue_number, f"{greeting}\n{gorch.settings.footer}"
         )
 
         return {

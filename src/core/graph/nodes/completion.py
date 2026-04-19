@@ -1,8 +1,5 @@
-import os
 from typing import Any, Dict
 
-from src.core.agent import GitHubClientWrapper
-from src.core.config import get_settings
 from src.core.state_manager import TaskState
 
 
@@ -12,14 +9,15 @@ async def completion_node(
     """
     Phase 5: Completion (完了報告)
     """
-    if "completion" not in workflows:
-        print("Error: Completion workflow is missing.")
+    from src.core.base import get_global_orchestrator
+
+    gorch = get_global_orchestrator()
+    if not gorch:
         return {
-            "status": "Completed",
-            "history": [{"node": "completion", "status": "no_workflow_fallback"}],
+            "status": "Failed",
+            "history": [{"node": "completion", "status": "error"}],
         }
 
-    gh = GitHubClientWrapper(os.getenv("GITHUB_TOKEN", ""))
     repo_name = state["task_id"].split("#")[0]
     issue_number = int(state["task_id"].split("#")[1])
 
@@ -41,13 +39,15 @@ async def completion_node(
 
         if has_changes and topic_branch:
             # PR 作成
-            pr = await gh.create_pull_request(
+            pr = await gorch.gh_client.create_pull_request(
                 repo_name, pr_title, pr_body, topic_branch, "main"
             )
             pr_url = pr.html_url if pr else "Failed to get PR URL"
 
             msg = f"✅ PR を作成しました: {pr_url}\n承認ありがとうございました。"
-            await gh.post_comment(repo_name, issue_number, msg + get_settings().footer)
+            await gorch.gh_client.post_comment(
+                repo_name, issue_number, msg + gorch.settings.footer
+            )
 
             return {
                 "status": "Completed",
@@ -61,7 +61,9 @@ async def completion_node(
                 "（コード修正は不要と判断されました）。\n"
                 "承認ありがとうございました。"
             )
-            await gh.post_comment(repo_name, issue_number, msg + get_settings().footer)
+            await gorch.gh_client.post_comment(
+                repo_name, issue_number, msg + gorch.settings.footer
+            )
             return {
                 "status": "Completed",
                 "history": [{"node": "completion", "status": "no_changes"}],
