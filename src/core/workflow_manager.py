@@ -242,17 +242,18 @@ def _create_node_func(
         if global_orchestrator:
             all_tools = global_orchestrator.mcp_manager.get_all_tools()
             for tool_node in all_tools:
-                # ツールをラップして登録 (簡易実装。実際には MCP クライアント経由)
-                # ここでは orchestrator の mcp_manager を介して直接呼び出す
-                async def mcp_tool_wrapper(ctx: RunContext[WorkflowDeps], **kwargs):
-                    # 各ツールの実体は MCPServerManager で管理されている
-                    return await global_orchestrator.mcp_manager.call_tool_by_name(
-                        tool_node.name, **kwargs
-                    )
+                def _make_mcp_tool(node):
+                    async def mcp_tool_wrapper(ctx: RunContext[WorkflowDeps], **kwargs):
+                        # 各ツールの実体は MCPServerManager で管理されている
+                        return await global_orchestrator.mcp_manager.call_tool_by_name(
+                            node.name, **kwargs
+                        )
 
-                mcp_tool_wrapper.__name__ = tool_node.name
-                mcp_tool_wrapper.__doc__ = tool_node.description
-                agent.tool(mcp_tool_wrapper)
+                    mcp_tool_wrapper.__name__ = node.name
+                    mcp_tool_wrapper.__doc__ = node.description
+                    return mcp_tool_wrapper
+
+                agent.tool(_make_mcp_tool(tool_node))
 
         @agent.system_prompt
         def get_system_prompt(ctx: RunContext[WorkflowDeps]) -> str:
