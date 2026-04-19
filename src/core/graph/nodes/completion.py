@@ -6,10 +6,6 @@ from src.core.config import get_settings
 from src.core.state_manager import TaskState
 
 
-async def completion_node(state: TaskState) -> Dict[str, Any]:
-    """
-    Final Phase: タスクの完了報告と PR 作成
-    """
 async def completion_node(
     state: TaskState, workflows: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -61,7 +57,7 @@ async def completion_node(
             }
         else:
             msg = "✅ タスクを完了しました（コード修正は不要と判断されました）。\n承認ありがとうございました。"
-            await gh.post_comment(repo_name, issue_number, msg + get_footer())
+            await gh.post_comment(repo_name, issue_number, msg + get_settings().footer)
             return {
                 "status": "Completed",
                 "history": [{"node": "completion", "status": "no_changes"}],
