@@ -2,8 +2,6 @@ import os
 import subprocess
 from typing import Any, Dict, Optional
 
-from loguru import logger
-
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
 # ロギングの設定
