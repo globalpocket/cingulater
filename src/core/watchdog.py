@@ -8,6 +8,7 @@ import time
 
 import logging
 from logging.handlers import RotatingFileHandler
+from typing import Optional
 
 # プロジェクトルートをパスに追加
 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -230,8 +231,8 @@ if __name__ == "__main__":
             if lock_path.exists():
                 try:
                     os.remove(lock_path)
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to remove stale lock file: {e}")
             lock_f = try_lock(lock_path)
             if lock_f is None:
                 print("Error: Could not acquire lock even after cleanup.")
