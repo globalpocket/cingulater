@@ -1,5 +1,6 @@
 ---
 trigger: always_on
+priority: high
 ---
 
 ## 自己否定の厳守
