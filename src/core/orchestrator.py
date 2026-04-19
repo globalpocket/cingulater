@@ -175,7 +175,8 @@ class Orchestrator:
                 try:
                     resp = await self.http_client.get(f"{endpoint}/models", timeout=5.0)
                     if resp.status_code == 200: continue
-                except Exception: pass
+                except Exception as e:
+                    logger.warning(f"LLM health check for {role} failed: {e}")
                 
                 logger.info(f"LLM Server ({role}) down. Restarting MLX...")
                 self._restart_mlx(role, port)
