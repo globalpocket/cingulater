@@ -2,7 +2,7 @@ import json
 import os
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastmcp import Client
 from fastmcp.client.transports.stdio import StdioTransport
@@ -23,15 +23,16 @@ class WorkspaceContext:
         )
 
         logger.info(
-            f"WorkspaceContext initialized. root={self.root_path}, reference={self.reference_path}"
+            f"WorkspaceContext initialized. root={self.root_path}, "
+            f"reference={self.reference_path}"
         )
 
     def resolve_path(self, target_path: str, strict: bool = True) -> str:
         """
         AIエージェントから渡されたパスを、公式 MCP も理解できる絶対パスまたは
         コンテキストルートからの相対パスとして解決する。
-        セキュリティは Filesystem MCP の起動時引数 (--allowed-directories) で担保されるため、
-        ここでは単純な結合と存在チェックを行う。
+        セキュリティは Filesystem MCP の起動時引数 (--allowed-directories)
+        で担保されるため、ここでは単純な結合と存在チェックを行う。
         """
         p = Path(target_path)
         if p.is_absolute():
@@ -86,37 +87,36 @@ class LinterEngine:
             return {"error": f"Exception during semgrep scan: {e}"}
 
     async def run_lint(self, path: str = ".") -> str:
-        cmd_str = self.get_lint_command(path)
-        if not cmd_str:
+        cmd = self.get_lint_command(path)
+        if not cmd:
             return "No linter found."
-        result = run_command(cmd_str, cwd=self.repo_root, shell=True)
+        # shlex.split は utils.run_command 側で処理されるか、
+        # あるいは最初からリストを渡すことで shell=True を排除可能。
+        result = run_command(cmd, cwd=self.repo_root)
         return result.combined or "No issues found."
 
-    def get_lint_command(self, path: str = ".") -> Optional[str]:
+    def _build_command(
+        self, base_cmd: Optional[str], default_cmd: str, path: str
+    ) -> List[str]:
         target_path = os.path.normpath(os.path.join(self.repo_root, path))
-        cmd = self.config.get("lint_command")
-        if not cmd:
-            # os.walk を廃止し、パスの存在確認のみに留めるか、
-            # あるいは必要に応じて外部から情報を渡す設計へ
-            cmd = "ruff check"
         rel_path = os.path.relpath(target_path, self.repo_root)
-        return f"{cmd} {rel_path}"
+        
+        full_cmd = base_cmd if base_cmd else default_cmd
+        import shlex
+        parts = shlex.split(full_cmd)
+        parts.append(rel_path)
+        return parts
 
-    def get_format_command(self, path: str = ".") -> Optional[str]:
-        target_path = os.path.normpath(os.path.join(self.repo_root, path))
-        cmd = self.config.get("format_command")
-        if not cmd:
-            cmd = "black"
-        rel_path = os.path.relpath(target_path, self.repo_root)
-        return f"{cmd} {rel_path}"
+    def get_lint_command(self, path: str = ".") -> List[str]:
+        return self._build_command(self.config.get("lint_command"), "ruff check", path)
 
-    def get_security_command(self, path: str = ".") -> Optional[str]:
-        target_path = os.path.normpath(os.path.join(self.repo_root, path))
-        cmd = self.config.get("security_command")
-        if not cmd:
-            cmd = "bandit -r -f txt"
-        rel_path = os.path.relpath(target_path, self.repo_root)
-        return f"{cmd} {rel_path}"
+    def get_format_command(self, path: str = ".") -> List[str]:
+        return self._build_command(self.config.get("format_command"), "black", path)
+
+    def get_security_command(self, path: str = ".") -> List[str]:
+        return self._build_command(
+            self.config.get("security_command"), "bandit -r -f txt", path
+        )
 
 
 class SandboxManager:
@@ -225,15 +225,16 @@ class SandboxManager:
     async def write_file(self, path: str, content: str) -> str:
         client = await self._get_fs_client()
         full_path = self._get_full_path(path, rw=True)
-        # 公式 MCP の write_file は親ディレクトリが存在しないと失敗する可能性があるため、
-        # ここでは write_file ツールを呼び出す。
-        # 備考: 公式 server-filesystem の write_file はディレクトリ作成機能を含む場合がある。
+        # 公式 MCP の write_file は親ディレクトリが存在しないと
+        # 失敗する可能性があるため、ここでは write_file ツールを呼び出す。
+        # 備考: 公式 server-filesystem の write_file は
+        # ディレクトリ作成機能を含む場合がある。
         await client.call_tool("write_file", {"path": full_path, "content": content})
         return f"Successfully written to {path}."
 
     async def run_command(
         self,
-        command: str,
+        command: Union[str, List[str]],
         image: str = "python:3.11-slim",
         environment: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
@@ -268,10 +269,15 @@ class SandboxManager:
 
         try:
             with container as c:
-                logger.info(f"Executing inside sandbox: {command}")
+                cmd_to_run = (
+                    ["/bin/sh", "-c", command]
+                    if isinstance(command, str)
+                    else command
+                )
+                logger.info(f"Executing inside sandbox: {cmd_to_run}")
                 # コマンド実行
                 result = c.get_wrapped_container().exec_run(
-                    cmd=["/bin/sh", "-c", command],
+                    cmd=cmd_to_run,
                     user=f"{self.user_id}:{self.group_id}",
                     workdir="/workspace",
                 )
@@ -308,7 +314,10 @@ class SandboxManager:
         if not cmd:
             return "No security scanner found."
         res = await self.run_command(cmd)
-        return f"Security Scan Results:\nStatus: {res['exit_code']}\nOutput: {res['stdout']}"
+        return (
+            f"Security Scan Results:\nStatus: {res['exit_code']}\n"
+            f"Output: {res['stdout']}"
+        )
 
     def cleanup_orphans(self):
         """Testcontainers がコンテキストマネージャ経由でクリーンアップするため、
