@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Dict, Literal
+from typing import Any, Dict, Literal
 
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
