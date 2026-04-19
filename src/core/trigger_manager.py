@@ -1,3 +1,4 @@
+import ast
 import os
 from datetime import datetime
 from pathlib import Path
@@ -54,16 +55,7 @@ class WorkflowTriggerManager:
 
                 # 条件評価 (任意)
                 condition_str = trigger.get("condition", "True")
-                try:
-                    is_matched = eval(
-                        condition_str, {"payload": payload, "__builtins__": {}}
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to evaluate condition '{condition_str}' in {wf_name}: {e}"
-                    )
-                    continue
-
+                is_matched = self._safe_eval(condition_str, payload)
                 if not is_matched:
                     continue
 
@@ -82,6 +74,58 @@ class WorkflowTriggerManager:
             base_time = now.replace(second=0, microsecond=0)
             return croniter.match(cron_expr, base_time)
         except Exception:
+            return False
+
+    def _safe_eval(self, expr: str, payload: Dict[str, Any]) -> bool:
+        """
+        セキュリティを考慮し、ast.parse で式を事前検証した上で eval を実行する。
+        許可されるのは定数、比較演算、論理演算、payload へのアクセスのみ。
+        """
+        try:
+            tree = ast.parse(expr, mode="eval")
+
+            # 許可されたノードのホワイトリスト
+            allowed_nodes = {
+                ast.Expression,
+                ast.Constant,
+                ast.Name,
+                ast.Load,
+                ast.Compare,
+                ast.Eq,
+                ast.NotEq,
+                ast.Lt,
+                ast.LtE,
+                ast.Gt,
+                ast.GtE,
+                ast.BoolOp,
+                ast.And,
+                ast.Or,
+                ast.UnaryOp,
+                ast.Not,
+                ast.Subscript,
+                ast.Slice,
+                ast.In,
+                ast.NotIn,
+            }
+
+            for node in ast.walk(tree):
+                if type(node) not in allowed_nodes:
+                    raise ValueError(f"Forbidden syntax: {type(node).__name__}")
+                if isinstance(node, ast.Name) and node.id not in (
+                    "payload",
+                    "True",
+                    "False",
+                    "None",
+                ):
+                    raise ValueError(f"Forbidden variable: {node.id}")
+
+            # 制限された名前空間で実行（事前検証済みのため nosec）
+            return eval(  # nosec: B307
+                compile(tree, "<string>", "eval"),
+                {"payload": payload, "__builtins__": {}},
+            )
+        except Exception as e:
+            logger.error(f"Safe eval failed for '{expr}': {e}")
             return False
 
     def get_due_workflows(
