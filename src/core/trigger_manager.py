@@ -35,7 +35,8 @@ class WorkflowTriggerManager:
             from src.core.workers.tasks import execute_workflow_task
 
             logger.info(
-                f"✨ Convention matched: Routing event '{event_type}' directly to its namesake workflow."
+                f"✨ Convention matched: Routing event '{event_type}' "
+                "directly to its namesake workflow."
             )
             await execute_workflow_task.kiq(event_type, input_data=payload)
             return
@@ -47,7 +48,8 @@ class WorkflowTriggerManager:
         for wf_name, tool in global_orchestrator.dynamic_workflows.items():
             triggers = getattr(tool, "triggers", [])
             for trigger in triggers:
-                # 'event' タイプのトリガーであり、かつイベント名（value）が一致するか確認
+                # 'event' タイプのトリガーであり、かつイベント名（value）が
+                # 一致するか確認
                 if trigger.get("type") != "event":
                     continue
                 if trigger.get("value") != event_type:
@@ -62,7 +64,8 @@ class WorkflowTriggerManager:
                 from src.core.workers.tasks import execute_workflow_task
 
                 logger.info(
-                    f"🚀 Routing event '{event_type}' to workflow '{wf_name}' via internal trigger."
+                    f"🚀 Routing event '{event_type}' to workflow '{wf_name}' "
+                    "via internal trigger."
                 )
                 await execute_workflow_task.kiq(wf_name, input_data=payload)
 
@@ -78,55 +81,91 @@ class WorkflowTriggerManager:
 
     def _safe_eval(self, expr: str, payload: Dict[str, Any]) -> bool:
         """
-        セキュリティを考慮し、ast.parse で式を事前検証した上で eval を実行する。
-        許可されるのは定数、比較演算、論理演算、payload へのアクセスのみ。
+        eval() を使わず、AST を再帰的に自身で評価する安全な評価器。
         """
         try:
             tree = ast.parse(expr, mode="eval")
-
-            # 許可されたノードのホワイトリスト
-            allowed_nodes = {
-                ast.Expression,
-                ast.Constant,
-                ast.Name,
-                ast.Load,
-                ast.Compare,
-                ast.Eq,
-                ast.NotEq,
-                ast.Lt,
-                ast.LtE,
-                ast.Gt,
-                ast.GtE,
-                ast.BoolOp,
-                ast.And,
-                ast.Or,
-                ast.UnaryOp,
-                ast.Not,
-                ast.Subscript,
-                ast.Slice,
-                ast.In,
-                ast.NotIn,
-            }
-
-            for node in ast.walk(tree):
-                if type(node) not in allowed_nodes:
-                    raise ValueError(f"Forbidden syntax: {type(node).__name__}")
-                if isinstance(node, ast.Name) and node.id not in (
-                    "payload",
-                    "True",
-                    "False",
-                    "None",
-                ):
-                    raise ValueError(f"Forbidden variable: {node.id}")
-
-            # 制限された名前空間で実行（事前検証済みのため nosec）
-            return eval(  # nosec: B307
-                compile(tree, "<string>", "eval"),
-                {"payload": payload, "__builtins__": {}},
-            )
+            result = self._evaluate_ast_node(tree.body, payload)
+            return bool(result)
         except Exception as e:
             logger.error(f"Safe eval failed for '{expr}': {e}")
             return False
+
+    def _evaluate_ast_node(self, node: ast.AST, payload: Dict[str, Any]) -> Any:
+        """AST ノードを再帰的に評価するヘルパーメソッド。
+        許可された演算のみを処理する。
+        """
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif isinstance(node, ast.Name):
+            if node.id == "payload":
+                return payload
+            if node.id == "True":
+                return True
+            if node.id == "False":
+                return False
+            if node.id == "None":
+                return None
+            raise ValueError(f"Forbidden variable: {node.id}")
+        elif isinstance(node, ast.UnaryOp):
+            operand = self._evaluate_ast_node(node.operand, payload)
+            if isinstance(node.op, ast.Not):
+                return not operand
+            raise ValueError(f"Forbidden unary op: {type(node.op).__name__}")
+        elif isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                for v in node.values:
+                    if not self._evaluate_ast_node(v, payload):
+                        return False
+                return True
+            elif isinstance(node.op, ast.Or):
+                for v in node.values:
+                    if self._evaluate_ast_node(v, payload):
+                        return True
+                return False
+        elif isinstance(node, ast.Compare):
+            left = self._evaluate_ast_node(node.left, payload)
+            for op, right_node in zip(node.ops, node.comparators):
+                right = self._evaluate_ast_node(right_node, payload)
+                if isinstance(op, ast.Eq):
+                    if not (left == right):
+                        return False
+                elif isinstance(op, ast.NotEq):
+                    if not (left != right):
+                        return False
+                elif isinstance(op, ast.Lt):
+                    if not (left < right):
+                        return False
+                elif isinstance(op, ast.LtE):
+                    if not (left <= right):
+                        return False
+                elif isinstance(op, ast.Gt):
+                    if not (left > right):
+                        return False
+                elif isinstance(op, ast.GtE):
+                    if not (left >= right):
+                        return False
+                elif isinstance(op, ast.In):
+                    if left not in right:
+                        return False
+                elif isinstance(op, ast.NotIn):
+                    if left in right:
+                        return False
+                else:
+                    raise ValueError(f"Forbidden comparison op: {type(op).__name__}")
+                left = right
+            return True
+        elif isinstance(node, ast.Subscript):
+            value = self._evaluate_ast_node(node.value, payload)
+            # Python 3.9+ 互換の Index 処理
+            index_node = node.slice
+            if hasattr(ast, "Index") and isinstance(index_node, ast.Index):
+                index_node = index_node.value
+            index = self._evaluate_ast_node(index_node, payload)
+            return value[index]
+
+        raise ValueError(f"Forbidden syntax: {type(node).__name__}")
+
 
     def get_due_workflows(
         self, tools_metadata: Dict[str, Any], now: datetime
