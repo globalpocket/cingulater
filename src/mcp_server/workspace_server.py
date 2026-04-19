@@ -26,7 +26,6 @@ import sys
 from typing import Any, Dict, List, Optional
 
 import yaml as pyyaml
-from loguru import logger
 
 from .base_server import create_mcp_server, mcp_tool_errorhandler, setup_logging
 
@@ -41,7 +40,9 @@ _sandbox = None
 def _get_sandbox():
     """SandboxManager のインスタンスを取得（初期化済みであること前提）"""
     if _sandbox is None:
-        raise RuntimeError("SandboxManager が初期化されていません。サーバー起動引数を確認してください。")
+        raise RuntimeError(
+            "SandboxManager が初期化されていません。サーバー起動引数を確認してください。"
+        )
     return _sandbox
 
 
@@ -207,10 +208,10 @@ async def create_dynamic_workflow(
         triggers: スケジュール実行等のトリガー定義リスト（例: [{'type': 'cron', 'value': '* * * * *'}])
     """
     sandbox = _get_sandbox()
-    
+
     # 書き出し先ディレクトリ（ワークスペース相対パス）
     wf_dir_rel = ".brwn/workflows"
-    
+
     # 1. ワークフロー YAML の構築
     nodes_def = {}
     for step in steps:
@@ -218,26 +219,26 @@ async def create_dynamic_workflow(
         prompt_file_name = f"node_{node_name}.md"
         nodes_def[node_name] = {
             "prompt_file": prompt_file_name,
-            "next": step.get("next", "END")
+            "next": step.get("next", "END"),
         }
-        
+
         # 2. 各ステップの Markdown プロンプトを書き出し
         md_content = step.get("prompt_content", "")
         md_path = f"{wf_dir_rel}/{prompt_file_name}"
         await sandbox.write_file(md_path, md_content)
-    
+
     workflow_def = {
         "description": description,
         "triggers": triggers or [],
         "start_node": steps[0]["node_name"] if steps else "NONE",
-        "nodes": nodes_def
+        "nodes": nodes_def,
     }
-    
+
     # 3. YAML ファイルの書き出し
     yaml_content = pyyaml.dump(workflow_def, allow_unicode=True, sort_keys=False)
     yaml_path = f"{wf_dir_rel}/{workflow_name}.yaml"
     await sandbox.write_file(yaml_path, yaml_content)
-    
+
     logger.info(f"Meta-Agent: Created workflow '{workflow_name}'")
     return f"Successfully created dynamic workflow: {workflow_name} ({yaml_path})"
 
@@ -253,6 +254,7 @@ async def create_dynamic_workflow(
 #         logger.info("Stopping Sandbox and internal MCP clients...")
 #         await _sandbox.stop()
 
+
 # サーバー起動エントリーポイント
 # ============================================================
 def _init_from_args():
@@ -262,7 +264,7 @@ def _init_from_args():
     if len(sys.argv) < 5:
         print(
             "Usage: python -m src.mcp.workspace_server <repo_path> <reference_path> <user_id> <group_id>",
-            file=sys.stderr
+            file=sys.stderr,
         )
         sys.exit(1)
 
@@ -279,11 +281,14 @@ def _init_from_args():
     reference_path = os.path.realpath(reference_path)
 
     from src.core.sandbox_manager import SandboxManager
+
     _sandbox = SandboxManager(user_id, group_id)
     _sandbox.set_workspace_root(repo_path)
     _sandbox.set_reference_root(reference_path)
 
-    logger.info(f"Workspace Server initialized: workspace={repo_path}, reference={reference_path}")
+    logger.info(
+        f"Workspace Server initialized: workspace={repo_path}, reference={reference_path}"
+    )
 
 
 if __name__ == "__main__":
