@@ -1,5 +1,7 @@
 from typing import Any, Dict
 
+from loguru import logger
+
 from src.core.state_manager import TaskState
 
 
