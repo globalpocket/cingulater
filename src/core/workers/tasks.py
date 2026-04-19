@@ -173,8 +173,6 @@ async def poll_mentions_task():
         mentions = await orch.gh_client.get_mentions_to_process()
 
         for m in mentions:
-            task_id = f"git_monitor_{m['repo_name'].replace('/', '_')}_{m['number']}"
- 
             # イベントペイロードを準備
             workflow_input = {
                 "repo_name": m["repo_name"],
