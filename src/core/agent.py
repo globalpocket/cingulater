@@ -16,7 +16,6 @@ class GitHubRateLimitException(Exception):
         super().__init__(message)
         self.reset_at = reset_at
 
-
 class GitHubClientWrapper:
     """
     GitHub 操作を提供するラッパー。
@@ -112,10 +111,6 @@ class GitHubClientWrapper:
             raise
 
 
-class TaskAbortedException(Exception):
-    """ユーザーによって Issue がクローズされた場合に投げられる例外"""
-
-    pass
 
 
 class AgentDeps:

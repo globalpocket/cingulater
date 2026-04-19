@@ -237,7 +237,8 @@ def _create_node_func(
         # ※ 実際にはセキュリティ上、必要最小限にするのが望ましいが、
         # ここでは強力な自律性を確保するため、利用可能な全 MCP ツールをバインドする。
         # Note: Pydantic-AI で外部ツールを動的に追加する仕組みを利用。
-        from src.core.orchestrator import global_orchestrator
+        from src.core.base import get_global_orchestrator
+        global_orchestrator = get_global_orchestrator()
 
         if global_orchestrator:
             all_tools = global_orchestrator.mcp_manager.get_all_tools()

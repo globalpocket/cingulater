@@ -6,7 +6,6 @@ from loguru import logger
 from src.core.agent import GitHubClientWrapper
 from src.core.config import get_settings
 from src.core.state_manager import TaskState
-from src.core.workers.tasks import repair_task
 
 
 async def governance_node(
@@ -34,6 +33,7 @@ async def governance_node(
         repo_name = state["task_id"].split("#")[0]
         issue_number = int(state["task_id"].split("#")[1])
         err_ctx = state.get("error_context", "Unknown error")
+        from src.core.workers.tasks import repair_task
         repair_task(state["task_id"], repo_name, issue_number, err_ctx)
         return {
             "status": "Waiting_Repair",

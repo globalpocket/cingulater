@@ -10,47 +10,29 @@ from loguru import logger
 
 from src.core.config import get_settings
 from src.core.trigger_manager import WorkflowTriggerManager
-from src.core.workers.pool import broker, schedule_source
+from src.core.workers.pool import broker
 from src.core.workflow_manager import WorkflowLoader
-
-
-# スケジュールの登録
-async def setup_schedules():
-    settings = get_settings()
-
-    # 1. メンション監視 (polling_interval_sec)
-    await poll_mentions_task.kiq().schedule(
-        schedule_source,
-        cron=f"*/{settings.agent.polling_interval_sec} * * * * *",  # 秒単位の cron (taskiq 支持)
-    )
-
-    # 2. LLM ヘルスチェック (1分)
-    await llm_health_check_task.kiq().schedule(schedule_source, cron="* * * * *")
-
-    # 3. リソース監視 (30秒)
-    await resource_monitor_task.kiq().schedule(schedule_source, cron="*/30 * * * * *")
-
-    # 4. マスタートリガー (1分)
-    await master_trigger_dispatcher.kiq().schedule(schedule_source, cron="* * * * *")
-
-    logger.info("All periodic tasks registered in Taskiq Scheduler source.")
-
 
 # プロセスごとに1つのオーケストレーターを使い回す
 _orchestrator = None
 
 
 async def get_orchestrator():
-    global _orchestrator
-    if _orchestrator is None:
-        # get_settings() は内部で BROWNIE_CONFIG を参照する
-        get_settings()
-        if not os.getenv("GITHUB_TOKEN"):
-            logger.error("FATAL: GITHUB_TOKEN not found in worker process.")
-        from src.core.orchestrator import Orchestrator
+    from src.core.base import get_global_orchestrator, set_global_orchestrator
+    
+    orch = get_global_orchestrator()
+    if orch is not None:
+        return orch
 
-        _orchestrator = Orchestrator(os.getenv("BROWNIE_CONFIG", "config/config.yaml"))
-    return _orchestrator
+    # get_settings() は内部で BROWNIE_CONFIG を参照する
+    get_settings()
+    if not os.getenv("GITHUB_TOKEN"):
+        logger.error("FATAL: GITHUB_TOKEN not found in worker process.")
+    
+    from src.core.orchestrator import Orchestrator
+    orch = Orchestrator(os.getenv("BROWNIE_CONFIG", "config/config.yaml"))
+    set_global_orchestrator(orch)
+    return orch
 
 
 async def _async_heartbeat(orch, task_id):

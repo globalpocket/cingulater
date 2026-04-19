@@ -9,13 +9,14 @@ import httpx
 import redis.asyncio as aioredis
 from loguru import logger
 
-from src.core.agent import GitHubClientWrapper, TaskAbortedException
+from src.core.agent import GitHubClientWrapper
+from src.core.base import TaskAbortedException, set_global_orchestrator
 from src.core.config import get_settings
 from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager
 from src.core.state_manager import StateManager
 
-global_orchestrator: Optional["Orchestrator"] = None
+# global_orchestrator は src.core.base に移動しました
 
 
 class Orchestrator:
@@ -67,8 +68,7 @@ class Orchestrator:
         os.makedirs(self.workspace_base, exist_ok=True)
         logger.info(f"Workspace base directory set to: {self.workspace_base}")
 
-        global global_orchestrator
-        global_orchestrator = self
+        set_global_orchestrator(self)
 
     def _increase_max_files(self):
         try:
@@ -83,8 +83,7 @@ class Orchestrator:
         """オーケストレーターの起動"""
         logger.info(f"Orchestrator starting (Phase 5). Build ID: {self.settings.build_id}")
 
-        global global_orchestrator
-        global_orchestrator = self
+        set_global_orchestrator(self)
 
         async with self.mcp_manager:
             # 必須 MCP サーバーの起動
@@ -98,7 +97,7 @@ class Orchestrator:
             await self.mcp_manager.start_governance_server()
 
             # Taskiq スケジュールの確立
-            from src.core.workers.tasks import setup_schedules
+            from src.core.workers.scheduler import setup_schedules
             await setup_schedules()
 
             # Worker Server の起動（Taskiq ワーカー & スケジューラのライフサイクル管理）
