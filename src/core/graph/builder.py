@@ -82,7 +82,7 @@ def create_brownie_graph(workflows: Dict, mcp_manager: Any):
             return "intent_alignment"
 
         # 外部の介入や待機が必要な場合はグラフを抜ける
-        if status == "Waiting_Human_Feedback":
+        if status in ["Waiting_Human_Feedback", "Waiting_Repair"]:
             return END
 
         return "governance"  # 自己修復ループ
