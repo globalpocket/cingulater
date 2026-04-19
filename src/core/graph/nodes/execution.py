@@ -5,16 +5,14 @@ from loguru import logger
 from src.core.state_manager import TaskState
 
 
-async def execution_delegation_node(state: TaskState) -> Dict[str, Any]:
-    """
-    Phase 3: Execution Delegation
-    Taskiq に実行タスクを投入する。
 async def execution_delegation_node(
     state: TaskState, mcp_manager: Any
 ) -> Dict[str, Any]:
     """
     Phase 3: Execution Delegation (実行委譲)
+    Taskiq に実行タスクを投入する。
     """
+
     print(f"--- Phase 3: Execution Delegation ({state['task_id']}) ---")
 
     # ワーカーの結果がまだ無い場合
