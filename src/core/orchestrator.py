@@ -46,7 +46,7 @@ class Orchestrator:
 
         # State Manager の初期化 (Redis を内部で使用)
         self.state_manager = StateManager()
-        self._workflow_app = self.state_manager.workflow_app
+        self._workflow_app = None
 
         # WorkflowLoader の初期化 (Phase 8: 純粋エンジン化)
         from src.core.workflow_manager import WorkflowLoader
@@ -109,7 +109,14 @@ class Orchestrator:
             logger.info("Taskiq Workers and Scheduler are online.")
 
             async with self.state_manager as sm:
-                self._workflow_app = sm.workflow_app
+                # ワークフローのコンパイル (司令塔が主導)
+                from src.core.graph.builder import compile_workflow
+                self._workflow_app = compile_workflow(
+                    workflows=self.dynamic_workflows,
+                    mcp_manager=self.mcp_manager,
+                    checkpointer=sm.saver
+                )
+
                 try:
                     while self.is_running:
                         await asyncio.sleep(1)
@@ -151,7 +158,7 @@ class Orchestrator:
                     task_id = hb.get("task_id")
                     logger.error(f"Task {task_id} STALLED. Revoking via Worker MCP...")
                     await self.mcp_manager.worker_client.call_tool("cancel_task", task_id=task_id)
-                    await self.state_manager.update_state(task_id, {"status": "Failed"}, as_node="intent_alignment")
+                    await self.update_state(task_id, {"status": "Failed"}, as_node="intent_alignment")
             
             await redis_client.aclose()
         except Exception as e:
@@ -199,8 +206,8 @@ class Orchestrator:
 
     async def _queue_task(self, task_id: str, repo_name: str, issue_number: int, comment_id: str, body: str):
         """Worker Controller 経由でタスクを投入"""
-        state = await self.state_manager.get_state(task_id)
-        payload = state.values if state.values else {}
+        state = await self.get_state(task_id)
+        payload = state if state else {}
         
         await self.mcp_manager.worker_controller_client.call_tool(
             "enqueue_task", 
@@ -239,10 +246,15 @@ class Orchestrator:
                 async def run_workflow():
                     locally_reported = set()  # 同一実行内の重複防止用ローカルメモリ
 
-                    async for event in self.state_manager.astream(task_id, input_data):
+                    async def astream_gen():
+                        config = {"configurable": {"thread_id": task_id}}
+                        async for event in self._workflow_app.astream(input_data, config=config):
+                            yield event
+
+                    async for event in astream_gen():
                         # 各イベント後の最新状態を取得
-                        current_state = await self.state_manager.get_state(task_id)
-                        state_reported = current_state.values.get("reported_nodes", [])
+                        current_state = await self.get_state(task_id)
+                        state_reported = current_state.get("reported_nodes", [])
                         if not isinstance(state_reported, list):
                             state_reported = []
 
@@ -251,10 +263,11 @@ class Orchestrator:
 
                         for node_name, output in event.items():
                             # 内部イベントの発火 (Phase 11: 自律的な再帰的フック)
-                            await self.trigger_manager.handle_event(
-                                f"on_{node_name}_completed",
-                                {"node": node_name, "output": output, "task_id": task_id},
-                            )
+                            if hasattr(self, "trigger_manager"):
+                                await self.trigger_manager.handle_event(
+                                    f"on_{node_name}_completed",
+                                    {"node": node_name, "output": output, "task_id": task_id},
+                                )
 
                             if node_name == "intent_alignment" and output.get(
                                 "intent_draft"
@@ -270,7 +283,7 @@ class Orchestrator:
                                         f"### 🔍 意図の確認と提案\n\n{draft}"
                                         + self.settings.footer,
                                     )
-                                    await self.state_manager.update_state(
+                                    await self.update_state(
                                         task_id,
                                         {
                                             "reported_nodes": list(
@@ -282,9 +295,9 @@ class Orchestrator:
                 await asyncio.wait_for(run_workflow(), timeout=600)
 
                 # 最終状態の報告
-                final_state = await self.state_manager.get_state(task_id)
-                final_status = final_state.values.get("status")
-                state_reported = final_state.values.get("reported_nodes", [])
+                final_state = await self.get_state(task_id)
+                final_status = final_state.get("status")
+                state_reported = final_state.get("reported_nodes", [])
                 if not isinstance(state_reported, list):
                     state_reported = []
 
@@ -295,13 +308,13 @@ class Orchestrator:
                     final_status == "WaitingForClarification"
                     and "WaitingForClarification" not in final_reported
                 ):
-                    plan = final_state.values.get("plan", "No plan.")
+                    plan = final_state.get("plan", "No plan.")
                     await self.gh_client.post_comment(
                         repo_name,
                         issue_number,
                         f"### 🛠 実行計画（承認待ち）\n\n{plan}" + self.settings.footer,
                     )
-                    await self.state_manager.update_state(
+                    await self.update_state(
                         task_id,
                         {
                             "reported_nodes": list(
@@ -310,13 +323,13 @@ class Orchestrator:
                         },
                     )
                 elif final_status == "Completed" and "Completed" not in final_reported:
-                    summary = final_state.values.get("final_summary", "Done.")
+                    summary = final_state.get("final_summary", "Done.")
                     await self.gh_client.post_comment(
                         repo_name,
                         issue_number,
                         f"### ✅ 完了報告\n\n{summary}" + self.settings.footer,
                     )
-                    await self.state_manager.update_state(
+                    await self.update_state(
                         task_id,
                         {"reported_nodes": list(final_reported.union({"Completed"}))},
                     )
@@ -329,13 +342,13 @@ class Orchestrator:
                     "### ⚠️ タイムアウトによる中断\n処理時間が制限（10分）を超えたため、安全のために実行を中断しました。特定の処理でループが発生したか、LLM の応答が停止した可能性があります。"
                     + self.settings.footer,
                 )
-                await self.state_manager.update_state(
+                await self.update_state(
                     task_id, {"status": "Failed"}, as_node="intent_alignment"
                 )
             except TaskAbortedException as tae:
                 logger.warning(f"Task {task_id} aborted by gate: {tae}")
                 # ユーザーが意図的にクローズしたため、Failed ではなく Skipped またはそのまま終了
-                await self.state_manager.update_state(
+                await self.update_state(
                     task_id, {"status": "Aborted"}, as_node="intent_alignment"
                 )
             except Exception as e:
@@ -348,6 +361,21 @@ class Orchestrator:
                     f"### ❌ 実行エラーが発生しました\n\n原因: {error_msg}\n内部的な問題により処理を継続できないか、リソースが不足しています。"
                     + self.settings.footer,
                 )
-                await self.state_manager.update_state(
+                await self.update_state(
                     task_id, {"status": "Failed"}, as_node="intent_alignment"
                 )
+
+    async def get_state(self, thread_id: str) -> dict:
+        """thread_id から最新の状態を取得する"""
+        if not self._workflow_app:
+            return {}
+        config = {"configurable": {"thread_id": thread_id}}
+        state = await self._workflow_app.aget_state(config)
+        return state.values if state else {}
+
+    async def update_state(self, thread_id: str, values: dict, as_node: Optional[str] = None):
+        """thread_id の状態を更新する"""
+        if not self._workflow_app:
+            return
+        config = {"configurable": {"thread_id": thread_id}}
+        return await self._workflow_app.aupdate_state(config, values, as_node=as_node)

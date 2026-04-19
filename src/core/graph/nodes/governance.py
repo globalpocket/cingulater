@@ -9,13 +9,24 @@ from src.core.state_manager import TaskState
 from src.core.workers.tasks import repair_task
 
 
-async def governance_node(state: TaskState) -> Dict[str, Any]:
+async def governance_node(
+    state: TaskState, workflows: Dict[str, Any], mcp_manager: Any
+) -> Dict[str, Any]:
     """
     Phase 4: Governance & Fail-Safe
     報告書（稟議書）の生成を GovernanceServer (MCP) へ委譲し、
     Core は GitHub への投稿とステート管理のみを行う。
     """
     logger.info(f"--- Phase 4: Governance & Ringi ({state['task_id']}) ---")
+
+    if "governance" not in workflows:
+        logger.error("Governance workflow is not available.")
+        return {
+            "status": "Failed",
+            "history": [{"node": "governance", "status": "error"}],
+        }
+
+    governance_wf = workflows["governance"]
 
     # 実行失敗かつ修復がまだの場合
     if state.get("status") == "Execution_Failed" and not state.get("ringi_document"):
@@ -33,20 +44,6 @@ async def governance_node(state: TaskState) -> Dict[str, Any]:
     current_status = state.get("status")
     if not state.get("governance_decision") and current_status != "WaitingForApproval":
         # 1. 稟議書の作成 (Phase 9: ワークフローへの委譲)
-        from src.core.orchestrator import global_orchestrator
-
-        if (
-            not global_orchestrator
-            or "governance" not in global_orchestrator.dynamic_workflows
-        ):
-            logger.error("Governance workflow is missing.")
-            return {
-                "status": "WaitingForApproval",
-                "history": [{"node": "governance", "status": "no_workflow_fallback"}],
-            }
-
-        governance_wf = global_orchestrator.dynamic_workflows["governance"]
-
         try:
             test_out = (
                 state.get("test_results", {}).get("stdout")
@@ -69,7 +66,7 @@ async def governance_node(state: TaskState) -> Dict[str, Any]:
 
             # 2. GitHub に投稿
             gh_token = os.getenv("GITHUB_TOKEN", "")
-            gh = GitHubClientWrapper(gh_token, global_orchestrator.mcp_manager)
+            gh = GitHubClientWrapper(gh_token, mcp_manager)
             repo_name = state["task_id"].split("#")[0]
             issue_number = int(state["task_id"].split("#")[1])
 

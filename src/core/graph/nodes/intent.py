@@ -3,20 +3,16 @@ from typing import Any, Dict
 from loguru import logger
 
 
-async def intent_alignment_node(state: Dict[str, Any]) -> Dict[str, Any]:
+async def intent_alignment_node(
+    state: Dict[str, Any], workflows: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     Phase 0: Intent Alignment Node
     ロジックを IntentInterpreterServer (MCP) へ委譲し、Core は状態遷移のみを担当する。
     """
     logger.info("--- Intent Alignment Node (Delegated to MCP) ---")
 
-    # グローバルオーケストレーターからワークフローを取得 (Phase 8)
-    from src.core.orchestrator import global_orchestrator
-
-    if (
-        not global_orchestrator
-        or "interpreter" not in global_orchestrator.dynamic_workflows
-    ):
+    if "interpreter" not in workflows:
         logger.error("Interpreter workflow is not available.")
         return {
             "status": "Phase0_WaitingForUserConfirmation",
@@ -27,7 +23,7 @@ async def intent_alignment_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "history": [{"node": "intent_alignment", "status": "error"}],
         }
 
-    interpreter_wf = global_orchestrator.dynamic_workflows["interpreter"]
+    interpreter_wf = workflows["interpreter"]
 
     try:
         # YAML ワークフローを実行

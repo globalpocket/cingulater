@@ -68,7 +68,10 @@ class StateManager:
         self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
         self._pool: Optional[redis.ConnectionPool] = None
         self._saver: Optional[AsyncRedisSaver] = None
-        self._workflow_app = None
+    @property
+    def saver(self) -> Optional[AsyncRedisSaver]:
+        """チェックポインタ（セーバー）を取得する"""
+        return self._saver
 
     async def connect(self):
         """チェックポインタに接続する（外部ドライバやツール用）"""
@@ -77,17 +80,12 @@ class StateManager:
                 f"Connecting to Redis Checkpointer at {self.redis_host}:{self.redis_port}"
             )
             url = f"redis://{self.redis_host}:{self.redis_port}"
-            # ソースコード定義(L88)に基づき redis_url を使用
             self._saver = AsyncRedisSaver(redis_url=url)
         return self
 
     async def __aenter__(self):
         """async with ステートメントでチェックポインタを有効化する"""
         await self.connect()
-        # ワークフローのコンパイル (循環参照を避けるためにメソッド内でインポート)
-        from src.core.graph.builder import compile_workflow
-
-        self._workflow_app = compile_workflow(checkpointer=self._saver)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -98,56 +96,14 @@ class StateManager:
             await self._pool.disconnect()
             self._pool = None
             self._saver = None
-            self._workflow_app = None
-
-    @property
-    def workflow_app(self):
-        """
-        コンパイル済みワークフローアプリケーションを取得する
-        """
-        if not self._workflow_app:
-            # チェックポインタなしでコンパイル
-            from src.core.graph.builder import compile_workflow
-
-            self._workflow_app = compile_workflow(checkpointer=self._saver)
-        return self._workflow_app
-
-    async def get_state(self, thread_id: str) -> Dict[str, Any]:
-        """指定した thread_id の最新状態を取得する"""
-        config = {"configurable": {"thread_id": thread_id}}
-        state = await self.workflow_app.aget_state(config)
-        return state.values if state else {}
 
     async def get_state_lightweight(self, thread_id: str) -> Dict[str, Any]:
         """
-        グラフのコンパイル（Orchestrator のロード）を行わずに、
-        チェックポインタから直接最新状態を取得する。
-        多重起動（密結合）を避けるために MCP サーバー等のドライバで使用する。
+        グラフのコンパイルを行わずに、チェックポインタから直接最新状態を取得する。
         """
+        if not self._saver:
+            await self.connect()
+
         config = {"configurable": {"thread_id": thread_id}}
         state = await self._saver.aget(config)
         return state.values if state else {}
-
-    async def get_current_status(self, thread_id: str) -> str:
-        """現在のステータス（Phase名など）を取得する"""
-        values = await self.get_state(thread_id)
-        return values.get("status", "Unknown")
-
-    async def is_terminal_state(self, thread_id: str) -> bool:
-        """タスクが完了または失敗状態にあるかを判定する"""
-        status = await self.get_current_status(thread_id)
-        return status in ["Completed", "Failed"]
-
-    async def update_state(
-        self, thread_id: str, values: Dict[str, Any], as_node: Optional[str] = None
-    ):
-        """状態を更新する"""
-        config = {"configurable": {"thread_id": thread_id}}
-        logger.debug(f"Updating state for thread {thread_id} (node: {as_node})")
-        return await self.workflow_app.aupdate_state(config, values, as_node=as_node)
-
-    async def astream(self, thread_id: str, input_data: Dict[str, Any]):
-        """ワークフローを非同期ストリームで実行する"""
-        config = {"configurable": {"thread_id": thread_id}}
-        async for event in self.workflow_app.astream(input_data, config=config):
-            yield event

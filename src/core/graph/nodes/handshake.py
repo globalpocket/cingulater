@@ -2,30 +2,25 @@ from typing import Any, Dict
 
 from src.core.state_manager import TaskState
 
+logger = logging.getLogger(__name__)
 
-async def dynamic_handshake_node(state: TaskState) -> Dict[str, Any]:
+
+async def dynamic_handshake_node(
+    state: TaskState, workflows: Dict[str, Any]
+) -> Dict[str, Any]:
     """
-    Phase 2: Dynamic Discovery & Handshake
-    実行エージェントのスキーマを取得し、実行計画とのマッピングを行う。
+    Phase 2: Handshake (動的プランニング)
     """
     print(f"--- Phase 2: Dynamic Handshake ({state['task_id']}) ---")
 
-    # グローバルオーケストレーターからワークフローを取得 (Phase 9: 深層ドメイン抽出)
-    from src.core.orchestrator import global_orchestrator
-
-    if (
-        not global_orchestrator
-        or "handshake" not in global_orchestrator.dynamic_workflows
-    ):
-        print("Error: Handshake workflow is missing.")
+    if "handshake" not in workflows:
+        logger.error("Handshake workflow is not available.")
         return {
-            "status": "Phase2_HandshakeDone",
-            "history": [
-                {"node": "dynamic_handshake", "status": "no_workflow_fallback"}
-            ],
+            "status": "Failed",
+            "history": [{"node": "dynamic_handshake", "status": "error"}],
         }
 
-    handshake_wf = global_orchestrator.dynamic_workflows["handshake"]
+    handshake_wf = workflows["handshake"]
 
     try:
         # Pydantic-AI ワークフローを実行し、ユーザーへの挨拶/ヒアリング内容を生成

@@ -10,7 +10,18 @@ async def completion_node(state: TaskState) -> Dict[str, Any]:
     """
     Final Phase: タスクの完了報告と PR 作成
     """
-    print(f"--- Final Phase: Completion ({state['task_id']}) ---")
+async def completion_node(
+    state: TaskState, workflows: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Phase 5: Completion (完了報告)
+    """
+    if "completion" not in workflows:
+        print("Error: Completion workflow is missing.")
+        return {
+            "status": "Completed",
+            "history": [{"node": "completion", "status": "no_workflow_fallback"}],
+        }
 
     gh = GitHubClientWrapper(os.getenv("GITHUB_TOKEN", ""))
     repo_name = state["task_id"].split("#")[0]
@@ -19,21 +30,7 @@ async def completion_node(state: TaskState) -> Dict[str, Any]:
     has_changes = state.get("has_changes", False)
     topic_branch = state.get("topic_branch")
 
-    # グローバルオーケストレーターからワークフローを取得 (Phase 9: 深層ドメイン抽出)
-    from src.core.orchestrator import global_orchestrator
-
-    if (
-        not global_orchestrator
-        or "completion" not in global_orchestrator.dynamic_workflows
-    ):
-        print("Error: Completion workflow is missing.")
-        # フォールバック: 最小限の報告を行う
-        return {
-            "status": "Completed",
-            "history": [{"node": "completion", "status": "no_workflow_fallback"}],
-        }
-
-    completion_wf = global_orchestrator.dynamic_workflows["completion"]
+    completion_wf = workflows["completion"]
 
     try:
         # Pydantic-AI ワークフローを実行し、修正サマリーと PR 本文を生成

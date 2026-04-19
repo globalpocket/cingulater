@@ -9,6 +9,11 @@ async def execution_delegation_node(state: TaskState) -> Dict[str, Any]:
     """
     Phase 3: Execution Delegation
     Taskiq に実行タスクを投入する。
+async def execution_delegation_node(
+    state: TaskState, mcp_manager: Any
+) -> Dict[str, Any]:
+    """
+    Phase 3: Execution Delegation (実行委譲)
     """
     print(f"--- Phase 3: Execution Delegation ({state['task_id']}) ---")
 
@@ -18,9 +23,7 @@ async def execution_delegation_node(state: TaskState) -> Dict[str, Any]:
         logger.info(f"Enqueuing execution_task for {state['task_id']} via MCP...")
 
         # グローバルオーケストレーターから MCP マネージャーを取得
-        from src.core.orchestrator import global_orchestrator
-
-        mgr = global_orchestrator.mcp_manager if global_orchestrator else None
+        mgr = mcp_manager
         client = mgr.worker_controller_client if mgr else None
 
         if not client:

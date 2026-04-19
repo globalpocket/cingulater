@@ -3,24 +3,20 @@ from typing import Any, Dict
 from src.core.state_manager import TaskState
 
 
-async def core_analysis_node(state: TaskState) -> Dict[str, Any]:
+async def core_analysis_node(
+    state: TaskState, workflows: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     Phase 1: Core Analysis (全方位分析)
     """
-    # グローバルオーケストレーターからワークフローを取得 (Phase 8: 純粋エンジン化)
-    from src.core.orchestrator import global_orchestrator
-
-    if (
-        not global_orchestrator
-        or "planner" not in global_orchestrator.dynamic_workflows
-    ):
+    if "planner" not in workflows:
         logger.error("Planner workflow is not available.")
         return {
             "status": "Failed",
             "history": [{"node": "core_analysis", "status": "error"}],
         }
 
-    planner_wf = global_orchestrator.dynamic_workflows["planner"]
+    planner_wf = workflows["planner"]
 
     try:
         # YAML ワークフローを実行し設計図 (Blueprint) を生成
