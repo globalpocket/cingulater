@@ -12,6 +12,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: brownie-queue
+    command: redis-server --requirepass ${REDIS_PASSWORD:-brownie_secure_pw}
     ports:
       - "6379:6379"
     volumes:

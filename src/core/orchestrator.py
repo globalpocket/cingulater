@@ -138,8 +138,10 @@ class Orchestrator:
 
     async def _resource_monitor_loop_job(self):
         try:
-            from src.core.workers.pool import REDIS_HOST, REDIS_PORT
-            redis_client = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT)
+            from src.core.workers.pool import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+            redis_client = aioredis.Redis(
+                host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD
+            )
             
             keys = await redis_client.keys("brownie:heartbeat:*")
             monitor_client = self.mcp_manager.resource_monitor_client

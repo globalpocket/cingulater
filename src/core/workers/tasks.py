@@ -44,9 +44,10 @@ async def _async_heartbeat(orch, task_id):
 
     import redis.asyncio as aioredis
 
-    from src.core.workers.pool import REDIS_HOST, REDIS_PORT
-
-    redis_client = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT)
+    from src.core.workers.pool import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD
+    redis_client = aioredis.Redis(
+        host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD
+    )
 
     while True:
         try:
