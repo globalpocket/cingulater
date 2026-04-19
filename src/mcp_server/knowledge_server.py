@@ -327,8 +327,8 @@ def _detect_tech_stack() -> dict:
             for marker, name in fw_markers.items():
                 if marker in content.lower():
                     stack["frameworks"].append(name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to parse pyproject.toml: {e}")
 
     pkg_json = os.path.join(_repo_path, "package.json")
     if os.path.exists(pkg_json):
@@ -347,8 +347,8 @@ def _detect_tech_stack() -> dict:
             for marker, name in js_fw.items():
                 if marker in deps:
                     stack["frameworks"].append(name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to parse package.json: {e}")
 
     go_mod = os.path.join(_repo_path, "go.mod")
     if os.path.exists(go_mod):
