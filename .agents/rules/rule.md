@@ -1,6 +1,5 @@
 ---
 trigger: always_on
-priority: high
 ---
 
 ## 自己否定の厳守
@@ -48,7 +47,7 @@ priority: high
     - **Analysis & Linting**: `Semgrep`, `ast-grep (sg)`, `Ruff`, `Black`, `Bandit`.
 - **Core Technologies**:
     - **Orchestration**: `Pydantic AI`, `LangGraph` (状態管理), `Huey` (非同期ワークフロー).
-    - **Perception Engine**: `DuckDB` (AST解析), `NetworkX` (依存グラフ分析), `ChromaDB` (ベクトル検索).
+    - **Perception Engine**: `NetworkX` (依存グラフ分析), `ChromaDB` (ベクトル検索).
     - **Safe Extraction**: `Instructor` (型安全な LLM 出力抽出).
     - **Parsing & Grammar**: `Tree-sitter` (多言語解析), `Outlines` / `XGrammar` (構造化出力制御).
     - **Connectivity**: `FastMCP` (MCPサーバー), `PyGithub` (GitHub API), `AnyIO` (非同期 I/O).
