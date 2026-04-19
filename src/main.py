@@ -150,15 +150,13 @@ def main(
     BROWNIE: Autonomous AI Coding Agent 🚀
     """
     config_file = config or os.getenv("BROWNIE_CONFIG", "config/config.yaml")
-    app = BrownieApp(config_file)
-    asyncio.run(app.run())
 
-if __name__ == "__main__":
-    typer.run(main)
-        if hasattr(os, "setpgrp"):
-            os.setpgrp()
-            logger.debug("Process group ID set to current PID.")
+    # プロセスグループの設定 (設計書 3.2 補足: 一括停止を容易にするため)
+    if hasattr(os, "setpgrp"):
+        os.setpgrp()
+        logger.debug("Process group ID set to current PID.")
 
+    try:
         app = BrownieApp(config_file)
         asyncio.run(app.run())
     except Exception:
