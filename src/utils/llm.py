@@ -2,19 +2,15 @@ import json
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 import httpx
 import litellm
 from loguru import logger
 from pydantic_ai.models.openai import OpenAIModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_delay,
-    wait_exponential,
-)
+
+# tenacity imports removed since they were only used in dead code
 
 # LiteLLM の基本設定
 litellm.telemetry = False
@@ -115,34 +111,6 @@ async def robust_response_hook(response: httpx.Response):
             logger.warning(f"Failed to apply robustness fixes to LLM response: {e}")
 
 
-async def wait_for_llm_ready(endpoint: str, timeout: int = 180):
-    if not endpoint or "http" not in endpoint:
-        return True
-
-    url = f"{endpoint.rstrip('/')}/models"
-    logger.info(f"Waiting for LLM server at {url} (timeout: {timeout}s)...")
-
-    async with httpx.AsyncClient(trust_env=False) as client:
-        try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_delay(timeout),
-                wait=wait_exponential(multiplier=1, min=2, max=10),
-                retry=retry_if_exception_type(
-                    (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)
-                ),
-            ):
-                with attempt:
-                    resp = await client.get(url, timeout=2.0)
-                    if resp.status_code == 200:
-                        logger.info(f"LLM server at {endpoint} is READY.")
-                        return True
-                    raise httpx.ReadTimeout(f"Server returned {resp.status_code}")
-        except Exception as e:
-            logger.error(f"LLM server at {endpoint} failed to become ready: {e}")
-            return False
-    return False
-
-
 def get_robust_model(model_name: str, base_url: Optional[str] = None) -> OpenAIModel:
     """
     LiteLLM を介して抽象化された Pydantic AI 用モデルを取得する。
@@ -165,24 +133,3 @@ def get_robust_model(model_name: str, base_url: Optional[str] = None) -> OpenAIM
     )
 
     return OpenAIModel(model_name, provider=provider)
-
-
-@AsyncRetrying(
-    stop=stop_after_delay(60),
-    wait=wait_exponential(multiplier=1, min=4, max=20),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
-async def litellm_completion(
-    model: str, messages: List[Dict[str, str]], **kwargs
-) -> Any:
-    """
-    LiteLLM を用いた単一の美しいインターフェース。
-    各種プロバイダへの振分けとリトライを統合。
-    """
-    try:
-        response = await litellm.acompletion(model=model, messages=messages, **kwargs)
-        return response
-    except Exception as e:
-        logger.error(f"LiteLLM completion failed: {e}")
-        raise e

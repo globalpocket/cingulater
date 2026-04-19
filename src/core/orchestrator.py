@@ -199,61 +199,6 @@ class Orchestrator:
         # 既存のロジックと同様のクリーンアップと Popen を実行
         pass
 
-    async def _poll_mentions(self):
-        """GitHub メンションの取得とタスク投入"""
-        try:
-            all_mentions = await self.gh_client.get_mentions_to_process()
-            for m in all_mentions:
-                task_id = f"{m['repo_name']}#{m['number']}"
-                if m["repo_name"] in self.settings.agent.exclude_repositories:
-                    continue
-
-                # Persistence MCP で状態確認
-                status = await self.mcp_manager.persistence_client.call_tool(
-                    "check_mention_status",
-                    mention_id=str(m.get("comment_id")),
-                    updated_at=m.get("updated_at"),
-                )
-                if status == "UNCHANGED":
-                    continue
-
-                await self._queue_task(
-                    task_id,
-                    m["repo_name"],
-                    m["number"],
-                    str(m.get("comment_id")),
-                    m.get("body"),
-                )
-                await self.mcp_manager.persistence_client.call_tool(
-                    "register_processed_mention", mention_data=m
-                )
-                await self.gh_client.mark_issue_notifications_as_read(
-                    m["repo_name"], m["number"]
-                )
-        except Exception as e:
-            logger.error(f"Polling failed: {e}")
-
-    async def _queue_task(
-        self,
-        task_id: str,
-        repo_name: str,
-        issue_number: int,
-        comment_id: str,
-        body: str,
-    ):
-        """Worker Controller 経由でタスクを投入"""
-        state = await self.get_state(task_id)
-        payload = state if state else {}
-
-        await self.mcp_manager.worker_controller_client.call_tool(
-            "enqueue_task",
-            task_type="analysis",
-            task_id=task_id,
-            repo_name=repo_name,
-            issue_number=issue_number,
-            payload=payload,
-        )
-
     async def _execute_task(
         self, task_id: str, repo_name: str, issue_number: int, payload: dict
     ):
