@@ -155,7 +155,7 @@ async def execute_workflow_task(workflow_name: str, input_data: Any = None):
         await orch._wait_for_llm_ready()
         async with orch.mcp_manager:
             logger.info(f"Running workflow function for {workflow_name}...")
-            result = await workflow_func(input_data=input_data)
+            await workflow_func(input_data=input_data)
             logger.info(f"✅ Workflow '{workflow_name}' finished.")
     except Exception as e:
         logger.error(f"Error in execute_workflow_task: {e}")
