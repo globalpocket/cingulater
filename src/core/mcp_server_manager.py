@@ -121,6 +121,8 @@ class MCPServerManager:
             "REDIS_PASSWORD": self.settings.redis.password,
             "REDIS_DB": str(self.settings.redis.db),
             "GITHUB_TOKEN": self.settings.github.token,
+            "CHROMADB_HOST": self.settings.chroma.host,
+            "CHROMADB_PORT": str(self.settings.chroma.port),
             "BROWNIE_DEBUG": "1" if self.settings.debug else "0",
         }
 

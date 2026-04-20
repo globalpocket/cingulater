@@ -14,8 +14,8 @@ class HistoryServer:
     """Vector DB (ChromaDB) へのアクセスを管理するクラス"""
 
     def __init__(self, persist_directory: Optional[str] = None):
-        host = os.getenv("CHROMADB_HOST", "localhost")
-        port = int(os.getenv("CHROMADB_PORT", "8000"))
+        host = os.environ["CHROMADB_HOST"]
+        port = int(os.environ["CHROMADB_PORT"])
         logger.info(f"Connecting to ChromaDB at {host}:{port}")
 
         try:

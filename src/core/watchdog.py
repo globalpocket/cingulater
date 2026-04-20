@@ -1,13 +1,12 @@
-#!/usr/bin/env python3
-import logging
 import os
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from logging.handlers import RotatingFileHandler
 from typing import Optional
+
+from loguru import logger
 
 # プロジェクトルートをパスに追加
 base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,17 +17,17 @@ log_dir = os.path.join(base_dir, "logs")
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "brownie.log")
 
-# ログ設定 (ファイルと標準出力の両方に出力)
-log_level = logging.DEBUG if os.environ.get("BROWNIE_DEBUG") == "1" else logging.INFO
-logging.basicConfig(
-    level=log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5),
-        logging.StreamHandler(sys.stdout),
-    ],
+# ログ設定 (Loguru への一本化)
+log_level = "DEBUG" if os.environ.get("BROWNIE_DEBUG") == "1" else "INFO"
+logger.remove()
+log_format = (
+    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+    "<level>{level: <8}</level> | "
+    "<cyan>{name}</cyan> - <level>{message}</level>"
 )
-logger = logging.getLogger("brownie.watchdog")
+logger.add(sys.stdout, level=log_level, format=log_format)
+logger.add(log_file, rotation="10 MB", retention=5, level=log_level)
+# Watchdog は独立したプロセスとして起動されるため、ここで loguru の初期設定を行う
 
 
 class Watchdog:
@@ -159,8 +158,8 @@ class Watchdog:
         logger.info(f"Restarting main process (Attempt: {self.crash_count + 1})...")
 
         venv_python = os.path.join(base_dir, ".venv", "bin", "python")
-        # メインプロセスを起動 (将来的な拡張の余地を残す)
-        self.process = subprocess.Popen([venv_python, self.main_script], cwd=base_dir)
+        # メインプロセスを起動 (venv_python は固定パスのため安全)
+        self.process = subprocess.Popen([venv_python, self.main_script], cwd=base_dir)  # nosec B603
 
         self.crash_count += 1
         self.last_survival_time = time.time()

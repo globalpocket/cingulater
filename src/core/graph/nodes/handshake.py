@@ -1,9 +1,8 @@
-import logging
 from typing import Any, Dict
 
-from src.core.state_manager import TaskState
+from loguru import logger
 
-logger = logging.getLogger(__name__)
+from src.core.state_manager import TaskState
 
 
 async def dynamic_handshake_node(
@@ -12,7 +11,7 @@ async def dynamic_handshake_node(
     """
     Phase 2: Handshake (動的プランニング)
     """
-    print(f"--- Phase 2: Dynamic Handshake ({state['task_id']}) ---")
+    logger.info(f"--- Phase 2: Dynamic Handshake ({state['task_id']}) ---")
 
     if "handshake" not in workflows:
         logger.error("Handshake workflow is not available.")
@@ -54,7 +53,7 @@ async def dynamic_handshake_node(
             "history": [{"node": "dynamic_handshake", "status": "completed"}],
         }
     except Exception as e:
-        print(f"Handshake failed: {e}")
+        logger.error(f"Handshake failed: {e}")
         return {
             "status": "Phase2_HandshakeDone",
             "history": [{"node": "dynamic_handshake", "status": "failed_with_error"}],

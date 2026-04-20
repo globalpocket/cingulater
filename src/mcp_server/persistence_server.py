@@ -10,11 +10,11 @@ from .base_server import create_mcp_server, mcp_tool_errorhandler
 
 mcp = create_mcp_server("Persistence Server")
 
-# --- Redis 設定 ---
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "brownie_secure_pw")
+# --- Redis 設定 (Orchestrator からの注入を必須化) ---
+REDIS_HOST = os.environ["REDIS_HOST"]
+REDIS_PORT = int(os.environ["REDIS_PORT"])
+REDIS_DB = int(os.environ["REDIS_DB"])
+REDIS_PASSWORD = os.environ["REDIS_PASSWORD"]
 
 _redis_client: Optional[redis.Redis] = None
 

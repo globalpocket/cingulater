@@ -59,6 +59,11 @@ class RedisSettings(BaseSettings):
     password: str = "brownie_secure_pw"
 
 
+class ChromaSettings(BaseSettings):
+    host: str = "localhost"
+    port: int = 8000
+
+
 class GitHubSettings(BaseSettings):
     token: str = ""
 
@@ -73,6 +78,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = LLMSettings()
     workspace: WorkspaceSettings = WorkspaceSettings()
     redis: RedisSettings = RedisSettings()
+    chroma: ChromaSettings = ChromaSettings()
     github: GitHubSettings = GitHubSettings()
 
     @classmethod
@@ -101,6 +107,11 @@ class Settings(BaseSettings):
                         "host": os.getenv("REDIS_HOST", "localhost"),
                         "port": int(os.getenv("REDIS_PORT", "6379")),
                         "password": os.getenv("REDIS_PASSWORD", "brownie_secure_pw"),
+                    }
+                if field_name == "chroma":
+                    return {
+                        "host": os.getenv("CHROMADB_HOST", "localhost"),
+                        "port": int(os.getenv("CHROMADB_PORT", "8000")),
                     }
                 if field_name == "debug":
                     return os.getenv("BROWNIE_DEBUG") == "1"
@@ -134,12 +145,13 @@ class Settings(BaseSettings):
         try:
             project_root = Path(__file__).parent.parent.parent
             git_path = shutil.which("git") or "git"
+            # 引数は完全にリテラルであり、インジェクションの余地はないため nosec 付与
             build_id = (
                 subprocess.check_output(
                     [git_path, "rev-parse", "--short", "HEAD"],
                     cwd=project_root,
                     stderr=subprocess.DEVNULL,
-                )
+                )  # nosec B603
                 .decode("utf-8")
                 .strip()
             )
