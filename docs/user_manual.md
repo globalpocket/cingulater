@@ -48,61 +48,50 @@ Orchestrator（司令塔）と Worker（実行役）を起動します。
 
 ---
 
-## 3. IDE 連携 (MCP Server としての利用)
-
-Brownie のツール群（セマンティック検索、AST解析、サンドボックス実行など）は、MCP に対応した IDE（Cursor、VS Code、Claude Desktop など）から直接呼び出すことができます。
-
-### 3.1 設定例 (Claude Desktop / Cursor)
-IDE の MCP 設定（`config.json` 等）に以下のサーバーを追加することで、エージェントが提供する高度な解析機能を人間が直接利用できます。
-
-**Knowledge Server (コード解析・検索):**
-```json
-"brownie-knowledge": {
-  "command": "python",
-  "args": [
-    "-m", "src.mcp_server.knowledge_server",
-    "/path/to/your/repo",
-    "~/.local/share/brownie/memory",
-    "your_repo_name"
-  ],
-  "env": {
-    "PYTHONPATH": "/absolute/path/to/brownie"
-  }
-}
-```
-
-**Workspace Server (セキュアな書き換え・実行):**
-```json
-"brownie-workspace": {
-  "command": "python",
-  "args": [
-    "-m", "src.mcp_server.workspace_server",
-    "/path/to/your/repo",
-    "/path/to/reference/code",
-    "1000", "1000"
-  ],
-  "env": {
-    "PYTHONPATH": "/absolute/path/to/brownie"
-  }
-}
-```
-*※注: `/path/to/...` 部分はお使いの環境の絶対パスに、`1000` は Linux/Mac のユーザー ID に置き換えてください。*
-
----
-
-## 4. GitHub との連携ワークフロー
+## 3. GitHub との連携ワークフロー
 
 Brownie は主に GitHub の Issue をトリガーとして動作します。
 
-### 4.1 タスクの投入方法
+### 3.1 タスクの投入方法
 1.  **Issue の作成**: 管理対象のリポジトリで Issue を作成します。
 2.  **ラベルの付与**: `brownie` ラベルを付与するか、Issue 内で `@brownie` をメンションします。
 3.  **自動検知**: Orchestrator が Issue を検知し、自律的な解析を開始します。
 
-### 4.2 AI との対話
+### 3.2 AI との対話
 *   **意図の確認**: 解析完了後、Brownie は Issue に「実行計画の提案」をコメントします。
 *   **承認と指示**: ユーザーがコメントで「y」や「実行してください」と返信すると、実装フェーズに進みます。
 *   **PR の作成**: 実装と検証（テスト）が完了すると、自動的に Pull Request が作成されます。
+
+---
+
+## 4. 外部 AI エージェントとの連携 (Antigravity / MCP)
+
+Brownie は、他の高度な AI エージェント（Antigravity や Claude Desktop など）に「専門的な開発機能」を貸し出すための **Brownie Agent Server** を提供しています。
+
+これを導入することで、普段お使いの AI エージェントに「Brownie にこの修正を頼んでおいて」と指示するだけで、GitHub 上で自律的な作業を開始させることができます。
+
+### 4.1 設定方法 (Antigravity 例)
+ユーザー設定の `mcp_config.json` に以下のサーバー定義を追加します。
+
+```json
+{
+  "mcpServers": {
+    "brownie": {
+      "command": "/absolute/path/to/brownie/.venv/bin/python",
+      "args": ["-m", "src.mcp_server.brownie_agent_server"],
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/brownie",
+        "REDIS_HOST": "localhost"
+      }
+    }
+  }
+}
+```
+*※注: パスはご自身の環境の絶対パスに置き換えてください。*
+
+### 4.2 利用可能なツール
+*   **`submit_task`**: 指定したリポジトリと Issue 番号に対して、Brownie に解析・修正を依頼します。
+*   **`get_task_status`**: 投入したタスクが現在どのような状態（解析中、承認待ち、完了など）かを取得します。
 
 ---
 
@@ -127,13 +116,6 @@ Brownie は主に GitHub の Issue をトリガーとして動作します。
 ./bin/brwn logs
 ```
 個別のコンポーネントのログは `logs/` ディレクトリ配下に格納されています。
-
-### プロセスの強制クリーンアップ
-正常に `stop` できない場合は、以下のスクリプトで関連プロセスを一掃できます。
-```bash
-./bin/unsetup.sh
-```
-*※注: この操作はモデルキャッシュ以外の環境を初期化するため、再起動には `./bin/setup.sh` が必要です。*
 
 ---
 > 📅 **最終更新日**: 2026-04-20
