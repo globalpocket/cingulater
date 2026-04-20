@@ -7,9 +7,10 @@ import networkx as nx
 import tree_sitter_go
 import tree_sitter_javascript
 import tree_sitter_python
+import tree_sitter_rust
 import tree_sitter_typescript
 from loguru import logger
-from tree_sitter import Language, Parser
+from tree_sitter import Language, Parser, Query, QueryCursor
 
 
 class FlowTracer:
@@ -33,6 +34,8 @@ class FlowTracer:
             parsers[".tsx"] = Parser(ts_lang)
             go_lang = Language(tree_sitter_go.language())
             parsers[".go"] = Parser(go_lang)
+            rs_lang = Language(tree_sitter_rust.language())
+            parsers[".rs"] = Parser(rs_lang)
         except Exception as e:
             logger.warning(f"Tree-sitter パーサーの初期化に失敗しました: {e}")
         return parsers
@@ -62,68 +65,68 @@ class FlowTracer:
                 ),
                 ".ts": (
                     "(function_declaration name: (identifier) @name) "
-                    "(class_declaration name: (identifier) @name) "
-                    "(interface_declaration name: (identifier) @name)"
+                    "(class_declaration name: (type_identifier) @name) "
+                    "(interface_declaration name: (type_identifier) @name)"
                 ),
                 ".tsx": (
                     "(function_declaration name: (identifier) @name) "
-                    "(class_declaration name: (identifier) @name)"
+                    "(class_declaration name: (type_identifier) @name)"
                 ),
                 ".go": (
                     "(function_declaration name: (identifier) @name) "
-                    "(type_spec name: (identifier) @name)"
+                    "(type_spec name: (type_identifier) @name)"
+                ),
+                ".rs": (
+                    "(function_item name: (identifier) @name) "
+                    "(struct_item name: (type_identifier) @name) "
+                    "(enum_item name: (type_identifier) @name) "
+                    "(trait_item name: (type_identifier) @name)"
                 ),
             }
 
             query_str = queries.get(ext)
             if query_str:
-                query = parser.language.query(query_str)
-                captures = query.captures(tree.root_node)
+                query = Query(parser.language, query_str.strip())
+                cursor = QueryCursor(query)
+                captures = cursor.captures(tree.root_node)
 
-                for node, tag in captures:
-                    self._add_symbol(
-                        node.text.decode("utf8"),
-                        file_path,
-                        "func" if tag == "name" else "class",  # 簡易判定
-                        node.start_point[0] + 1,
-                        node.end_point[0] + 1,
-                    )
+                for tag, nodes in captures.items():
+                    for node in nodes:
+                        symbol_text = node.text.decode("utf8")
+                        self._add_symbol(
+                            symbol_text,
+                            file_path,
+                            "func" if tag == "name" else "class",
+                            node.start_point[0] + 1,
+                            node.end_point[0] + 1,
+                        )
 
             import_queries = {
-                ".py": """
-                    (import_statement (dotted_name) @name)
-                    (import_from_statement module_name: (dotted_name) @name)
-                """,
-                ".go": """
-                    (import_spec path: (string_literal) @name)
-                """,
-                ".ts": """
-                    (import_declaration source: (string_literal) @name)
-                """,
-                ".tsx": """
-                    (import_declaration source: (string_literal) @name)
-                """,
-                ".js": """
-                    (import_declaration source: (string_literal) @name)
-                """,
-                ".jsx": """
-                    (import_declaration source: (string_literal) @name)
-                """,
-                ".rs": """
-                    (use_declaration argument: (scoped_identifier) @name)
-                    (use_declaration argument: (identifier) @name)
-                """,
+                ".py": (
+                    "(import_statement (dotted_name) @name) "
+                    "(import_from_statement module_name: (dotted_name) @name)"
+                ),
+                ".go": "(import_spec path: (_) @name)",
+                ".ts": "(import_statement source: (string) @name)",
+                ".tsx": "(import_statement source: (string) @name)",
+                ".js": "(import_statement source: (string) @name)",
+                ".jsx": "(import_statement source: (string) @name)",
+                ".rs": (
+                    "(use_declaration argument: (scoped_identifier) @name) "
+                    "(use_declaration argument: (identifier) @name)"
+                ),
             }
 
             import_query_str = import_queries.get(ext)
             if import_query_str:
-                iq = parser.language.query(import_query_str)
-                i_captures = iq.captures(tree.root_node)
-                for i_node, _ in i_captures:
-                    target_module = i_node.text.decode("utf8")
-                    # 自プロジェクト内のインポート（簡易判定: src 始まり等）
-                    # ここでは一旦、ファイル間の緩い結合として登録
-                    self.graph.add_edge(file_path, target_module, type="depends_on")
+                iq = Query(parser.language, import_query_str)
+                i_cursor = QueryCursor(iq)
+                i_captures = i_cursor.captures(tree.root_node)
+                for i_tag, i_nodes in i_captures.items():
+                    for i_node in i_nodes:
+                        # TypeScript 等の引用符を含むノードへの対応
+                        target_module = i_node.text.decode("utf8")
+                        self.graph.add_edge(file_path, target_module, type="depends_on")
 
         except Exception as e:
             logger.error(f"Error scanning file {file_path}: {e}")
@@ -138,7 +141,7 @@ class FlowTracer:
             src_path if os.path.exists(src_path) else self.repo_path
         )
 
-        valid_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".go"}
+        valid_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs"}
 
         for root, _, files in os.walk(target_root):
             if any(
