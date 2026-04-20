@@ -89,7 +89,22 @@ class FlowTracer:
                         node.end_point[0] + 1,
                     )
 
-            # TODO: インポート依存関係の抽出 (tree-sitter クエリによる一般化)
+            import_queries = {
+                ".py": """
+                    (import_statement (dotted_name) @name)
+                    (import_from_statement module_name: (dotted_name) @name)
+                """,
+            }
+
+            import_query_str = import_queries.get(ext)
+            if import_query_str:
+                iq = parser.language.query(import_query_str)
+                i_captures = iq.captures(tree.root_node)
+                for i_node, _ in i_captures:
+                    target_module = i_node.text.decode("utf8")
+                    # 自プロジェクト内のインポート（簡易判定: src 始まり等）
+                    # ここでは一旦、ファイル間の緩い結合として登録
+                    self.graph.add_edge(file_path, target_module, type="depends_on")
 
         except Exception as e:
             logger.error(f"Error scanning file {file_path}: {e}")
