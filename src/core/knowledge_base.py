@@ -94,6 +94,21 @@ class FlowTracer:
                     (import_statement (dotted_name) @name)
                     (import_from_statement module_name: (dotted_name) @name)
                 """,
+                ".go": """
+                    (import_spec path: (string_literal) @name)
+                """,
+                ".ts": """
+                    (import_declaration source: (string_literal) @name)
+                """,
+                ".tsx": """
+                    (import_declaration source: (string_literal) @name)
+                """,
+                ".js": """
+                    (import_declaration source: (string_literal) @name)
+                """,
+                ".jsx": """
+                    (import_declaration source: (string_literal) @name)
+                """,
             }
 
             import_query_str = import_queries.get(ext)
