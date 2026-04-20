@@ -21,31 +21,33 @@ class WorkflowTriggerManager:
     def __init__(self, project_root: Optional[Path] = None):
         self.project_root = project_root or Path(os.getcwd())
 
-    async def handle_event(self, event_type: str, payload: Dict[str, Any]):
+    async def handle_event(
+        self,
+        event_type: str,
+        payload: Dict[str, Any],
+        dynamic_workflows: Optional[Dict[str, Any]] = None,
+        executor_func: Optional[Any] = None,
+    ):
         """
         イベントを受け取り、規約（Convention）または各ワークフロー内の定義に基づいてアクションを実行する。
         """
         logger.info(f"Handling event: {event_type}")
 
+        if not dynamic_workflows:
+            return
+
         # 1. 規約ベースのルーティング (Convention over Configuration)
         # イベント名と同名のワークフローが存在すれば、それを実行する
-        from src.core.orchestrator import global_orchestrator
-
-        if global_orchestrator and event_type in global_orchestrator.dynamic_workflows:
-            from src.core.workers.tasks import execute_workflow_task
-
+        if event_type in dynamic_workflows:
             logger.info(
                 f"✨ Convention matched: Routing event '{event_type}' "
                 "directly to its namesake workflow."
             )
-            await execute_workflow_task.kiq(event_type, input_data=payload)
+            if executor_func:
+                await executor_func(event_type, input_data=payload)
             return
 
-        # 2. 各ワークフロー定義に埋め込まれたトリガーに基づくルーティング
-        if not global_orchestrator:
-            return
-
-        for wf_name, tool in global_orchestrator.dynamic_workflows.items():
+        for wf_name, tool in dynamic_workflows.items():
             triggers = getattr(tool, "triggers", [])
             for trigger in triggers:
                 # 'event' タイプのトリガーであり、かつイベント名（value）が
@@ -61,13 +63,12 @@ class WorkflowTriggerManager:
                 if not is_matched:
                     continue
 
-                from src.core.workers.tasks import execute_workflow_task
-
                 logger.info(
                     f"🚀 Routing event '{event_type}' to workflow '{wf_name}' "
                     "via internal trigger."
                 )
-                await execute_workflow_task.kiq(wf_name, input_data=payload)
+                if executor_func:
+                    await executor_func(wf_name, input_data=payload)
 
     # --- Legacy Compat / Cron Support ---
     def check_cron_trigger(self, cron_expr: str, now: datetime) -> bool:

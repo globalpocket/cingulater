@@ -85,6 +85,7 @@ class WorkflowRegistry:
     def __init__(
         self,
         project_root: Path,
+        mcp_manager: Optional[Any] = None,
         workspace_root: Optional[Path] = None,
         config_path: Optional[str] = None,
     ):
@@ -93,6 +94,7 @@ class WorkflowRegistry:
         self._mcp_tool_names: List[str] = []
         self.project_root = project_root
         self.workspace_root = workspace_root
+        self.mcp_manager = mcp_manager
         self.settings = get_settings(config_path)
 
     def set_mcp_tools(self, mcp_tool_names: List[str]):
@@ -207,18 +209,16 @@ class WorkflowRegistry:
             )
             agent = Agent(model, deps_type=WorkflowDeps)
 
-            from src.core.base import get_global_orchestrator
-
-            gorch = get_global_orchestrator()
-            if gorch:
-                all_tools = gorch.mcp_manager.get_all_tools()
+            mcp_manager = self.mcp_manager
+            if mcp_manager:
+                all_tools = mcp_manager.get_all_tools()
                 for tool_node in all_tools:
 
                     def _make_mcp_tool(node):
                         async def mcp_tool_wrapper(
                             ctx: RunContext[WorkflowDeps], **kwargs
                         ):
-                            return await gorch.mcp_manager.call_tool_by_name(
+                            return await mcp_manager.call_tool_by_name(
                                 node.name, **kwargs
                             )
 
@@ -271,13 +271,18 @@ class WorkflowLoader:
     def __init__(
         self,
         project_root: Path,
+        mcp_manager: Optional[Any] = None,
         workspace_root: Optional[Path] = None,
         config_path: Optional[str] = None,
     ):
         self.project_root = project_root
         self.workspace_root = workspace_root
+        self.mcp_manager = mcp_manager
         self.registry = WorkflowRegistry(
-            project_root, workspace_root, config_path=config_path
+            project_root,
+            mcp_manager=mcp_manager,
+            workspace_root=workspace_root,
+            config_path=config_path,
         )
 
     def load_all(self, mcp_tool_names: List[str] = None):
@@ -299,7 +304,10 @@ class WorkflowLoader:
     def reload(self, mcp_tool_names: List[str] = None):
         logger.info("Reloading workflows and refreshing registry...")
         self.registry = WorkflowRegistry(
-            self.project_root, self.workspace_root, config_path=None
+            self.project_root,
+            mcp_manager=self.mcp_manager,
+            workspace_root=self.workspace_root,
+            config_path=None,
         )
         return self.load_all(mcp_tool_names=mcp_tool_names)
 

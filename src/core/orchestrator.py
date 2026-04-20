@@ -10,7 +10,7 @@ import redis.asyncio as aioredis
 from loguru import logger
 
 from src.core.agent import GitHubClientWrapper
-from src.core.base import TaskAbortedException, set_global_orchestrator
+from src.core.base import TaskAbortedException
 from src.core.config import get_settings
 from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager
@@ -60,10 +60,17 @@ class Orchestrator:
         from src.core.workflow_manager import WorkflowLoader
 
         self.workflow_loader = WorkflowLoader(
-            Path(self.project_root), Path(self.workspace_base)
+            Path(self.project_root),
+            mcp_manager=self.mcp_manager,
+            workspace_root=Path(self.workspace_base),
         )
         # 全てのワークフロー定義 (YAML/MD) をロード
         self.dynamic_workflows = self.workflow_loader.load_all()
+
+        # TriggerManager の初期化 (Phase 10: 規約ベースのディスパッチ)
+        from src.core.trigger_manager import WorkflowTriggerManager
+
+        self.trigger_manager = WorkflowTriggerManager(Path(self.project_root))
 
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self._llm_startup_lock = asyncio.Lock()
@@ -74,8 +81,6 @@ class Orchestrator:
         self.workspace_base = os.path.expanduser(self.settings.workspace.base_dir)
         os.makedirs(self.workspace_base, exist_ok=True)
         logger.info(f"Workspace base directory set to: {self.workspace_base}")
-
-        set_global_orchestrator(self)
 
     def _increase_max_files(self):
         try:
@@ -92,8 +97,6 @@ class Orchestrator:
             f"Orchestrator starting (Phase 5). Build ID: {self.settings.build_id}"
         )
 
-        set_global_orchestrator(self)
-
         async with self.mcp_manager:
             # 必須 MCP サーバーの起動
             await self.mcp_manager.start_github_sdk_server()
@@ -104,11 +107,6 @@ class Orchestrator:
             await self.mcp_manager.start_persistence_server()
             await self.mcp_manager.start_intent_interpreter_server()
             await self.mcp_manager.start_governance_server()
-
-            # Taskiq スケジュールの確立
-            from src.core.workers.scheduler import setup_schedules
-
-            await setup_schedules()
 
             # Worker Server の起動（Taskiq ワーカー & スケジューラのライフサイクル管理）
             worker_client = await self.mcp_manager.start_worker_server()
@@ -241,7 +239,12 @@ class Orchestrator:
         pass
 
     async def _execute_task(
-        self, task_id: str, repo_name: str, issue_number: int, payload: dict
+        self,
+        task_id: str,
+        repo_name: str,
+        issue_number: int,
+        payload: dict,
+        executor_func: Optional[Any] = None,
     ):
         """タスクキューのワーカーから呼び出される実行実体"""
         logger.info(f"==> _execute_task STARTED for {task_id} (Issue #{issue_number})")
@@ -288,8 +291,8 @@ class Orchestrator:
                         reported = set(state_reported).union(locally_reported)
 
                         for node_name, output in event.items():
-                            # 内部イベントの発火 (Phase 11: 自律的な再帰的フック)
-                            if hasattr(self, "trigger_manager"):
+                            # 内部イベントの発火 (Phase 11: 自律的な再帰目フック)
+                            if self.trigger_manager:
                                 await self.trigger_manager.handle_event(
                                     f"on_{node_name}_completed",
                                     {
@@ -297,6 +300,8 @@ class Orchestrator:
                                         "output": output,
                                         "task_id": task_id,
                                     },
+                                    dynamic_workflows=self.dynamic_workflows,
+                                    executor_func=executor_func,
                                 )
 
                             if node_name == "intent_alignment" and output.get(

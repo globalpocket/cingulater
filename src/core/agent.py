@@ -215,7 +215,9 @@ class CoderAgent:
         workspace_root = (
             Path(workspace_context.repo_path) if workspace_context else None
         )
-        self.workflow_loader = WorkflowLoader(project_root, workspace_root)
+        self.workflow_loader = WorkflowLoader(
+            project_root, mcp_manager=mcp_manager, workspace_root=workspace_root
+        )
         # 動的ツールのロード (MCPツールとの重複チェックは同期のため実行)
         self.workflow_loader.load_all(config=config)
 

@@ -1,8 +1,9 @@
 ---
 trigger: always_on
 generationConfig:
-  temperature: 0.1
+  temperature: 0.2
   topK: 2
+  topP: 0.9
 ---
 
 ## 自己否定の厳守

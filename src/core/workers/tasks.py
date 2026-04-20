@@ -18,23 +18,15 @@ _orchestrator = None
 
 
 async def get_orchestrator():
-    from src.core.base import get_global_orchestrator, set_global_orchestrator
-
-    orch = get_global_orchestrator()
-    if orch is not None:
-        return orch
-
-    settings = get_settings()
-    if not settings.github.token:
-        logger.error("FATAL: github.token not found in settings (worker process).")
+    global _orchestrator
+    if _orchestrator is not None:
+        return _orchestrator
 
     from src.core.orchestrator import Orchestrator
 
-    # get_settings().config_path があれば理想的だが、現状は環境変数かデフォルト
     config_file = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
-    orch = Orchestrator(config_file)
-    set_global_orchestrator(orch)
-    return orch
+    _orchestrator = Orchestrator(config_file)
+    return _orchestrator
 
 
 async def _async_heartbeat(orch, task_id):
@@ -88,7 +80,13 @@ async def analysis_task(
             try:
                 # 実際のタスク実行
                 await asyncio.wait_for(
-                    orch._execute_task(task_id, repo_name, issue_number, payload),
+                    orch._execute_task(
+                        task_id,
+                        repo_name,
+                        issue_number,
+                        payload,
+                        executor_func=execute_workflow_task.kiq,
+                    ),
                     timeout=600,
                 )
             finally:
@@ -175,7 +173,12 @@ async def poll_mentions_task():
                 f"🔔 Dispatching event 'on_github_mention' "
                 f"for {m['repo_name']}#{m['number']}"
             )
-            await trigger_manager.handle_event("on_github_mention", workflow_input)
+            await trigger_manager.handle_event(
+                "on_github_mention",
+                workflow_input,
+                orch.dynamic_workflows,
+                executor_func=execute_workflow_task.kiq,
+            )
 
     except GitHubRateLimitError as e:
         # Taskiq の遅延機能を利用して、リセット時刻まで待機するように再スケジュール

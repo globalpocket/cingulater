@@ -102,7 +102,12 @@ class BrownieApp:
             loop.add_signal_handler(s, lambda: asyncio.create_task(self.shutdown()))
 
         try:
-            # 1. 起動
+            # 1. スケジュールのセットアップ (オーケストレーターから分離)
+            from src.core.workers.scheduler import setup_schedules
+
+            await setup_schedules()
+
+            # 2. 起動
             orchestrator_task = asyncio.create_task(self.orchestrator.start())
 
             # 2. 定期的な生存信号（Watchdog向け）
