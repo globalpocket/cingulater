@@ -109,6 +109,10 @@ class FlowTracer:
                 ".jsx": """
                     (import_declaration source: (string_literal) @name)
                 """,
+                ".rs": """
+                    (use_declaration argument: (scoped_identifier) @name)
+                    (use_declaration argument: (identifier) @name)
+                """,
             }
 
             import_query_str = import_queries.get(ext)
