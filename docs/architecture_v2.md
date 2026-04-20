@@ -1,24 +1,31 @@
-# Brownie Architecture V2: The Decoupled Reasoning Engine
+# Brownie Architecture V2: Functional Block Definition
 
-## 1. Visual Overview
-Brownie V2 は、コアとなる推論エンジンを外部プラットフォーム（GitHub 等）から完全に分離し、すべてのインフラ操作を **MCP (Model Context Protocol)** という「神経系」を介して実行する、主権型アーキテクチャを採用しています。
+## 1. システム全体構造
+Brownie V2 は、制御層（Core）と実行層（MCP）を物理的・論理的に分離したアーキテクチャを採用しています。これにより、特定のプラットフォームに対する非依存性を担保しています。
 
-![Brownie V2 Architecture](assets/architecture_v2.png)
+## 2. 機能ブロック図
 
-## 2. アーキテクチャの核心
+| レイヤー | コンポーネント | 役割・責務 | 依存関係 |
+| :--- | :--- | :--- | :--- |
+| **Input / UI** | GitHub / CLI / Slack | ユーザー指示の受容、進捗・結果の出力 | Core 層へ接続 |
+| **Control (Core)** | **Orchestrator** | タスクの状態管理、実行ワークフローの制御 | Infrastructure Bridge |
+| | **CoderAgent** | LLM を用いた思考・意思決定の実行 | Infrastructure Bridge |
+| **Interface** | **Infrastructure Bridge** | Core の要求を MCP ツール呼び出しへ変換（絶縁体） | 各 MCP サーバー |
+| **Execution (MCP)** | **GitHub Platform MCP** | GitHub API 通信（コメント投稿、Issue 取得等） | GitHub API (GhApi) |
+| | **Git MCP** | ローカルリポジトリに対する Git 操作 | Local File System |
+| | **Reasoning MCP** | 分離された環境での推論ループの実行 | LLM Endpoint |
 
-### **Brownie Core (中央集権的推論)**
-システムの「脳」に当たります。特定のプラットフォームの API 仕様（GitHub 等）に汚染されることなく、純粋な思考とタスクのオーケストレーションに専念します。
-- **Orchestrator**: プロジェクトのライフサイクルと状態遷移を論理的に管理。
-- **Infrastructure Bridge**: Core からの「抽象的な要求」を、具体的な MCP ツール呼び出しへと変換するインターフェース。
+## 3. 通信フロー
 
-### **MCP Layer (分散型インフラ)**
-GitHub, Git 操作, 推論ループなどの「実務」を担う、独立したサーバー群です。
-- **GitHub Platform MCP**: GitHub との API 通信と通知の取得をカプセル化。
-- **Git MCP**: ローカルファイルシステム上の Git 操作を安全に実行。
-- **Reasoning MCP**: 高度な推論ループを独立して回す実行体。
+1.  **指示の入出力**:
+    - GitHub (Issue) からの入力 → GitHub Platform MCP → Core
+    - Core からの出力 → Infrastructure Bridge → GitHub Platform MCP → GitHub (Comment)
+2.  **リポジトリ操作**:
+    - Core → Infrastructure Bridge → Git MCP → ローカルクローン/コミット
+3.  **推論実行**:
+    - Core → Infrastructure Bridge → Reasoning MCP → 思考ループ実行
 
-## 3. この設計がもたらす革新
-- **圧倒的な拡張性**: 新しいプラットフォーム（Slack, GitLab, Backlog 等）を追加する際も、コアを一切弄らずに MCP を差し替えるだけで対応可能。
-- **純粋な知能の再利用**: 同じ思考回路（Core）を、CLI, GitHub, Web UI など、あらゆるインターフェースで共通して利用可能。
-- **堅牢なセキュリティ**: 実務層（MCP）と思考層（Core）が分離されているため、各レイヤーで厳格な権限管理が可能。
+## 4. 設計パラダイム
+- **Platform Agnostic**: Core レイヤーには GitHub 等のインポートが一切存在しません。すべての外部プラットフォームは「ツール」として扱われます。
+- **Structural Integrity**: 依存関係は上位から下位への一方通行（Core -> Bridge -> MCP）であり、循環参照を完全に排除しています。
+- **Security by Design**: ホスト環境へのアクセス権限は各 MCP サーバー単位で最小化されており、Core 自体は強力な特権を持ちません。
