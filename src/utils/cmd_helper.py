@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import os
 import shlex
 import subprocess
 from typing import Dict, List, Optional, Union
@@ -18,6 +19,20 @@ def _validate_args(args: List[str]):
     """引数のリストが妥当か検証します。"""
     if not args:
         raise ValueError("Command arguments cannot be empty.")
+
+    # 許可リストの確認
+    try:
+        from src.core.config import get_settings
+
+        allowed = get_settings().agent.allowed_commands
+        executable = os.path.basename(args[0])
+        if executable not in allowed:
+            msg = f"Command '{executable}' is not in the allowed white list."
+            raise ValueError(msg)
+    except (ImportError, AttributeError, RuntimeError):
+        # 設定が読み込めない、または初期化前の場合はバリデーションをスキップ
+        pass
+
     for arg in args:
         if "\0" in arg:
             msg = f"Dangerous character (null byte) detected in argument: {arg}"
