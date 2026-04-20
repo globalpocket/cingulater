@@ -14,6 +14,15 @@ class CommandResult:
     stderr: str
     combined: str
 
+def _validate_args(args: List[str]):
+    """引数のリストが妥当か検証します。"""
+    if not args:
+        raise ValueError("Command arguments cannot be empty.")
+    for arg in args:
+        if "\0" in arg:
+            msg = f"Dangerous character (null byte) detected in argument: {arg}"
+            raise ValueError(msg)
+
 
 def run_command(
     args: Union[str, List[str]],
@@ -32,6 +41,7 @@ def run_command(
 
     # 安全のため shell=False を強制し、shlex で分割する
     final_args = shlex.split(args) if isinstance(args, str) else args
+    _validate_args(final_args)
     cmd_str = args if isinstance(args, str) else " ".join(args)
     logger.debug(f"Running command: {cmd_str}")
 
@@ -91,6 +101,7 @@ async def run_command_async(
             "shell=True was requested in run_command_async but ignored for security."
         )
     final_args = shlex.split(args) if isinstance(args, str) else args
+    _validate_args(final_args)
     cmd_str = args if isinstance(args, str) else " ".join(args)
     logger.debug(f"Running command (async): {cmd_str}")
 
