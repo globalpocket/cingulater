@@ -8,7 +8,6 @@ from typing import Any, Dict
 
 from loguru import logger
 
-from src.core.config import get_settings
 from src.core.trigger_manager import WorkflowTriggerManager
 from src.core.workers.pool import broker
 from src.core.workflow_manager import WorkflowLoader
