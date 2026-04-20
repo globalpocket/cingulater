@@ -1,5 +1,4 @@
 import operator
-import os
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 import redis.asyncio as redis
@@ -63,9 +62,9 @@ class StateManager:
     """
 
     def __init__(self, db_path: Optional[str] = None):
-        # Redis 接続情報
-        self.redis_host = os.getenv("REDIS_HOST", "localhost")
-        self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        from src.core.config import get_settings
+
+        self.settings = get_settings().redis
         self._pool: Optional[redis.ConnectionPool] = None
         self._saver: Optional[AsyncRedisSaver] = None
 
@@ -79,9 +78,13 @@ class StateManager:
         if not self._saver:
             logger.debug(
                 "Connecting to Redis Checkpointer at "
-                f"{self.redis_host}:{self.redis_port}"
+                f"{self.settings.host}:{self.settings.port}"
             )
-            url = f"redis://{self.redis_host}:{self.redis_port}"
+            # 認証パスワードを含めた URL を生成
+            url = (
+                f"redis://:{self.settings.password}@"
+                f"{self.settings.host}:{self.settings.port}/{self.settings.db}"
+            )
             self._saver = AsyncRedisSaver(redis_url=url)
         return self
 

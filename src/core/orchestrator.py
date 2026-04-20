@@ -39,12 +39,12 @@ class Orchestrator:
         # MCP Manager の初期化
         self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
         self.gh_client = GitHubClientWrapper(
-            os.getenv("GITHUB_TOKEN", ""), mcp_manager=self.mcp_manager
+            self.settings.github.token, mcp_manager=self.mcp_manager
         )
         from src.core.agent import InfrastructureBridge
 
         self.infra_bridge = InfrastructureBridge(
-            self.mcp_manager, token=os.getenv("GITHUB_TOKEN", "")
+            self.mcp_manager, token=self.settings.github.token
         )
         # SandboxManager は内部で Testcontainers を使用するよう抽象化済み
         self.sandbox = SandboxManager(

@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from pydantic import computed_field
 from pydantic_settings import (
     BaseSettings,
+    EnvSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     YamlConfigSettingsSource,
@@ -51,14 +52,28 @@ class WorkspaceSettings(BaseSettings):
     base_dir: str = "~/.local/share/brownie/workspaces"
 
 
+class RedisSettings(BaseSettings):
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    password: str = "brownie_secure_pw"
+
+
+class GitHubSettings(BaseSettings):
+    token: str = ""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_nested_delimiter="__", env_prefix="BROWNIE_", extra="ignore"
     )
 
+    debug: bool = False
     agent: AgentSettings = AgentSettings()
     llm: LLMSettings = LLMSettings()
     workspace: WorkspaceSettings = WorkspaceSettings()
+    redis: RedisSettings = RedisSettings()
+    github: GitHubSettings = GitHubSettings()
 
     @classmethod
     def settings_customise_sources(
@@ -70,11 +85,35 @@ class Settings(BaseSettings):
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """設定ソースの優先順位を定義（YAMLファイル > 環境変数）"""
+
+        # 生の環境変数をマップするカスタムソース
+        class RawEnvSettingsSource(EnvSettingsSource):
+            def prepare_field_value(self, field_name, field, value, value_is_complex):
+                # GITHUB_TOKEN -> github.token への手動マッピング
+                if field_name == "github":
+                    token = os.getenv("GITHUB_TOKEN") or os.getenv(
+                        "GITHUB_PERSONAL_ACCESS_TOKEN"
+                    )
+                    if token:
+                        return {"token": token}
+                if field_name == "redis":
+                    return {
+                        "host": os.getenv("REDIS_HOST", "localhost"),
+                        "port": int(os.getenv("REDIS_PORT", "6379")),
+                        "password": os.getenv("REDIS_PASSWORD", "brownie_secure_pw"),
+                    }
+                if field_name == "debug":
+                    return os.getenv("BROWNIE_DEBUG") == "1"
+                return super().prepare_field_value(
+                    field_name, field, value, value_is_complex
+                )
+
+        raw_env = RawEnvSettingsSource(settings_cls)
         project_root = Path(__file__).parent.parent.parent
         config_path = project_root / os.getenv("BROWNIE_CONFIG", "config/config.yaml")
         magic_path = config_path.parent / "magicvalues.yaml"
 
-        sources = [init_settings, env_settings]
+        sources = [init_settings, env_settings, raw_env]
 
         # magicvalues.yaml (優先度低)
         if magic_path.exists():

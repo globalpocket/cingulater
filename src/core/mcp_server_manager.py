@@ -114,10 +114,20 @@ class MCPServerManager:
         """共通の起動エンジン"""
         logger.info(f"Starting {name} MCP Server: {command} {' '.join(args)}")
 
+        # Settings から引き継ぐべき環境変数を構築
+        common_env = {
+            "REDIS_HOST": self.settings.redis.host,
+            "REDIS_PORT": str(self.settings.redis.port),
+            "REDIS_PASSWORD": self.settings.redis.password,
+            "REDIS_DB": str(self.settings.redis.db),
+            "GITHUB_TOKEN": self.settings.github.token,
+            "BROWNIE_DEBUG": "1" if self.settings.debug else "0",
+        }
+
         transport = StdioTransport(
             command=command,
             args=args,
-            env={**os.environ, **(env or {}), "PYTHONPATH": "."},
+            env={**os.environ, **common_env, **(env or {}), "PYTHONPATH": "."},
             cwd=self.project_root,
             keep_alive=False,
         )
@@ -181,12 +191,12 @@ class MCPServerManager:
         )
 
     async def start_github_sdk_server(self):
-        token = os.getenv("GITHUB_TOKEN") or os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")
+        token = self.settings.github.token
         return await self._start_server(
             "github_sdk",
             "npx",
             ["-y", "@modelcontextprotocol/server-github"],
-            {"GITHUB_PERSONAL_ACCESS_TOKEN": token or "", "GITHUB_TOKEN": token or ""},
+            {"GITHUB_PERSONAL_ACCESS_TOKEN": token, "GITHUB_TOKEN": token},
         )
 
     async def start_repo_provision_server(self):

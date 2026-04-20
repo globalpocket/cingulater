@@ -24,14 +24,15 @@ async def get_orchestrator():
     if orch is not None:
         return orch
 
-    # get_settings() は内部で BROWNIE_CONFIG を参照する
-    get_settings()
-    if not os.getenv("GITHUB_TOKEN"):
-        logger.error("FATAL: GITHUB_TOKEN not found in worker process.")
+    settings = get_settings()
+    if not settings.github.token:
+        logger.error("FATAL: github.token not found in settings (worker process).")
 
     from src.core.orchestrator import Orchestrator
 
-    orch = Orchestrator(os.getenv("BROWNIE_CONFIG", "config/config.yaml"))
+    # get_settings().config_path があれば理想的だが、現状は環境変数かデフォルト
+    config_file = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
+    orch = Orchestrator(config_file)
     set_global_orchestrator(orch)
     return orch
 
