@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 from collections import Counter
@@ -39,49 +38,83 @@ class FlowTracer:
         return parsers
 
     def scan_file(self, file_path: str, content: str):
-        if not file_path.endswith(".py"):
+        """ファイルを解析してシンボル情報をグラフに登録します。"""
+        ext = os.path.splitext(file_path)[1]
+        parser = self.parsers.get(ext)
+        if not parser:
             return
 
         try:
-            tree = ast.parse(content)
+            tree = parser.parse(bytes(content, "utf8"))
             self.graph.add_node(file_path, type="file")
 
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # 言語ごとのシンボル抽出クエリ
+            queries = {
+                ".py": (
+                    "(function_definition name: (identifier) @name) "
+                    "(class_definition name: (identifier) @name)"
+                ),
+                ".js": (
+                    "(function_declaration name: (identifier) @name) "
+                    "(class_declaration name: (identifier) @name) "
+                    "(variable_declarator name: (identifier) @name "
+                    "value: (arrow_function))"
+                ),
+                ".ts": (
+                    "(function_declaration name: (identifier) @name) "
+                    "(class_declaration name: (identifier) @name) "
+                    "(interface_declaration name: (identifier) @name)"
+                ),
+                ".tsx": (
+                    "(function_declaration name: (identifier) @name) "
+                    "(class_declaration name: (identifier) @name)"
+                ),
+                ".go": (
+                    "(function_declaration name: (identifier) @name) "
+                    "(type_spec name: (identifier) @name)"
+                ),
+            }
+
+            query_str = queries.get(ext)
+            if query_str:
+                query = parser.language.query(query_str)
+                captures = query.captures(tree.root_node)
+
+                for node, tag in captures:
                     self._add_symbol(
-                        node.name,
+                        node.text.decode("utf8"),
                         file_path,
-                        "func",
-                        node.lineno,
-                        getattr(node, "end_lineno", node.lineno),
+                        "func" if tag == "name" else "class",  # 簡易判定
+                        node.start_point[0] + 1,
+                        node.end_point[0] + 1,
                     )
-                elif isinstance(node, ast.ClassDef):
-                    self._add_symbol(
-                        node.name,
-                        file_path,
-                        "class",
-                        node.lineno,
-                        getattr(node, "end_lineno", node.lineno),
-                    )
-                elif isinstance(node, ast.Import):
-                    for name in node.names:
-                        self.graph.add_edge(file_path, name.name, type="import")
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        self.graph.add_edge(file_path, node.module, type="import")
+
+            # TODO: インポート依存関係の抽出 (tree-sitter クエリによる一般化)
+
         except Exception as e:
             logger.error(f"Error scanning file {file_path}: {e}")
 
     def refresh_graph(self):
+        """プロジェクト全体を走査してグラフを再構築します。"""
         logger.info(f"Refreshing knowledge graph: {self.repo_path}")
         self.graph.clear()
         src_path = os.path.join(self.repo_path, "src")
-        if not os.path.exists(src_path):
-            return
+        # src がない場合はルートから
+        target_root = (
+            src_path if os.path.exists(src_path) else self.repo_path
+        )
 
-        for root, _, files in os.walk(src_path):
+        valid_exts = {".py", ".js", ".jsx", ".ts", ".tsx", ".go"}
+
+        for root, _, files in os.walk(target_root):
+            if any(
+                p in root
+                for p in [".git", "node_modules", "vendor", "__pycache__"]
+            ):
+                continue
             for file in files:
-                if file.endswith(".py"):
+                ext = os.path.splitext(file)[1]
+                if ext in valid_exts:
                     fpath = os.path.join(root, file)
                     rel_path = os.path.relpath(fpath, self.repo_path)
                     try:

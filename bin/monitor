@@ -1,0 +1,11 @@
+#!/bin/bash
+# BROWNIE System Monitor Launcher
+
+# プロジェクトルートに移動
+cd "$(dirname "$0")/.." || exit
+
+# 環境変数の読み込み (必要に応じて)
+[ -f .env ] && export $(grep -v '^#' .env | xargs)
+
+# monitor.py の実行
+python3 -m src.tools.monitor

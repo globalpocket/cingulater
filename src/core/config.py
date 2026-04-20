@@ -181,6 +181,23 @@ class Settings(BaseSettings):
             logger.error(f"❌ Redis connectivity failed: {e}")
             raise RuntimeError(f"Critical infrastructure (Redis) is unreachable: {e}")
 
+        # 2. ChromaDB 接続確認
+        try:
+            import httpx
+
+            url = f"http://{self.chroma.host}:{self.chroma.port}/api/v1/heartbeat"
+            logger.debug(f"Validating ChromaDB connectivity to {url}...")
+            resp = httpx.get(url, timeout=2.0)
+            if resp.status_code == 200:
+                logger.info("✅ ChromaDB connectivity verified.")
+            else:
+                raise RuntimeError(f"ChromaDB returned status code {resp.status_code}")
+        except Exception as e:
+            logger.error(f"❌ ChromaDB connectivity failed: {e}")
+            raise RuntimeError(
+                f"Critical infrastructure (ChromaDB) is unreachable: {e}"
+            )
+
     @property
     def footer(self) -> str:
         """GitHubコメント用の標準フッターを生成する"""
