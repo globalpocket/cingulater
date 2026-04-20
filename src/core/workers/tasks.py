@@ -144,7 +144,7 @@ async def execute_workflow_task(workflow_name: str, input_data: Any = None):
         logger.error(f"Error in execute_workflow_task: {e}")
 
 
-from src.gh_platform_client import GitHubRateLimitError
+
 
 
 @broker.task
@@ -152,8 +152,8 @@ async def poll_mentions_task():
     """GitHub メールの監視とタスク投入を実行する定期タスク"""
     orch = await get_orchestrator()
     try:
-        # 新しい GitHubClient を通じて通知を取得
-        mentions = await orch.gh_client.get_mentions_to_process()
+        # InfrastructureBridge を通じて通知を取得
+        mentions = await orch.infra_bridge.get_mentions_to_process()
 
         for m in mentions:
             # イベントペイロードを準備
@@ -179,17 +179,11 @@ async def poll_mentions_task():
                 executor_func=execute_workflow_task.kiq,
             )
 
-    except GitHubRateLimitError as e:
-        # Taskiq の遅延機能を利用して、リセット時刻まで待機するように再スケジュール
-        wait_seconds = int(max(e.reset_time - time.time(), 60))
-        logger.warning(
-            f"GitHub Rate Limit hit. Delaying polling for {wait_seconds}s until reset."
-        )
-        # 実際には現在のタスクを完了し、次回のスケジュールが自然に回るのを待つか、
-        # あるいは今回分を延期（再試行）する
-        # ここでは Taskiq のスケジュール機能に任せ、ログに留める
     except Exception as e:
-        logger.error(f"Polling task failed: {e}")
+        if "Rate Limit" in str(e):
+            logger.warning(f"GitHub Rate Limit hit via MCP: {e}")
+        else:
+            logger.error(f"Polling task failed: {e}")
 
 
 @broker.task

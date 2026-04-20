@@ -9,7 +9,6 @@ import httpx
 import redis.asyncio as aioredis
 from loguru import logger
 
-from src.core.agent import GitHubClientWrapper
 from src.core.base import TaskAbortedException
 from src.core.config import get_settings
 from src.core.mcp_server_manager import MCPServerManager
@@ -38,11 +37,8 @@ class Orchestrator:
 
         # MCP Manager の初期化
         self.mcp_manager = MCPServerManager(self.project_root, config_path=config_path)
-        self.gh_client = GitHubClientWrapper(
-            self.settings.github.token, mcp_manager=self.mcp_manager
-        )
-        from src.core.agent import InfrastructureBridge
 
+        from src.core.agent import InfrastructureBridge
         self.infra_bridge = InfrastructureBridge(
             self.mcp_manager, token=self.settings.github.token
         )
@@ -122,7 +118,6 @@ class Orchestrator:
                 self.agent = CoderAgent(
                     config=self.settings.dict(),
                     sandbox=self.sandbox,
-                    gh_client=self.gh_client,
                     infra_bridge=self.infra_bridge,
                     mcp_manager=self.mcp_manager,
                     workspace_context=self.workspace_base,
@@ -256,7 +251,7 @@ class Orchestrator:
         async with self.state_manager:
             try:
                 # 実行直前にもステータスを最終確認
-                issue_info = await self.gh_client.get_issue(repo_name, issue_number)
+                issue_info = await self.infra_bridge.get_issue(repo_name, issue_number)
                 if issue_info.get("state") != "open":
                     logger.warning(
                         f"Aborting task {task_id} execution: Issue is already CLOSED."
@@ -312,7 +307,7 @@ class Orchestrator:
                                         "intent_alignment"
                                     )  # 直ちにローカルで記録
                                     draft = output["intent_draft"]
-                                    await self.gh_client.post_comment(
+                                    await self.infra_bridge.post_comment(
                                         repo_name,
                                         issue_number,
                                         f"### 🔍 意図の確認と提案\n\n{draft}"
@@ -344,7 +339,7 @@ class Orchestrator:
                     and "WaitingForClarification" not in final_reported
                 ):
                     plan = final_state.get("plan", "No plan.")
-                    await self.gh_client.post_comment(
+                    await self.infra_bridge.post_comment(
                         repo_name,
                         issue_number,
                         f"### 🛠 実行計画（承認待ち）\n\n{plan}" + self.settings.footer,
@@ -359,7 +354,7 @@ class Orchestrator:
                     )
                 elif final_status == "Completed" and "Completed" not in final_reported:
                     summary = final_state.get("final_summary", "Done.")
-                    await self.gh_client.post_comment(
+                    await self.infra_bridge.post_comment(
                         repo_name,
                         issue_number,
                         f"### ✅ 完了報告\n\n{summary}" + self.settings.footer,
@@ -377,7 +372,7 @@ class Orchestrator:
                     "特定の処理でループが発生したか、"
                     "LLM の応答が停止した可能性があります。"
                 )
-                await self.gh_client.post_comment(
+                await self.infra_bridge.post_comment(
                     repo_name,
                     issue_number,
                     err_msg + self.settings.footer,
@@ -401,7 +396,7 @@ class Orchestrator:
                     "内部的な問題により処理を継続できないか、"
                     "リソースが不足しています。"
                 )
-                await self.gh_client.post_comment(
+                await self.infra_bridge.post_comment(
                     repo_name,
                     issue_number,
                     err_msg + self.settings.footer,

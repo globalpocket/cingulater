@@ -5,80 +5,6 @@ from loguru import logger
 
 from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager, WorkspaceContext
-from src.gh_platform_client import GitHubClient
-
-
-class GitHubRateLimitException(Exception):  # noqa: N818
-    """GitHubのレートリミットに達したことを示す例外"""
-
-    def __init__(self, message: str, reset_at: float):
-        super().__init__(message)
-        self.reset_at = reset_at
-
-
-class GitHubClientWrapper:
-    """
-    GitHub 操作を提供するラッパー。
-    内部で ghapi ベースの GitHubClient を使用し、必要に応じて MCP を併用する。
-    """
-
-    def __init__(self, token: str, mcp_manager: MCPServerManager):
-        self._token = token
-        self._gh = GitHubClient(token=token)
-        self.mcp_manager = mcp_manager
-
-    async def get_my_username_async(self) -> str:
-        try:
-            return await self._gh.get_my_username()
-        except Exception as e:
-            logger.error(f"Failed to get username via ghapi: {e}")
-            return "unknown"
-
-    async def get_all_accessible_repositories(self) -> List[str]:
-        try:
-            return await self._gh.search_repositories(query="user:@me")
-        except Exception as e:
-            logger.error(f"Failed to list repositories via ghapi: {e}")
-            return []
-
-    async def post_comment(self, repo_name: str, issue_number: int, body: str):
-        owner, repo = repo_name.split("/")
-        try:
-            await self._gh.post_comment(
-                owner=owner, repo=repo, issue_number=issue_number, body=body
-            )
-        except Exception as e:
-            logger.error(f"Failed to post comment via ghapi: {e}")
-
-    async def create_pull_request(
-        self, repo_name: str, title: str, body: str, head: str, base: str
-    ):
-        owner, repo = repo_name.split("/")
-        try:
-            return await self._gh.create_pull_request(
-                owner=owner, repo=repo, title=title, head=head, base=base, body=body
-            )
-        except Exception as e:
-            logger.error(f"Failed to create PR via ghapi: {e}")
-            return None
-
-    async def get_mentions_to_process(
-        self, repo_name: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        try:
-            return await self._gh.get_mentions()
-        except Exception as e:
-            logger.error(f"Failed to get mentions via ghapi: {e}")
-            return []
-
-    async def mark_issue_notifications_as_read(self, repo_name: str, issue_number: int):
-        owner, repo = repo_name.split("/")
-        try:
-            await self._gh.mark_notifications_as_read(
-                owner=owner, repo=repo, issue_number=issue_number
-            )
-        except Exception as e:
-            logger.error(f"Failed to mark notifications as read via ghapi: {e}")
 
 
 class InfrastructureBridge:
@@ -118,6 +44,27 @@ class InfrastructureBridge:
         except Exception as e:
             logger.error(f"Failed to enqueue repair task: {e}")
             return False
+
+    async def post_comment(self, repo_name: str, issue_number: int, body: str):
+        """GitHub Platform MCP を通じてコメントを投稿する"""
+        client = self.mcp_manager.repo_provision_client
+        if not client:
+            return
+        await client.call_tool("post_comment", {"repo_full_name": repo_name, "issue_number": issue_number, "body": body, "token": self._token})
+
+    async def get_issue(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
+        """GitHub Platform MCP を通じて Issue 情報を取得する"""
+        client = self.mcp_manager.repo_provision_client
+        if not client:
+            return {}
+        return await client.call_tool("get_issue", {"repo_full_name": repo_name, "issue_number": issue_number, "token": self._token})
+
+    async def get_mentions_to_process(self) -> List[Dict[str, Any]]:
+        """GitHub Platform MCP を通じてメンション（通知）を取得する"""
+        client = self.mcp_manager.repo_provision_client
+        if not client:
+            return []
+        return await client.call_tool("get_mentions", {"token": self._token})
 
     async def ensure_repo_cloned(
         self, repo_name: str, repo_path: str, branch_name: Optional[str] = None
@@ -174,14 +121,12 @@ class AgentDeps:
         self,
         config: Dict[str, Any],
         sandbox: SandboxManager,
-        gh_client: GitHubClientWrapper,
         infra_bridge: "InfrastructureBridge",
         mcp_manager: MCPServerManager,
         workspace_context: Optional[WorkspaceContext] = None,
     ):
         self.config = config
         self.sandbox = sandbox
-        self.gh_client = gh_client
         self.infra_bridge = infra_bridge
         self.mcp_manager = mcp_manager
         self.workspace_context = workspace_context
@@ -199,12 +144,12 @@ class CoderAgent:
         self,
         config: Dict[str, Any],
         sandbox: SandboxManager,
-        gh_client: GitHubClientWrapper,
+        infra_bridge: "InfrastructureBridge",
         mcp_manager: MCPServerManager,
         workspace_context: Optional[WorkspaceContext] = None,
     ):
         self.deps = AgentDeps(
-            config, sandbox, gh_client, mcp_manager, workspace_context
+            config, sandbox, infra_bridge, mcp_manager, workspace_context
         )
         self.config = config
 
