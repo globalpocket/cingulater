@@ -67,7 +67,7 @@ class RedisSettings(BaseSettings):
     host: str = "localhost"
     port: int = 6379
     db: int = 0
-    password: str = "brownie_secure_pw"
+    password: str = ""
 
 
 class ChromaSettings(BaseSettings):
@@ -77,6 +77,11 @@ class ChromaSettings(BaseSettings):
 
 class GitHubSettings(BaseSettings):
     token: str = ""
+
+
+class DatabaseSettings(BaseSettings):
+    db_path: str = "~/.local/share/brownie/brownie.db"
+    memory_path: str = "~/.local/share/brownie/vector_db"
 
 
 class Settings(BaseSettings):
@@ -91,6 +96,7 @@ class Settings(BaseSettings):
     redis: RedisSettings = RedisSettings()
     chroma: ChromaSettings = ChromaSettings()
     github: GitHubSettings = GitHubSettings()
+    database: DatabaseSettings = DatabaseSettings()
 
     @classmethod
     def settings_customise_sources(
@@ -117,7 +123,7 @@ class Settings(BaseSettings):
                     return {
                         "host": os.getenv("REDIS_HOST", "localhost"),
                         "port": int(os.getenv("REDIS_PORT", "6379")),
-                        "password": os.getenv("REDIS_PASSWORD", "brownie_secure_pw"),
+                        "password": os.getenv("REDIS_PASSWORD", ""),
                     }
                 if field_name == "chroma":
                     return {

@@ -1,8 +1,9 @@
 import operator
+import os
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
-import redis.asyncio as redis
-from langgraph.checkpoint.redis.aio import AsyncRedisSaver
+import aiosqlite
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from loguru import logger
 
 
@@ -64,28 +65,25 @@ class StateManager:
     def __init__(self, db_path: Optional[str] = None):
         from src.core.config import get_settings
 
-        self.settings = get_settings().redis
-        self._pool: Optional[redis.ConnectionPool] = None
-        self._saver: Optional[AsyncRedisSaver] = None
+        self.settings = get_settings()
+        self.db_path = db_path or self.settings.database.db_path
+        self._conn: Optional[aiosqlite.Connection] = None
+        self._saver: Optional[AsyncSqliteSaver] = None
 
     @property
-    def saver(self) -> Optional[AsyncRedisSaver]:
+    def saver(self) -> Optional[AsyncSqliteSaver]:
         """チェックポインタ（セーバー）を取得する"""
         return self._saver
 
     async def connect(self):
-        """チェックポインタに接続する（外部ドライバやツール用）"""
+        """チェックポインタに接続する"""
         if not self._saver:
-            logger.debug(
-                "Connecting to Redis Checkpointer at "
-                f"{self.settings.host}:{self.settings.port}"
-            )
-            # 認証パスワードを含めた URL を生成
-            url = (
-                f"redis://:{self.settings.password}@"
-                f"{self.settings.host}:{self.settings.port}/{self.settings.db}"
-            )
-            self._saver = AsyncRedisSaver(redis_url=url)
+            logger.debug(f"Connecting to SQLite Checkpointer at {self.db_path}")
+            # SQLite ファイルへの非同期接続
+            db_full_path = os.path.expanduser(self.db_path)
+            os.makedirs(os.path.dirname(db_full_path), exist_ok=True)
+            self._conn = await aiosqlite.connect(db_full_path)
+            self._saver = AsyncSqliteSaver(self._conn)
         return self
 
     async def __aenter__(self):
@@ -97,9 +95,9 @@ class StateManager:
         """
         async with ステートメント終了時にチェックポインタを閉じる
         """
-        if self._pool:
-            await self._pool.disconnect()
-            self._pool = None
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
             self._saver = None
 
     async def get_state_lightweight(self, thread_id: str) -> Dict[str, Any]:

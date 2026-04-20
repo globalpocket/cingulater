@@ -164,7 +164,7 @@ class CoderAgent:
             project_root, mcp_manager=mcp_manager, workspace_root=workspace_root
         )
         # 動的ツールのロード (MCPツールとの重複チェックは同期のため実行)
-        self.workflow_loader.load_all(config=config)
+        self.workflow_loader.load_all()
 
     async def run(
         self, task_id: str, repo_name: str, issue_number: int, **kwargs
