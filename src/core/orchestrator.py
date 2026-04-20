@@ -88,31 +88,21 @@ class Orchestrator:
             logger.warning(f"Failed to increase file limits: {e}")
 
     async def start(self):
-        """オーケストレーターの起動"""
+        """オーケストレーター（推論エンジン）のセットアップ"""
         logger.info(
-            f"Orchestrator starting (Phase 5). Build ID: {self.settings.build_id}"
+            f"Brownie Engine initializing (Phase 6). Build ID: {self.settings.build_id}"
         )
 
         async with self.mcp_manager:
-            # 必須 MCP サーバーの起動
-            await self.mcp_manager.start_github_sdk_server()
-            await self.mcp_manager.start_repo_provision_server()
-            await self.mcp_manager.start_worker_controller_server()
-            await self.mcp_manager.start_task_reasoning_server()
-            await self.mcp_manager.start_resource_monitor_server()
-            await self.mcp_manager.start_persistence_server()
-            await self.mcp_manager.start_intent_interpreter_server()
-            await self.mcp_manager.start_governance_server()
-
-            # Worker Server の起動（Taskiq ワーカー & スケジューラのライフサイクル管理）
-            worker_client = await self.mcp_manager.start_worker_server()
-            await worker_client.call_tool("start_worker")
-
+            # 推論に必要な最小限の「思考系 MCP」のみを必要に応じて管理。
+            # GitHub SDK サーバーなどはワークフロー内でオンデマンドに起動する。
+            
+            # 内部状態の初期化
             self.is_running = True
-            logger.info("Taskiq Workers and Scheduler are online.")
+            logger.info("Brownie Engine is ready for tasks.")
 
             async with self.state_manager as sm:
-                # CoderAgent の初期化 (推論ループの管理)
+                # CoderAgent の初期化
                 from src.core.agent import CoderAgent
 
                 self.agent = CoderAgent(
@@ -123,7 +113,7 @@ class Orchestrator:
                     workspace_context=self.workspace_base,
                 )
 
-                # ワークフローのコンパイル (司令塔が主導)
+                # ワークフローのコンパイル
                 from src.core.graph.builder import compile_workflow
 
                 self._workflow_app = compile_workflow(
@@ -133,12 +123,39 @@ class Orchestrator:
                 )
 
                 try:
+                    # エンジンが起動している間、外部からの要求を待機
                     while self.is_running:
                         await asyncio.sleep(1)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     pass
                 finally:
+                    self.is_running = False
+                    logger.info("Brownie Engine is shutting down...")
                     await self.shutdown()
+
+    async def submit_chat_completion(self, messages: list[dict], stream: bool = False):
+        """OpenAI API 互換のタスク投入インターフェース"""
+        # 最新のメッセージからユーザーの指示を抽出
+        input_text = messages[-1].get("content", "")
+        logger.info(f"Received OpenAI-compatible request: {input_text[:50]}...")
+
+        # 汎用タスクコンテキストの生成
+        from src.core.orchestrator import TaskContext
+        context = TaskContext(
+            topic="OpenAI API Request",
+            instructions=input_text,
+            raw_messages=messages
+        )
+
+        # ワークフローを実行
+        # note: 既存のワークフローロジックを流用し、自律修正シーケンスを開始させる
+        result = await self._workflow_app.ainvoke(
+            {"input": input_text, "context": context},
+            config={"configurable": {"thread_id": str(int(time.time()))}}
+        )
+        
+        # 本来はストリーミング返却が望ましいが、まずは一括返却の MVP を目指す
+        return result
 
     async def shutdown(self):
         """オーケストレーターの完全シャットダウン (全滅保証)"""
