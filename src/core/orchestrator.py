@@ -3,7 +3,7 @@ import json
 import os
 import resource
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 import redis.asyncio as aioredis
