@@ -224,8 +224,8 @@ class KnowledgeBaseProvider:
                 for marker, name in js_fw.items():
                     if marker in deps:
                         stack["frameworks"].append(name)
-            except Exception:
-                pass
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to parse package.json: {e}")
 
         return stack
 
