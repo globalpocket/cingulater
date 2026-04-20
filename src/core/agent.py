@@ -91,6 +91,12 @@ class InfrastructureBridge:
         self.mcp_manager = mcp_manager
         self._token = token
 
+    async def close(self):
+        """ブリッジのリソースをクリーンアップします。"""
+        # 現在は MCPServerManager が全サーバーを停止するため、
+        # ブリッジ側で個別に閉じる必要があるセッション等があればここに実装。
+        pass
+
     async def enqueue_repair_task(
         self, task_id: str, repo_name: str, issue_number: int, error_context: str
     ):

@@ -148,13 +148,37 @@ class Orchestrator:
                     await self.shutdown()
 
     async def shutdown(self):
-        logger.info("Shutting down Orchestrator...")
+        """オーケストレーターの完全シャットダウン (全滅保証)"""
+        logger.info("Initiating Orchestrator shutdown...")
         self.is_running = False
+
+        # 1. HTTP クライアントのクローズ
         await self.http_client.aclose()
-        # SandboxManager (内蔵 MCP クライアント) の停止
-        await self.sandbox.stop()
-        # MCP サーバー停止時にワーカープロセス等のクリーンアップも行われる
-        await self.mcp_manager.stop_all()
+
+        # 2. Sandbox (Docker 等) の停止
+        try:
+            logger.debug("Stopping sandbox...")
+            await asyncio.wait_for(self.sandbox.stop(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("Sandbox stop timed out.")
+        except Exception as e:
+            logger.error(f"Error stopping sandbox: {e}")
+
+        # 3. MCP サーバー群の停止 (AsyncExitStack の aclose を呼び出す)
+        try:
+            logger.info("Stopping all MCP servers...")
+            await asyncio.wait_for(self.mcp_manager.stop_all(), timeout=15.0)
+            logger.info("All MCP servers stopped clean.")
+        except asyncio.TimeoutError:
+            logger.error("MCP servers stop timed out! Some processes might persist.")
+        except Exception as e:
+            logger.error(f"Error during MCP cleanup: {e}")
+
+        # 4. インフラストラクチャ ブリッジのクリーンアップ
+        if hasattr(self, "infra_bridge"):
+            await self.infra_bridge.close()
+
+        logger.info("Orchestrator shutdown complete.")
 
     async def _resource_monitor_loop_job(self):
         try:

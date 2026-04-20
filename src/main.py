@@ -80,6 +80,8 @@ logger.info(f"Loguru initialized. Level: {log_level}, File: {log_file}")
 class BrownieApp:
     def __init__(self, config_path: str):
         self.settings = get_settings(config_path)
+        # 起動時にインフラ接続性を検証する
+        self.settings.validate_connectivity()
         self.orchestrator = Orchestrator(config_path)
         self.stop_event = asyncio.Event()
 

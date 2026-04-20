@@ -159,6 +159,28 @@ class Settings(BaseSettings):
         except Exception:
             return VERSION
 
+    def validate_connectivity(self) -> None:
+        """重要なインフラストラクチャへの接続性を検証します。"""
+        from loguru import logger
+
+        # 1. Redis 接続確認
+        try:
+            import redis
+
+            logger.debug(f"Validating Redis connectivity to {self.redis.host}...")
+            r = redis.Redis(
+                host=self.redis.host,
+                port=self.redis.port,
+                db=self.redis.db,
+                password=self.redis.password,
+                socket_connect_timeout=2,
+            )
+            r.ping()
+            logger.info("✅ Redis connectivity verified.")
+        except Exception as e:
+            logger.error(f"❌ Redis connectivity failed: {e}")
+            raise RuntimeError(f"Critical infrastructure (Redis) is unreachable: {e}")
+
     @property
     def footer(self) -> str:
         """GitHubコメント用の標準フッターを生成する"""
