@@ -1,158 +1,30 @@
-#!/usr/bin/env python3
-import argparse
-import fcntl
 import os
-import signal
-import subprocess
 import sys
+import subprocess
 import time
-from pathlib import Path
+import signal
+import argparse
+import requests
 
-# プロジェクトルートをパスに追加
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(base_dir)
+# Build info
+BUILD_ID = "2026.04.21.DR"
 
-# macOS で Docker Desktop を使用している場合の DOCKER_HOST 自動設定
-if sys.platform == 'darwin' and 'DOCKER_HOST' not in os.environ:
-    default_sock = os.path.expanduser("~/.docker/run/docker.sock")
-    if os.path.exists(default_sock):
-        os.environ['DOCKER_HOST'] = f"unix://{default_sock}"
-
-# 仮想環境 (uv) の Python を強制使用する再実行ロジック
-venv_python = os.path.join(base_dir, ".venv", "bin", "python")
-
-# macOS のパス補完 (Docker や Homebrew バイナリの解決用) と仮想環境のパス追加
-extra_paths = []
-if sys.platform == 'darwin':
-    extra_paths = ["/opt/homebrew/bin", "/usr/local/bin"]
-
-# 仮想環境の bin フォルダを優先的に PATH に追加 (exec: "python" 回避用)
-venv_bin = os.path.join(base_dir, ".venv", "bin")
-if os.path.exists(venv_bin):
-    extra_paths.insert(0, venv_bin)
-
-current_path = os.environ.get('PATH', '')
-for p in extra_paths:
-    if p not in current_path:
-        current_path = f"{p}:{current_path}"
-os.environ['PATH'] = current_path
-
-if os.path.exists(venv_python) and sys.executable != venv_python:
-    os.execv(venv_python, [venv_python] + sys.argv)
-
-def get_build_id():
-    """現在のGitコミットハッシュを取得し、ビルドIDとして返す"""
+def get_running_engine_pid():
+    """LSOFでポート8137を使用しているPIDを取得"""
     try:
-        # base_dir は既に上の行で定義されています
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], 
-            cwd=base_dir,
-            stderr=subprocess.DEVNULL
-        ).decode("utf-8").strip()
-    except Exception:
-        return "UNKNOWN"
-
-BUILD_ID = get_build_id()
-
-# 1. 永続的なPIDファイル
-DATA_DIR = Path.home() / ".local" / "share" / "brownie"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-PID_FILE = DATA_DIR / "brownie.pid"
-LOCK_FILE = DATA_DIR / "brownie.lock"
-
-def get_running_pid():
-    """PIDファイルと実プロセスの存在を確認"""
-    if os.path.exists(PID_FILE):
-        try:
-            with open(PID_FILE, "r") as f:
-                pid = int(f.read().strip())
-                # プロセスが存在し、かつBrownie関連か確認 (簡易チェック)
-                os.kill(pid, 0)
-                return pid
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
-    return None
-
-def kill_all_brownie():
-    """システム上のすべてのBrownie関連プロセス（watchdog, main）を物理的に一掃する"""
-    print("🧹 Cleaning up all Brownie-related processes...")
-    
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    try:
-        ps_cmd = f"ps -eo pid,args | grep '{base_dir}' | grep 'python' | grep -E 'watchdog\\.py|main\\.py' | grep -v 'grep'"
-        output = subprocess.check_output(ps_cmd, shell=True).decode().strip()
-        
+        output = subprocess.check_output(["lsof", "-t", "-i", ":8137"]).decode().strip()
         if output:
-            for line in output.split("\n"):
-                parts = line.strip().split()
-                if not parts: continue
-                pid = int(parts[0])
-                if pid != os.getpid():
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                        print(f"  - Killed process: {pid}")
-                    except ProcessLookupError:
-                        pass
-    except Exception:
-        pass 
-    
-    if os.path.exists(PID_FILE):
-        os.remove(PID_FILE)
-    
-    if os.path.exists("/tmp/brownie_survival.signal"):
-        try: os.remove("/tmp/brownie_survival.signal")
-        except: pass
-
-def get_docker_compose_cmd():
-    """環境に応じた docker compose コマンドを取得する"""
-    try:
-        if subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-            return ["docker", "compose"]
-    except Exception:
+            return int(output.split('\n')[0])
+    except:
         pass
-    
-    try:
-        if subprocess.run(["docker-compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-            return ["docker-compose"]
-    except Exception:
-        pass
-    
     return None
 
-def manage_docker_services(base_dir, action):
-    """Docker関連サービス (ChromaDB等) を一元管理する"""
-    cmd_base = get_docker_compose_cmd()
-    if not cmd_base:
-        if action != "status":
-            print("⚠️ docker or docker-compose not found. Cannot manage ChromaDB container.")
-        return "UNKNOWN"
-
-    try:
-        if action == "start":
-            print("🐳 Starting related services (ChromaDB, Redis)...")
-            subprocess.run(cmd_base + ["up", "-d", "chromadb", "redis"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif action == "stop":
-            print("🐳 Stopping related services (ChromaDB, Redis)...")
-            subprocess.run(cmd_base + ["stop", "chromadb", "redis"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif action == "status":
-            res = subprocess.run(cmd_base + ["ps", "--services", "--filter", "status=running"], cwd=base_dir, capture_output=True, text=True)
-            active_services = []
-            if "chromadb" in res.stdout: active_services.append("ChromaDB")
-            if "redis" in res.stdout: active_services.append("Redis")
-            return ", ".join(active_services) if active_services else "STOPPED"
-    except Exception as e:
-        if action != "status":
-            print(f"⚠️ Failed to {action} ChromaDB: {e}")
-        return "ERROR"
-
-def is_engine_running(port=8000):
-    """APIエンジンが応答するか確認"""
+def is_engine_running(port=8137):
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         return s.connect_ex(('localhost', port)) == 0
 
 def ensure_engine_started():
-    """エンジンが動いていなければバックグラウンドで起動する"""
     if is_engine_running():
         return True
     
@@ -160,35 +32,44 @@ def ensure_engine_started():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     venv_python = os.path.join(base_dir, ".venv", "bin", "python")
     
-    # 標準入出力を切り離してバックグラウンド実行
-    log_file = open(os.path.join(base_dir, "logs", "engine.log"), "a")
+    # PYTHONPATHをベースディレクトリに設定してModuleNotFoundErrorを回避
+    env = os.environ.copy()
+    env["PYTHONPATH"] = base_dir + (os.pathsep + env.get("PYTHONPATH", "") if env.get("PYTHONPATH") else "")
+    
+    # ログディレクトリの確保
+    os.makedirs(os.path.join(base_dir, "logs"), exist_ok=True)
+    log_file_path = os.path.join(base_dir, "logs", "engine.log")
+    log_file = open(log_file_path, "a")
+    
     subprocess.Popen(
         [venv_python, "src/api/server.py"],
         stdout=log_file,
         stderr=log_file,
-        start_new_session=True, # セッションを分離して常駐させる
+        env=env,
+        start_new_session=True,
         cwd=base_dir
     )
     
-    # 起動を待機
-    for i in range(10):
+    # 起動（ポート有効化）を待機
+    for _ in range(15):
         if is_engine_running():
             print("✅ Engine is online.")
             return True
         time.sleep(1)
-    print("❌ Failed to start engine. check logs/engine.log")
+    print(f"❌ Failed to start engine. Check {log_file_path}")
     return False
 
 def run_command(args):
-    """Resident Driver モデルに基づくコマンド実行"""
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     venv_python = os.path.join(base_dir, ".venv", "bin", "python")
 
-    # 管理コマンドの処理
     if args.action == "stop":
-        print("🛑 Stopping Brownie Engine...")
-        # API経由で終了させるか、PIDを一掃する。ここでは既存の kill ロジックを活用。
-        kill_all_brownie()
+        pid = get_running_engine_pid()
+        if pid:
+            print(f"🛑 Stopping Brownie Engine (PID: {pid})...")
+            os.kill(pid, signal.SIGTERM)
+        else:
+            print("Engine is not running.")
         return
 
     if args.action == "start":
@@ -196,28 +77,26 @@ def run_command(args):
         return
 
     if args.action == "status":
-        if is_engine_running():
-            print("Brownie Engine: ACTIVE (http://localhost:8000)")
+        pid = get_running_engine_pid()
+        if pid:
+            print(f"Brownie Engine: ACTIVE (PID: {pid}, http://localhost:8137)")
         else:
             print("Brownie Engine: STOPPED")
         return
 
-    if args.action == "reset":
-        kill_all_brownie()
-        subprocess.run([venv_python, "src/utils/reset_system.py"])
-        return
-
-    # 通常の対話・実行フロー
+    # 通常の対話・指示実行フロー
     if not ensure_engine_started():
         sys.exit(1)
 
     if args.action == "chat":
-        subprocess.run([venv_python, "src/interfaces/cli.py"])
+        try:
+            subprocess.run([venv_python, "src/interfaces/cli.py"])
+        except KeyboardInterrupt:
+            print("\nDetached from chat. Engine remains running.")
     elif args.action == "run":
         prompt = " ".join(args.remainder)
-        import requests
         try:
-            res = requests.post("http://localhost:8000/v1/chat/completions", json={
+            res = requests.post("http://localhost:8137/v1/chat/completions", json={
                 "model": "brownie-v2",
                 "messages": [{"role": "user", "content": prompt}]
             }, timeout=300)
@@ -230,19 +109,16 @@ def run_command(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Brownie CLI")
-    parser.add_argument("action", nargs="?", help="Action (start, stop, chat, status, etc.) or just a prompt")
+    parser.add_argument("action", nargs="?", help="Action (chat, start, stop, etc.) or just a prompt")
     parser.add_argument("remainder", nargs=argparse.REMAINDER)
-    
     args = parser.parse_args()
 
-    # コマンド判定ロジック
     known_actions = ["start", "stop", "status", "reset", "chat", "run"]
-    
     if not args.action:
-        # 引数なし：対話チャットへ
+        # 引数なし：デフォルトでチャット接続
         args.action = "chat"
     elif args.action not in known_actions:
-        # 不明なアクション：プロンプト実行（run）へ
+        # アクションが定義外：すべてをプロンプトとして扱う
         args.remainder = [args.action] + args.remainder
         args.action = "run"
             
