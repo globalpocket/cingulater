@@ -96,9 +96,12 @@ def run_command(
             stderr="TimeoutExpired",
             combined="TimeoutExpired",
         )
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         logger.error(f"Command execution error: {cmd_str} -> {e}")
         return CommandResult(exit_code=-2, stdout="", stderr=str(e), combined=str(e))
+    except Exception as e:
+        logger.exception(f"Unexpected error during command execution: {cmd_str} -> {e}")
+        return CommandResult(exit_code=-3, stdout="", stderr=str(e), combined=str(e))
 
 
 async def run_command_async(
@@ -148,6 +151,11 @@ async def run_command_async(
             stderr=stderr,
             combined=(stdout + "\n" + stderr).strip(),
         )
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         logger.error(f"Async command execution error: {cmd_str} -> {e}")
         return CommandResult(exit_code=-2, stdout="", stderr=str(e), combined=str(e))
+    except Exception as e:
+        logger.exception(
+            f"Unexpected error during async command execution: {cmd_str} -> {e}"
+        )
+        return CommandResult(exit_code=-3, stdout="", stderr=str(e), combined=str(e))

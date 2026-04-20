@@ -167,7 +167,8 @@ class Settings(BaseSettings):
                 .strip()
             )
             return build_id
-        except Exception:
+        except (subprocess.SubprocessError, OSError):
+            # Git が未インストール、または .git がない場合はバージョンを返す
             return VERSION
 
     def validate_connectivity(self) -> None:
@@ -188,8 +189,8 @@ class Settings(BaseSettings):
             )
             r.ping()
             logger.info("✅ Redis connectivity verified.")
-        except Exception as e:
-            logger.error(f"❌ Redis connectivity failed: {e}")
+        except (ImportError, redis.ConnectionError, redis.TimeoutError) as e:
+            logger.exception("Unexpected error during Redis connectivity check")
             raise RuntimeError(f"Critical infrastructure (Redis) is unreachable: {e}")
 
         # 2. ChromaDB 接続確認
@@ -203,7 +204,7 @@ class Settings(BaseSettings):
                 logger.info("✅ ChromaDB connectivity verified.")
             else:
                 raise RuntimeError(f"ChromaDB returned status code {resp.status_code}")
-        except Exception as e:
+        except (httpx.HTTPError, RuntimeError) as e:
             logger.error(f"❌ ChromaDB connectivity failed: {e}")
             raise RuntimeError(
                 f"Critical infrastructure (ChromaDB) is unreachable: {e}"

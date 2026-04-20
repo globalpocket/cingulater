@@ -36,7 +36,7 @@ class FlowTracer:
             parsers[".go"] = Parser(go_lang)
             rs_lang = Language(tree_sitter_rust.language())
             parsers[".rs"] = Parser(rs_lang)
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             logger.warning(f"Tree-sitter パーサーの初期化に失敗しました: {e}")
         return parsers
 
@@ -128,8 +128,10 @@ class FlowTracer:
                         target_module = i_node.text.decode("utf8")
                         self.graph.add_edge(file_path, target_module, type="depends_on")
 
-        except Exception as e:
+        except (UnicodeDecodeError, ValueError, KeyError) as e:
             logger.error(f"Error scanning file {file_path}: {e}")
+        except Exception as e:
+            logger.exception(f"Unexpected error scanning {file_path}: {e}")
 
     def refresh_graph(self):
         """プロジェクト全体を走査してグラフを再構築します。"""
@@ -157,8 +159,10 @@ class FlowTracer:
                     try:
                         with open(fpath, "r", encoding="utf-8") as f:
                             self.scan_file(rel_path, f.read())
-                    except Exception as e:
+                    except (OSError, UnicodeDecodeError) as e:
                         logger.warning(f"Failed to read {fpath}: {e}")
+                    except Exception as e:
+                        logger.error(f"Unexpected error processing {fpath}: {e}")
 
     def _add_symbol(self, name: str, file_path: str, stype: str, start: int, end: int):
         symbol_id = f"{file_path}:{name}"
@@ -243,8 +247,8 @@ class KnowledgeBaseProvider:
                 for marker, name in fw_markers.items():
                     if marker in content:
                         stack["frameworks"].append(name)
-            except Exception as e:
-                logger.warning(f"Failed to parse pyproject.toml: {e}")
+            except OSError as e:
+                logger.warning(f"Failed to read pyproject.toml: {e}")
 
         pkg_json = os.path.join(self.repo_path, "package.json")
         if os.path.exists(pkg_json):
@@ -274,7 +278,8 @@ class KnowledgeBaseProvider:
                 [n for n, d in nodes if d.get("type") in ("func", "class")]
             )
             return {"files": files_count, "symbols": symbols_count}
-        except Exception as e:
+        except (nx.NetworkXError, AttributeError) as e:
+            logger.error(f"Failed to query statistics: {e}")
             return {"error": str(e)}
 
     def _query_top_symbols(self, symbol_type: str, limit: int) -> list:
@@ -295,7 +300,8 @@ class KnowledgeBaseProvider:
                 }
                 for n, d in sorted_nodes[:limit]
             ]
-        except Exception:
+        except nx.NetworkXError as e:
+            logger.warning(f"Failed to query top symbols ({symbol_type}): {e}")
             return []
 
     def _detect_hotspots(self) -> list:
@@ -308,7 +314,8 @@ class KnowledgeBaseProvider:
             dirs = [os.path.dirname(p) or "." for p in nodes]
             counts = Counter(dirs).most_common(10)
             return [{"directory": d, "file_count": c} for d, c in counts]
-        except Exception:
+        except nx.NetworkXError as e:
+            logger.warning(f"Failed to detect hotspots: {e}")
             return []
 
     def _detect_entry_points(self) -> list:
@@ -326,5 +333,6 @@ class KnowledgeBaseProvider:
                         }
                     )
             return entries
-        except Exception:
+        except nx.NetworkXError as e:
+            logger.warning(f"Failed to detect entry points: {e}")
             return []
