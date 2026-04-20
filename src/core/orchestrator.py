@@ -15,7 +15,15 @@ from src.core.mcp_server_manager import MCPServerManager
 from src.core.sandbox_manager import SandboxManager
 from src.core.state_manager import StateManager
 
+from pydantic import BaseModel
+from types import SimpleNamespace
+
 # global_orchestrator は src.core.base に移動しました
+
+class TaskContext(BaseModel):
+    topic: str
+    instructions: str
+    raw_messages: list[dict]
 
 
 class Orchestrator:
@@ -110,7 +118,7 @@ class Orchestrator:
                     sandbox=self.sandbox,
                     infra_bridge=self.infra_bridge,
                     mcp_manager=self.mcp_manager,
-                    workspace_context=self.workspace_base,
+                    workspace_context=SimpleNamespace(repo_path=self.workspace_base),
                 )
 
                 # ワークフローのコンパイル
@@ -140,7 +148,6 @@ class Orchestrator:
         logger.info(f"Received OpenAI-compatible request: {input_text[:50]}...")
 
         # 汎用タスクコンテキストの生成
-        from src.core.orchestrator import TaskContext
         context = TaskContext(
             topic="OpenAI API Request",
             instructions=input_text,
