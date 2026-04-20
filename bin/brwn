@@ -348,64 +348,12 @@ def run_command(args):
 
     elif args.action == "serve":
         # Brownie Agent Server (MCP) を stdio モードで起動
+        # このモードでは外部の MCP クライアントがライフサイクルを管理します
         print(f"Starting Brownie Agent MCP Server (Build: {BUILD_ID})...", file=sys.stderr)
         os.execv(venv_python, [venv_python, "-m", "src.mcp_server.brownie_agent_server"])
 
-    elif args.action == "engine":
-        # OpenAI 互換 API サーバーを起動
-        print(f"🚀 Starting Brownie OpenAI-Compatible Engine (Build: {BUILD_ID})...")
-        os.environ["BROWNIE_CONFIG"] = os.path.join(base_dir, "config", "config.yaml")
-        # uvicorn を利用して起動
-        try:
-            import uvicorn
-            subprocess.run([venv_python, "-m", "uvicorn", "src.api.server:app", "--host", "0.0.0.0", "--port", "8000"])
-        except KeyboardInterrupt:
-            print("\nEngine stopped.")
-
-    elif args.action == "chat":
-        # 対話型 CLI クライアントを起動
-        print(f"💬 Opening Brownie Chat Terminal (Build: {BUILD_ID})...")
-        try:
-            subprocess.run([venv_python, "src/interfaces/cli.py"])
-        except KeyboardInterrupt:
-            print("\nChat session closed.")
-
-    elif args.action == "run":
-        # 単発プロンプト実行
-        prompt = " ".join(args.remainder)
-        if not prompt:
-            print("Error: Please provide a prompt for 'run' command.")
-            sys.exit(1)
-        print(f"🏃 Running task: {prompt}")
-        # Note: 内部的には API 経由で実行するのが最も確実です
-        try:
-            import requests
-            res = requests.post("http://localhost:8000/v1/chat/completions", json={
-                "model": "brownie-v2",
-                "messages": [{"role": "user", "content": prompt}]
-            }, timeout=300)
-            if res.status_code == 200:
-                print("\n[Brownie's Answer]")
-                print(res.json()["choices"][0]["message"]["content"])
-            else:
-                print(f"Error: Engine returned {res.status_code}. (Is 'brwn engine' running?)")
-        except Exception as e:
-            print(f"Error connecting to engine: {e}. Please run 'brwn engine' first in another terminal.")
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Brownie CLI", add_help=True)
-    parser.add_argument("action", nargs="?", choices=["start", "stop", "restart", "status", "logs", "log", "queue", "debug", "reset", "logout", "serve", "engine", "chat", "run"], help="Command to execute")
-    parser.add_argument("remainder", nargs=argparse.REMAINDER, help="Additional arguments or prompt for 'run'")
-    
+    parser = argparse.ArgumentParser(description="Brownie CLI")
+    parser.add_argument("action", choices=["start", "stop", "restart", "status", "logs", "log", "queue", "debug", "reset", "logout", "serve"])
     args = parser.parse_args()
-    
-    # アクションが指定されていない、あるいは choices にない場合は 'run' とみなし、引数すべてをプロンプトにする
-    if not args.action or args.action not in ["start", "stop", "restart", "status", "logs", "log", "queue", "debug", "reset", "logout", "serve", "engine", "chat", "run"]:
-        if args.action:
-            args.remainder = [args.action] + args.remainder
-        args.action = "run"
-        if not args.remainder:
-            parser.print_help()
-            sys.exit(0)
-            
     run_command(args)
