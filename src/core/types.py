@@ -10,18 +10,25 @@ class TaskState(BaseModel):
     """
 
     task_id: str
+    instruction: str = ""
+    repo_path: Optional[str] = None
     status: str = "InQueue"
     history: List[Dict[str, Any]] = Field(default_factory=list)
 
-    # 以下は各 MCP サーバーから返される JSON データを保持する
+    # Phase 0/1: Intent & Analysis
     intent_confirmed: bool = False
     intent_summary: Optional[str] = None
     intent_draft: Optional[str] = None
+    evaluation_axes: List[str] = Field(default_factory=list)
+    required_mcp_servers: List[str] = Field(default_factory=list)
 
     analysis_proposal: Optional[Dict[str, Any]] = None
     validated_plan: Optional[str] = None
 
-    ringi_document: Optional[str] = None
+    # Platform Generic metadata
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    # Governance & Results
     governance_decision: Optional[str] = None
 
     has_changes: bool = False
