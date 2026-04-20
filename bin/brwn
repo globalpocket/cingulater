@@ -145,215 +145,105 @@ def manage_docker_services(base_dir, action):
             print(f"⚠️ Failed to {action} ChromaDB: {e}")
         return "ERROR"
 
-def run_command(args):
-    """メインプロセス/Watchdog の制御"""
+def is_engine_running(port=8000):
+    """APIエンジンが応答するか確認"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
+
+def ensure_engine_started():
+    """エンジンが動いていなければバックグラウンドで起動する"""
+    if is_engine_running():
+        return True
+    
+    print("🚀 Starting Brownie Engine in background...")
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     venv_python = os.path.join(base_dir, ".venv", "bin", "python")
     
-    # 実行前チェック: start と debug は排他的かつ事前認証が必要
-    if args.action in ["start", "debug"]:
-        pid = get_running_pid()
-        if pid is not None:
-            # プロセスが実在する場合のみ停止させる
-            print(f"Error: Brownie is already running (PID: {pid}).")
-            sys.exit(1)
-        
-        # 共通の認証チェック
-        env_path = os.path.join(base_dir, ".env")
-        from dotenv import load_dotenv
-        load_dotenv(env_path)
-        
-        token = os.getenv("GITHUB_TOKEN")
-        user_name = os.getenv("USER_NAME")
-        
-        if not token or not user_name:
-            print("🔑 GitHub authentication required.")
-            new_token = input("Enter your GitHub Personal Access Token: ").strip()
-            if not new_token:
-                print("Error: Token is required to start Brownie.")
-                sys.exit(1)
-            
-            print("Checking token and fetching username...")
-            try:
-                import httpx
-                res = httpx.get("https://api.github.com/user", headers={"Authorization": f"token {new_token}"})
-                res.raise_for_status()
-                user_data = res.json()
-                new_user_name = user_data["login"]
-                print(f"✅ Authenticated as: {new_user_name}")
-                
-                env_lines = []
-                if os.path.exists(env_path):
-                    with open(env_path, "r") as f:
-                        for line in f:
-                            if not line.startswith("GITHUB_TOKEN=") and not line.startswith("USER_NAME="):
-                                env_lines.append(line)
-                
-                env_lines.append(f"GITHUB_TOKEN={new_token}\n")
-                env_lines.append(f"USER_NAME={new_user_name}\n")
-                
-                with open(env_path, "w") as f:
-                    f.writelines(env_lines)
-                
-                os.environ["GITHUB_TOKEN"] = new_token
-                os.environ["USER_NAME"] = new_user_name
-            except Exception as e:
-                print(f"❌ Failed to verify token: {e}")
-                sys.exit(1)
+    # 標準入出力を切り離してバックグラウンド実行
+    log_file = open(os.path.join(base_dir, "logs", "engine.log"), "a")
+    subprocess.Popen(
+        [venv_python, "src/api/server.py"],
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True, # セッションを分離して常駐させる
+        cwd=base_dir
+    )
+    
+    # 起動を待機
+    for i in range(10):
+        if is_engine_running():
+            print("✅ Engine is online.")
+            return True
+        time.sleep(1)
+    print("❌ Failed to start engine. check logs/engine.log")
+    return False
+
+def run_command(args):
+    """Resident Driver モデルに基づくコマンド実行"""
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    venv_python = os.path.join(base_dir, ".venv", "bin", "python")
+
+    # 管理コマンドの処理
+    if args.action == "stop":
+        print("🛑 Stopping Brownie Engine...")
+        # API経由で終了させるか、PIDを一掃する。ここでは既存の kill ロジックを活用。
+        kill_all_brownie()
+        return
 
     if args.action == "start":
-        manage_docker_services(base_dir, "start")
-        print(f"Starting Brownie system (Build: {BUILD_ID})...")
-        process = subprocess.Popen(
-            [venv_python, "src/core/watchdog.py"],
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        with open(PID_FILE, "w") as f:
-            f.write(str(process.pid))
-        print(f"Brownie started (Watchdog PID: {process.pid}).")
+        ensure_engine_started()
+        return
 
-    elif args.action == "debug":
-        manage_docker_services(base_dir, "start")
-        print(f"Starting Brownie in DEBUG mode (Build: {BUILD_ID})...")
-        my_pid = os.getpid()
-        with open(PID_FILE, "w") as f:
-            f.write(str(my_pid))
+    if args.action == "status":
+        if is_engine_running():
+            print("Brownie Engine: ACTIVE (http://localhost:8000)")
+        else:
+            print("Brownie Engine: STOPPED")
+        return
 
-        envs = os.environ.copy()
-        envs["BROWNIE_DEBUG"] = "1"
-        try:
-            subprocess.run([venv_python, "src/core/watchdog.py"], env=envs)
-        except KeyboardInterrupt:
-            print("\nDebug mode stopped by user.")
-        finally:
-            if os.path.exists(PID_FILE):
-                os.remove(PID_FILE)
-            # ユーザーがCtrl+Cで抜けた場合、関連コンテナも停止する
-            manage_docker_services(base_dir, "stop")
-
-    elif args.action == "stop" or args.action == "restart":
-        pid = get_running_pid()
-        if pid:
-            print(f"Stopping Brownie system (PID: {pid})...")
-            try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-                time.sleep(2)
-            except:
-                pass
-        
+    if args.action == "reset":
         kill_all_brownie()
-        manage_docker_services(base_dir, "stop")
-        
-        if args.action == "restart":
-            time.sleep(1)
-            args.action = "start"
-            run_command(args)
-
-    elif args.action == "status":
-        running = False
-        try:
-            lock_f = open(LOCK_FILE, "r+")
-            try:
-                fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(lock_f, fcntl.LOCK_UN)
-            except BlockingIOError:
-                running = True
-            lock_f.close()
-        except FileNotFoundError:
-            pass
-        
-        pid = get_running_pid()
-        hibernation_file = "/tmp/brownie_hibernation.json"
-        is_hibernating = False
-        hibernation_msg = ""
-        
-        if os.path.exists(hibernation_file):
-            try:
-                import json
-                with open(hibernation_file, "r") as f:
-                    data = json.load(f)
-                    reset_at = data.get("reset_at", 0)
-                    remaining = int(reset_at - time.time())
-                    if remaining > 0:
-                        is_hibernating = True
-                        mins, secs = divmod(remaining, 60)
-                        hibernation_msg = f" (HIBERNATING - Wake up at {data.get('wake_up_at')}, Remaining: {mins}m {secs}s)"
-            except:
-                pass
-
-        if running or pid:
-            status_text = "ACTIVE" if not is_hibernating else "HIBERNATING"
-            print(f"Brownie is {status_text} (PID: {pid or 'Unknown'}){hibernation_msg}")
-        else:
-            print("Brownie is STOPPED")
-            
-        # Docker サービスのステータスを追加で表示
-        docker_status = manage_docker_services(base_dir, "status")
-        print(f"Docker Services: {docker_status}")
-
-        # Worker の Heartbeat 情報（リソース使用量）を表示
-        try:
-            from src.core.workers.pool import huey
-            conn = huey.storage.conn
-            keys = conn.keys("brownie:heartbeat:*")
-            if keys:
-                print("\nActive Worker Metrics:")
-                for key in keys:
-                    data = conn.get(key)
-                    if data:
-                        hb = json.loads(data)
-                        task_id = hb.get("task_id", "Unknown")
-                        mem = hb.get("worker_rss_gb", 0.0)
-                        cpu = hb.get("cpu_pct", 0.0)
-                        elapsed = time.time() - hb.get("timestamp", 0)
-                        print(f"  - [{task_id}] Mem: {mem:.2f} GB, CPU: {cpu:.1f}%, Last Seen: {int(elapsed)}s ago")
-        except Exception:
-            pass
-
-    elif args.action == "logs" or args.action == "log":
-        log_file = os.path.join(base_dir, "logs", "brownie.log")
-        if os.path.exists(log_file):
-            try:
-                subprocess.run(["tail", "-f", log_file])
-            except KeyboardInterrupt:
-                print("\nStopped viewing logs.")
-        else:
-            print("No log file found.")
-
-    elif args.action == "logout":
-        args.action = "stop"
-        run_command(args)
-        
-        env_path = os.path.join(base_dir, ".env")
-        if os.path.exists(env_path):
-            print("Wiping GitHub credentials from .env...")
-            new_lines = []
-            with open(env_path, "r") as f:
-                for line in f:
-                    if not line.startswith("GITHUB_TOKEN=") and not line.startswith("USER_NAME="):
-                        new_lines.append(line)
-            with open(env_path, "w") as f:
-                f.writelines(new_lines)
-            print("✅ Logout successful.")
-        else:
-            print("No .env file found. Already logged out.")
-
-    elif args.action == "reset":
-        args.action = "stop"
-        run_command(args)
-        print("Starting cleanup process...")
         subprocess.run([venv_python, "src/utils/reset_system.py"])
+        return
 
-    elif args.action == "serve":
-        # Brownie Agent Server (MCP) を stdio モードで起動
-        # このモードでは外部の MCP クライアントがライフサイクルを管理します
-        print(f"Starting Brownie Agent MCP Server (Build: {BUILD_ID})...", file=sys.stderr)
-        os.execv(venv_python, [venv_python, "-m", "src.mcp_server.brownie_agent_server"])
+    # 通常の対話・実行フロー
+    if not ensure_engine_started():
+        sys.exit(1)
+
+    if args.action == "chat":
+        subprocess.run([venv_python, "src/interfaces/cli.py"])
+    elif args.action == "run":
+        prompt = " ".join(args.remainder)
+        import requests
+        try:
+            res = requests.post("http://localhost:8000/v1/chat/completions", json={
+                "model": "brownie-v2",
+                "messages": [{"role": "user", "content": prompt}]
+            }, timeout=300)
+            if res.status_code == 200:
+                print(res.json()["choices"][0]["message"]["content"])
+            else:
+                print(f"Error: Engine returned {res.status_code}")
+        except Exception as e:
+            print(f"Connection Error: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Brownie CLI")
-    parser.add_argument("action", choices=["start", "stop", "restart", "status", "logs", "log", "queue", "debug", "reset", "logout", "serve"])
+    parser.add_argument("action", nargs="?", help="Action (start, stop, chat, status, etc.) or just a prompt")
+    parser.add_argument("remainder", nargs=argparse.REMAINDER)
+    
     args = parser.parse_args()
+
+    # コマンド判定ロジック
+    known_actions = ["start", "stop", "status", "reset", "chat", "run"]
+    
+    if not args.action:
+        # 引数なし：対話チャットへ
+        args.action = "chat"
+    elif args.action not in known_actions:
+        # 不明なアクション：プロンプト実行（run）へ
+        args.remainder = [args.action] + args.remainder
+        args.action = "run"
+            
     run_command(args)
