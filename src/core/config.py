@@ -30,6 +30,17 @@ class AgentSettings(BaseSettings):
     }
     repositories: List[str] = ["globalpocket/brownie"]
     exclude_repositories: List[str] = []
+    allowed_commands: List[str] = [
+        "git",
+        "ruff",
+        "bandit",
+        "semgrep",
+        "npx",
+        "python",
+        "uv",
+        "gh",
+        "pytest",
+    ]
 
 
 class LLMSettings(BaseSettings):
