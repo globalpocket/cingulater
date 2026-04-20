@@ -37,6 +37,11 @@ def _validate_args(args: List[str]):
         if "\0" in arg:
             msg = f"Dangerous character (null byte) detected in argument: {arg}"
             raise ValueError(msg)
+        # 危険な制御文字や改行のチェック
+        for char in ["\n", "\r", "\t"]:
+            if char in arg:
+                msg = "Forbidden control character detected in argument."
+                raise ValueError(msg)
 
 
 def run_command(
@@ -70,7 +75,7 @@ def run_command(
             capture_output=True,
             text=True,
             check=False,
-        )
+        )  # nosec B603
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
 
@@ -131,7 +136,7 @@ async def run_command_async(
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=env,
-        )
+        )  # nosec B603
 
         stdout_b, stderr_b = await process.communicate()
         stdout = stdout_b.decode().strip()

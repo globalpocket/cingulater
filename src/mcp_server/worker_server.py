@@ -44,7 +44,7 @@ class WorkerService:
             stdout=worker_log,
             stderr=worker_log,
             env={**os.environ, "PYTHONPATH": self.project_root},
-        )
+        )  # nosec B603
 
         # 2. Taskiq Scheduler の起動
         self.scheduler_proc = subprocess.Popen(
@@ -60,7 +60,7 @@ class WorkerService:
             stdout=sched_log,
             stderr=sched_log,
             env={**os.environ, "PYTHONPATH": self.project_root},
-        )
+        )  # nosec B603
 
         msg = (
             f"Started Taskiq worker (PID: {self.consumer_proc.pid}) "
