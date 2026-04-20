@@ -8,7 +8,7 @@ from rich.live import Live
 
 console = Console()
 
-def chat_loop(api_url: str = "http://localhost:8000/v1"):
+def chat_loop(api_url: str = "http://localhost:8137/v1"):
     """Brownie エンジンと直接壁打ちする対話ループ"""
     console.print("[bold cyan]BROWNIE Interactive CLI (OpenAI Protocol)[/bold cyan]")
     console.print(f"Connected to: {api_url}")

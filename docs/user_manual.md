@@ -9,7 +9,7 @@ BROWNIE は、一度起動すれば常駐し続ける **「Resident Driver」** 
 ```bash
 bin/brwn
 ```
-*一度起動すれば、ターミナルを閉じても Brownie（エンジン）は裏側で常駐し続けます。*
+*一度起動すれば、ターミナルを閉じても Brownie（エンジン）は裏側でポート 8137 で常駐し続けます。*
 
 ### 直接指示を与える (Direct Prompt)
 対話モードに入らず、一行で指示を出すことも可能です。
@@ -32,7 +32,7 @@ Brownie エンジン（知能の本体）は自動的に管理されますが、
 ## 3. IDE 連携
 常駐している Brownie は OpenAI 互換 API を提供しているため、IDE (VS Code 等) からも同時に接続可能です。
 
-- **Endpoint**: `http://localhost:8000/v1`
+- **Endpoint**: `http://localhost:8137/v1`
 - **Model**: `brownie-v2`
 
 ## 4. ログの確認
