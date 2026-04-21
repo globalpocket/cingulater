@@ -1,5 +1,10 @@
 ---
 trigger: always_on
+generationConfig:
+  temperature: 0.2
+  topK: 2
+  topP: 0.9
+  frequencyPenalty: 0.5
 ---
 
 ## 自己否定の厳守
