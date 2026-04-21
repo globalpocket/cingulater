@@ -1,10 +1,9 @@
-import sys
 import requests
-import json
 import typer
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
 from rich.console import Console
 from rich.markdown import Markdown
-from rich.live import Live
 
 console = Console()
 
@@ -12,19 +11,36 @@ def chat_loop(api_url: str = "http://localhost:8137/v1"):
     """Brownie エンジンと直接壁打ちする対話ループ"""
     console.print("[bold cyan]BROWNIE Interactive CLI (OpenAI Protocol)[/bold cyan]")
     console.print(f"Connected to: {api_url}")
-    console.print("Type 'exit' or 'quit' to stop.\n")
+    console.print("Type 'exit' or 'quit' to stop.")
+    console.print(
+        "Press [bold yellow]Alt+Enter[/bold yellow] or "
+        "[bold yellow]Esc+Enter[/bold yellow] to submit (multiline allowed).\n"
+    )
 
     history = []
+    session = PromptSession()
 
     while True:
         try:
-            user_input = console.input("[bold green]You > [/bold green]")
+            # prompt_toolkit を使用して日本語入力とマルチラインをサポート
+            user_input = session.prompt(
+                HTML('<style fg="ansigreen" font="bold">You &gt; </style>'),
+                multiline=True
+            )
+            
+            user_input = user_input.strip()
+            if not user_input:
+                continue
+                
             if user_input.lower() in ["exit", "quit"]:
                 break
             
             history.append({"role": "user", "content": user_input})
             
-            with console.status("[bold yellow]Brownie is thinking (Autonomous reasoning in progress)...[/bold yellow]"):
+            with console.status(
+                "[bold yellow]Brownie is thinking "
+                "(Autonomous reasoning in progress)...[/bold yellow]"
+            ):
                 response = requests.post(
                     f"{api_url}/chat/completions",
                     json={
@@ -45,7 +61,9 @@ def chat_loop(api_url: str = "http://localhost:8137/v1"):
                 
                 history.append({"role": "assistant", "content": assistant_message})
             else:
-                console.print(f"[bold red]Error:[/bold red] API returned {response.status_code}")
+                console.print(
+                    f"[bold red]Error:[/bold red] API returned {response.status_code}"
+                )
                 console.print(response.text)
                 
         except KeyboardInterrupt:
