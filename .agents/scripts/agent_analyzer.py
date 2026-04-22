@@ -45,6 +45,7 @@ async def analyze():
     # 1. Repomix (全体俯瞰)
     await run_tool(
         ["npx", "repomix", "--output", str(ANALYZE_DIR / "repomix.txt"), "--include", "src/**", "--no-copy"],
+        output_file=ANALYZE_DIR / "repomix.txt",
         description="Aggregating context (Repomix)"
     )
 
