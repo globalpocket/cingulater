@@ -56,12 +56,15 @@ async def chat_completions(request: ChatCompletionRequest):
     logger.info(f"Received completion request for model: {request.model}")
     
     # Orchestrator へタスクを投入 (OpenAI 互換メッセージをそのまま渡す)
-    messages_dict = [m.dict() for m in request.messages]
+    messages_dict = [m.model_dump() for m in request.messages]
     result = await orchestrator.submit_chat_completion(messages_dict, stream=request.stream)
     
-    # 応答の組み立て (自律修正の結果をテキストとして返却)
-    # note: result の構造はワークフローの出力に依存。ここでは文字列化して返却。
-    content = str(result.get("output", "Task completed without specific output."))
+    # 応答の組み立て
+    if isinstance(result, dict) and "choices" in result:
+        message = result["choices"][0]["message"]
+        content = message.get("content") or message.get("reasoning") or "No content generated."
+    else:
+        content = str(result.get("output", "Task completed without specific output."))
     
     return ChatCompletionResponse(
         choices=[
