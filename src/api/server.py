@@ -8,11 +8,7 @@ from loguru import logger
 from src.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Brownie OpenAI-Compatible API")
-
-# グローバルな Orchestrator インスタンス (実際には main.py 等で初期化される)
 orchestrator: Optional[Orchestrator] = None
-
-# --- OpenAI 規格のデータモデル ---
 
 class ChatMessage(BaseModel):
     role: str
@@ -22,7 +18,6 @@ class ChatCompletionRequest(BaseModel):
     model: str = "brownie-v2"
     messages: List[ChatMessage]
     stream: bool = False
-    temperature: Optional[float] = 0.7
 
 class ChatCompletionResponseChoice(BaseModel):
     index: int
@@ -36,35 +31,25 @@ class ChatCompletionResponse(BaseModel):
     model: str = "brownie-v2"
     choices: List[ChatCompletionResponseChoice]
 
-# --- エンドポイント ---
-
 @app.on_event("startup")
 async def startup_event():
     global orchestrator
     config_path = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
-    logger.info(f"Initializing Brownie Engine for API Server (Config: {config_path})")
+    logger.info(f"Initializing Brownie Core (Config: {config_path})")
     orchestrator = Orchestrator(config_path)
-    # エンジンを非同期でバックグラウンド起動 (MCPマネージャー等のライフサイクル開始)
-    import asyncio
-    asyncio.create_task(orchestrator.start())
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(request: ChatCompletionRequest):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Brownie Engine is not initialized")
 
-    logger.info(f"Received completion request for model: {request.model}")
-    
-    # Orchestrator へタスクを投入 (OpenAI 互換メッセージをそのまま渡す)
     messages_dict = [m.model_dump() for m in request.messages]
     result = await orchestrator.submit_chat_completion(messages_dict, stream=request.stream)
     
-    # 応答の組み立て
     if isinstance(result, dict) and "choices" in result:
-        message = result["choices"][0]["message"]
-        content = message.get("content") or message.get("reasoning") or "No content generated."
+        content = result["choices"][0]["message"].get("content", "No content.")
     else:
-        content = str(result.get("output", "Task completed without specific output."))
+        content = "Error: Invalid response from core."
     
     return ChatCompletionResponse(
         choices=[
@@ -77,7 +62,7 @@ async def chat_completions(request: ChatCompletionRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "engine_running": orchestrator.is_running if orchestrator else False}
+    return {"status": "ok", "engine_ready": orchestrator is not None}
 
 if __name__ == "__main__":
     import uvicorn
