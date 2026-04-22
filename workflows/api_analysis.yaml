@@ -1,8 +1,0 @@
-name: api_analysis
-description: "プロジェクトの公開 API（REST/GraphQL 等）や内部インターフェースを精査し、ドキュメントとの整合性や設計の妥当性を分析するワークフロー"
-start_node: analyze
-nodes:
-  analyze:
-    prompt_file: api_analysis.md
-    model: planner
-    next: END

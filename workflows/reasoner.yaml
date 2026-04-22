@@ -1,8 +1,0 @@
-name: reasoner
-description: "複雑な課題に対して自律的に推論（Sequential Thinking）を行い、解決策を導き出すエージェント"
-start_node: reason
-nodes:
-  reason:
-    prompt_file: planner.md
-    model: planner
-    next: END

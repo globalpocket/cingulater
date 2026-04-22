@@ -1,9 +1,0 @@
-name: handshake
-description: "ユーザーへの初期挨拶とコンテキストに基づいたヒアリングを実行します。"
-start_node: handshake
-nodes:
-  handshake:
-    prompt_file: handshake.md
-    model: planner
-    next: END
-

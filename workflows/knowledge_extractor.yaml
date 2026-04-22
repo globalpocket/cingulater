@@ -1,8 +1,0 @@
-name: knowledge_extractor
-description: "ファイル内容を解析し、検索・分析に最適化されたチャンクとメタデータを抽出します。"
-start_node: extract
-nodes:
-  extract:
-    prompt_file: knowledge_extractor.md
-    model: planner
-    next: END

@@ -1,8 +1,0 @@
-name: interpreter
-description: "ユーザーの指示を分析し、実行フェーズに進むべきか確認が必要かを判断するエージェント"
-start_node: analyze
-nodes:
-  analyze:
-    prompt_file: interpreter.md
-    model: planner
-    next: END
