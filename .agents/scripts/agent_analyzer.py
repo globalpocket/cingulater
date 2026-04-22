@@ -1,124 +1,82 @@
 #!/usr/bin/env python3
 import asyncio
-import datetime
 import os
-import sys
-from typing import Any, Dict
+import subprocess
+import json
+from pathlib import Path
+from datetime import datetime
 
-# プロジェクトルートをパスに追加
-sys.path.append(os.getcwd())
+# 解析結果の出力先
+ANALYZE_DIR = Path(".analyze")
 
-from src.core.mcp_server_manager import MCPServerManager
-
-
-async def safe_call_tool(client, tool_name: str, arguments: Dict[str, Any]) -> str:
-    """ツールを安全に呼び出し、結果をテキストで返す。"""
-    if not client:
-        return "Error: Client not connected"
-
+async def run_tool(command: list, output_file: Path = None, description: str = ""):
+    """コマンドを実行し、結果をファイルまたは標準出力に返す"""
+    print(f"🚀 [ANALYZER] {description}...")
     try:
-        # セッション確立待ち
-        for _ in range(10):
-            if client.session:
-                break
-            await asyncio.sleep(0.5)
-
-        result = await client.call_tool(tool_name, arguments)
-
-        # CallToolResult からテキストを抽出
-        if hasattr(result, "content") and isinstance(result.content, list):
-            return "\n".join([c.text for c in result.content if hasattr(c, "text")])
-        return str(result)
+        env = os.environ.copy()
+        
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        stdout, stderr = await process.communicate()
+        
+        out_text = stdout.decode().strip()
+        err_text = stderr.decode().strip()
+        
+        if output_file:
+            ANALYZE_DIR.mkdir(exist_ok=True)
+            # 正常終了でなくても（警告など）、出力を保存する
+            content = out_text if out_text else err_text
+            output_file.write_text(content)
+            print(f"✅ Saved to {output_file}")
+        
+        return out_text
     except Exception as e:
-        return f"Execution error in tool '{tool_name}': {e}"
-
+        print(f"❌ Error running {description}: {e}")
+        return str(e)
 
 async def analyze():
-    project_root = os.getcwd()
-    config_path = "config/config.yaml"
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = f"docs/analysis/AGENT_REPORT_{timestamp}.md"
+    print(f"🔍 [AGENT] Starting Project Analysis at {datetime.now().isoformat()}...")
+    ANALYZE_DIR.mkdir(exist_ok=True)
 
-    # ユーザー設定
-    user_id = 1000  # config.yaml に合わせたデフォルト
-    group_id = 1000
+    # 1. Repomix (全体俯瞰)
+    await run_tool(
+        ["npx", "repomix", "--output", str(ANALYZE_DIR / "repomix.txt"), "--include", "src/**", "--no-copy"],
+        description="Aggregating context (Repomix)"
+    )
 
-    print(f"🔍 [AGENT] Starting In-depth Analysis: {project_root}")
+    # 2. Ruff (Linting)
+    await run_tool(
+        ["ruff", "check", "src"],
+        output_file=ANALYZE_DIR / "lint_report.md",
+        description="Checking code hygiene (Ruff)"
+    )
 
-    report_sections = [
-        f"# BROWNIE Agent Analysis Report - {timestamp}",
-        f"- **Project Root:** `{project_root}`",
-        f"- **Time:** {datetime.datetime.now().isoformat()}",
-        "\n---",
-    ]
+    # 3. Semgrep (Security Scan)
+    await run_tool(
+        ["semgrep", "scan", "--config", "auto", "src", "--json"],
+        output_file=ANALYZE_DIR / "semgrep_results.json",
+        description="Running security scan (Semgrep)"
+    )
 
-    async with MCPServerManager(project_root, config_path) as manager:
-        print("🚀 Initializing Workspace Server...")
-        workspace = await manager.start_workspace_server(
-            project_root, project_root, user_id, group_id
-        )
+    # 4. ast-grep (Structural Analysis)
+    await run_tool(
+        ["sg", "scan", "--pattern", "class $CLASS: $$$", "src", "--json"],
+        output_file=ANALYZE_DIR / "structure.json",
+        description="Analyzing structure (ast-grep)"
+    )
 
-        # 1. Semgrep解析
-        print("📡 Running Semgrep...")
-        semgrep_res = await safe_call_tool(workspace, "run_semgrep", {})
-        report_sections.append("## 1. Static Analysis (Semgrep)")
-        report_sections.append(f"```\n{semgrep_res}\n```\n")
+    # 5. Bandit (Security specific)
+    await run_tool(
+        ["bandit", "-r", "src", "-f", "json"],
+        output_file=ANALYZE_DIR / "bandit_results.json",
+        description="Running Bandit security scan"
+    )
 
-        # 2. セキュリティスキャン (Bandit)
-        print("🛡️ Running Security Scan (Bandit)...")
-        sec_res = await safe_call_tool(workspace, "scan_security", {"path": "."})
-        report_sections.append("## 2. Security Scan (Bandit)")
-        report_sections.append(f"```\n{sec_res}\n```\n")
-
-        # 3. コード品質 (Ruff/Format)
-        print("✨ Checking Code Hygiene (Ruff)...")
-        lint_res = await safe_call_tool(workspace, "lint_code", {"path": "."})
-        report_sections.append("## 3. Code Quality (Ruff)")
-        report_sections.append(f"```\n{lint_res}\n```\n")
-
-        # 4. Repomix による集約
-        print("📦 Aggregating Context (Repomix)...")
-        # repomix がインストールされている前提で run_command を使用
-        repomix_cmd = (
-            "npx -y repomix --output .tmp/repomix-output.md "
-            "--exclude '.git/**,.brwn/**,docs/analysis/**,logs/**'"
-        )
-        repomix_res = await safe_call_tool(
-            workspace, "run_command", {"command": repomix_cmd}
-        )
-        report_sections.append("## 4. Context Aggregation (Repomix Status)")
-        report_sections.append(f"```\n{repomix_res}\n```\n")
-        if "ExitStatus: 0" in repomix_res:
-            report_sections.append(
-                "Repository context has been packed into `.tmp/repomix-output.md`.\n"
-            )
-
-        # 5. Knowledge Server による依存関係分析 (もし起動可能なら)
-        print("🧠 Analyzing Knowledge Graph...")
-        try:
-            knowledge = await manager.start_knowledge_server(
-                project_root, "~/.local/share/brownie/vector_db", "brownie"
-            )
-            # tool 名は knowledge_server.py の実装に依存
-            # （今回は discovery の意味で list_tools 的な挙動を期待）
-            kn_res = await safe_call_tool(
-                knowledge, "get_graph_stats", {}
-            )  # 実装されていると仮定
-            report_sections.append("## 5. Architectural Stats (Knowledge Server)")
-            report_sections.append(f"```\n{kn_res}\n```\n")
-        except Exception as e:
-            report_sections.append(
-                f"## 5. Architectural Stats\nKnowledge server failed to start: {e}\n"
-            )
-
-    # レポート保存
-    os.makedirs(os.path.dirname(report_path), exist_ok=True)
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(report_sections))
-
-    print(f"✅ Analysis report generated at: {report_path}")
-    return report_path
-
+    print(f"\n✨ Analysis complete. Results are persistently stored in: {ANALYZE_DIR.absolute()}")
 
 if __name__ == "__main__":
     asyncio.run(analyze())
