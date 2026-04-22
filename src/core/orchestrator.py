@@ -143,27 +143,79 @@ class Orchestrator:
                     await self.shutdown()
 
     async def submit_chat_completion(self, messages: list[dict], stream: bool = False):
-        """OpenAI API 互換のタスク投入インターフェース"""
+        """OpenAI API 互換の対話投入インターフェース"""
         # 最新のメッセージからユーザーの指示を抽出
         input_text = messages[-1].get("content", "")
-        logger.info(f"Received OpenAI-compatible request: {input_text[:50]}...")
+        logger.info(f"Received interaction request: {input_text[:50]}...")
 
-        # 汎用タスクコンテキストの生成
-        context = TaskContext(
-            topic="OpenAI API Request",
-            instructions=input_text,
-            raw_messages=messages
-        )
+        # Orchestrator 自身の知性（LLM）を用いて対話（壁打ち）を行う
+        return await self.orchestrate(messages, stream=stream)
 
-        # ワークフローを実行
-        # note: 既存のワークフローロジックを流用し、自律修正シーケンスを開始させる
-        result = await self._workflow_app.ainvoke(
-            {"input": input_text, "context": context},
-            config={"configurable": {"thread_id": str(int(time.time()))}}
-        )
-        
-        # 本来はストリーミング返却が望ましいが、まずは一括返却の MVP を目指す
-        return result
+    async def orchestrate(self, messages: list[dict], stream: bool = False):
+        """Orchestrator としてユーザーと対話し、必要に応じてツールを指揮する"""
+        if not self.is_running:
+            await self._wait_for_llm_ready()
+
+        model_name = self.settings.llm.models.get("orchestrator", "default")
+        endpoint = self.settings.llm.orchestrator_endpoint
+
+        logger.debug(f"Orchestrating via {model_name} at {endpoint}")
+
+        # ワークフロー群をツールとして定義
+        tools = []
+        for wf_id, wf in self.dynamic_workflows.items():
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": f"run_workflow_{wf_id}",
+                    "description": wf.__doc__ or f"Execute workflow: {wf_id}",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "reason": {"type": "string", "description": "Why this workflow is needed"}
+                        }
+                    }
+                }
+            })
+
+        # LLM へのリクエスト
+        payload = {
+            "model": model_name,
+            "messages": messages,
+            "tools": tools if tools else None,
+            "tool_choice": "auto" if tools else None,
+            "stream": stream
+        }
+
+        try:
+            resp = await self.http_client.post(
+                f"{endpoint}/chat/completions",
+                json=payload,
+                timeout=self.settings.llm.timeout_sec
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                logger.debug(f"LLM Response Raw: {result}")
+                # ツール呼び出しのハンドリングは将来的な拡張として予約し、
+                # 現状は LLM の回答をそのまま返す（壁打ち成立を優先）
+                return result
+            else:
+                logger.error(f"Orchestrator LLM error: {resp.status_code}")
+                return {
+                    "choices": [{
+                        "message": {"role": "assistant", "content": f"申し訳ありません。知能エンジンがエラーを返しました ({resp.status_code})。"},
+                        "finish_reason": "error"
+                    }]
+                }
+        except Exception as e:
+            logger.error(f"Failed to communicate with Orchestrator LLM: {e}")
+            return {
+                "choices": [{
+                    "message": {"role": "assistant", "content": f"接続エラーが発生しました: {e}"},
+                    "finish_reason": "error"
+                }]
+            }
+
 
     async def shutdown(self):
         """オーケストレーターの完全シャットダウン (全滅保証)"""
@@ -240,7 +292,7 @@ class Orchestrator:
         """LLM サーバーの死活監視と自動復旧"""
         async with self._llm_startup_lock:
             models_config = [
-                ("planner", self.settings.llm.planner_endpoint, 8080),
+                ("orchestrator", self.settings.llm.orchestrator_endpoint, 8080),
                 ("executor", self.settings.llm.executor_endpoint, 8081),
             ]
             for role, endpoint, port in models_config:
@@ -452,13 +504,13 @@ class Orchestrator:
         async with self._llm_startup_lock:
             while True:
                 try:
-                    # プランナーが応答するかチェック
+                    # オーケストレーターが応答するかチェック
                     resp = await self.http_client.get(
-                        f"{self.settings.llm.planner_endpoint}/models", timeout=2.0
+                        f"{self.settings.llm.orchestrator_endpoint}/models", timeout=2.0
                     )
                     if resp.status_code == 200:
                         break
                 except Exception as e:
                     logger.debug(f"LLM readiness check failed (expected): {e}")
-                logger.info("Waiting for LLM servers to be online...")
+                logger.info("Waiting for Orchestrator LLM server to be online...")
                 await asyncio.sleep(5)

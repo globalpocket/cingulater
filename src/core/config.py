@@ -44,14 +44,14 @@ class AgentSettings(BaseSettings):
 
 
 class LLMSettings(BaseSettings):
-    planner_endpoint: str = "http://localhost:8080/v1"
+    orchestrator_endpoint: str = "http://localhost:8080/v1"
     executor_endpoint: str = "http://localhost:8081/v1"
     timeout_sec: int = 300
     tokenizer: str = "auto"
     max_context_tokens: int = 12000
     model_dir: str = "~/.local/share/brownie/models"
     models: Dict[str, str] = {
-        "planner": "mlx-community/gemma-4-26b-a4b-it-4bit",
+        "orchestrator": "mlx-community/gemma-4-26b-a4b-it-4bit",
         "executor": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
     }
 

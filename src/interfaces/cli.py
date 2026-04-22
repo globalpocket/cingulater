@@ -11,11 +11,11 @@ console = Console()
 
 def chat_loop(api_url: str = "http://localhost:8137/v1"):
     """Brownie エンジンと直接壁打ちする対話ループ"""
-    console.print("[bold cyan]BROWNIE Interactive CLI (OpenAI Protocol)[/bold cyan]")
-    console.print(f"Connected to: {api_url}")
-    console.print("Type 'exit' or 'quit' to stop.")
+    console.print("[bold cyan]🤖 Brownie Interaction Mode[/bold cyan]")
+    console.print(f"Connected to Engine: {api_url}")
+    console.print("Type 'exit' or 'quit' to end session.")
     console.print(
-        "Press [bold yellow]Enter[/bold yellow] to submit, "
+        "Press [bold yellow]Enter[/bold yellow] to send, "
         "[bold yellow]Alt+Enter[/bold yellow] for newline.\n"
     )
 
@@ -37,7 +37,7 @@ def chat_loop(api_url: str = "http://localhost:8137/v1"):
         try:
             # prompt_toolkit を使用して日本語入力とマルチラインをサポート
             user_input = session.prompt(
-                HTML('<style fg="ansigreen" font="bold">You &gt; </style>'),
+                HTML('<style fg="ansigreen" font="bold">You > </style>'),
                 multiline=True,
             )
 
@@ -51,13 +51,12 @@ def chat_loop(api_url: str = "http://localhost:8137/v1"):
             history.append({"role": "user", "content": user_input})
 
             with console.status(
-                "[bold yellow]Brownie is thinking "
-                "(Autonomous reasoning in progress)...[/bold yellow]"
+                "[bold yellow]Brownie is processing your request...[/bold yellow]"
             ):
                 response = requests.post(
                     f"{api_url}/chat/completions",
                     json={"model": "brownie-v2", "messages": history, "stream": False},
-                    timeout=300,  # 自律実行のためにタイムアウトを長く設定
+                    timeout=300,
                 )
 
             if response.status_code == 200:

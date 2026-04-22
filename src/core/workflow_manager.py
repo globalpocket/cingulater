@@ -141,8 +141,8 @@ class WorkflowRegistry:
 
     def _create_callable(self, tool: WorkflowTool, content: str) -> Callable:
         async def workflow_runner(**kwargs):
-            planner_model = self.settings.llm.models.get("planner", "gemma-4-26b-it")
-            planner_endpoint = self.settings.llm.planner_endpoint
+            orchestrator_model = self.settings.llm.models.get("orchestrator", "gemma-4-26b-it")
+            orchestrator_endpoint = self.settings.llm.orchestrator_endpoint
 
             if tool.file_type == "yaml":
                 wf = tool.definition
@@ -151,8 +151,8 @@ class WorkflowRegistry:
 
                 builder = StateGraph(DynamicWorkflowState)
                 for node_name, node_cfg in wf.nodes.items():
-                    model_name = planner_model
-                    endpoint = planner_endpoint
+                    model_name = orchestrator_model
+                    endpoint = orchestrator_endpoint
                     if node_cfg.model == "executor":
                         model_name = self.settings.llm.models.get("executor")
                         endpoint = self.settings.llm.executor_endpoint
@@ -182,7 +182,7 @@ class WorkflowRegistry:
                 }
                 return await graph.ainvoke(initial_state)
             else:
-                model = get_robust_model(planner_model, base_url=planner_endpoint)
+                model = get_robust_model(orchestrator_model, base_url=orchestrator_endpoint)
                 agent = Agent(model, system_prompt=tool.markdown_content)
                 res = await agent.run(str(kwargs.get("input_data", "")))
                 return res.output

@@ -97,11 +97,12 @@ def run_command(args):
     if not ensure_engine_started():
         sys.exit(1)
 
-    if args.action == "chat":
+    if args.action is None:
         try:
             subprocess.run([venv_python, "src/interfaces/cli.py"])
         except KeyboardInterrupt:
-            print("\nDetached from chat. Engine remains running.")
+            print("\nDetached from interaction. Engine remains running.")
+        return
     elif args.action == "run":
         prompt = " ".join(args.remainder)
         try:
@@ -122,12 +123,12 @@ if __name__ == "__main__":
     parser.add_argument("remainder", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
-    known_actions = ["start", "stop", "status", "reset", "chat", "run"]
+    known_actions = ["start", "stop", "status", "reset", "run"]
     if not args.action:
-        # 引数なし：デフォルトでチャット接続
-        args.action = "chat"
+        # 引数なし：対話モード
+        pass
     elif args.action not in known_actions:
-        # アクションが定義外：すべてをプロンプトとして扱う
+        # アクションが定義外：すべてをプロンプト（単発実行）として扱う
         args.remainder = [args.action] + args.remainder
         args.action = "run"
             
