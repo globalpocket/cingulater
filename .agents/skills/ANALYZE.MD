@@ -1,13 +1,20 @@
-# プロジェクト自動解析スキル (ANALYZE.MD)
+---
+name: project-analysis
+description: Automatically performs a comprehensive project analysis (Repomix, Ruff, Semgrep, Bandit, ast-grep) when source code changes are detected in the src directory. This skill ensures architectural integrity and catches bugs early.
+---
 
-## 概要
-本ドキュメントは、Antigravity の機能を利用した自動処理タスクを定義します。
+# Project Analysis Skill
 
-## 仕様
-- **トリガー**: プロジェクトフォルダ内の `src` フォルダ以下に変更があった場合に発火する。
-- **実行制御**: 
-    - 複数ファイルが同時に（あるいは数秒の差で）保存された際のプロセス乱立を防ぐため、多重起動を防止すること。
-    - 具体的には、変更検知後に数秒間の待機を設け、その間に新たな変更がないことを確認してから処理を開始する「後勝ち」の制御を行うこと。
-- **実行内容**: 
-    - 以下のスクリプトを実行する。
-      `python3 .agents/scripts/agent_analyzer.py`
+This skill is responsible for maintaining project hygiene and security by running a suite of analysis tools.
+
+## Trigger Details
+- **Condition**: Any file modification within the `src/` directory.
+- **Action**: Execute the dedicated analyzer script.
+
+## Execution Requirements
+1. **Singleton Execution**: Only one instance of the analyzer should run at a time.
+2. **Debounce Logic**: Wait for a short period (last-one-wins) if multiple changes occur in rapid succession to avoid resource exhaustion.
+3. **Command**: `python3 .agents/scripts/agent_analyzer.py`
+
+## Output
+- All reports are persisted in the `.analyze/` directory.
