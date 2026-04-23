@@ -18,6 +18,8 @@ dependencies = [
     "mlx-lm>=0.31.3",
     "sentence-transformers>=5.4.1",
     "torch>=2.11.0",
+    "requests>=2.33.1",
+    "prompt-toolkit>=3.0.52",
 ]
 
 [build-system]
