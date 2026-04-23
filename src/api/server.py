@@ -47,7 +47,13 @@ async def chat_completions(request: ChatCompletionRequest):
     result = await orchestrator.submit_chat_completion(messages_dict, stream=request.stream)
     
     if isinstance(result, dict) and "choices" in result:
-        content = result["choices"][0]["message"].get("content", "No content.")
+        message = result["choices"][0]["message"]
+        content = message.get("content")
+        if not content:
+            if "tool_calls" in message:
+                content = f"[Tool Call Requested by Model]: {message['tool_calls']}"
+            else:
+                content = f"[Empty Response] Raw message from Core: {message}"
     else:
         content = "Error: Invalid response from core."
     

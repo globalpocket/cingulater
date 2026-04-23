@@ -1,5 +1,3 @@
-import asyncio
-import os
 from pathlib import Path
 from typing import Any, List, Dict
 
@@ -7,7 +5,6 @@ import httpx
 from loguru import logger
 
 from src.core.config import get_settings
-
 from src.core.router import Router
 
 class Orchestrator:
@@ -66,11 +63,9 @@ class Orchestrator:
             logger.info(f"Routing Loop #{loop_count + 1}...")
             
             # 1. Router による判定
-            # Note: コンテキスト全体ではなく、直近の指示（user_input）で判定
             actor = self.router.route(user_input)
 
             if actor == "interlocutor":
-                # 対話モデル（旧 Orchestrator）を呼び出して終了
                 logger.info("Executing Interlocutor...")
                 return await self._call_llm(
                     "interlocutor", 
@@ -80,7 +75,6 @@ class Orchestrator:
                 )
 
             elif actor == "coder":
-                # コーディングモデル（旧 Executor）を呼び出し
                 logger.info("Executing Coder...")
                 coder_resp = await self._call_llm(
                     "coder", 
@@ -92,12 +86,13 @@ class Orchestrator:
                 # Coder の結果を取得
                 result_content = coder_resp.get("choices", [{}])[0].get("message", {}).get("content", "")
                 
-                # [将来の拡張ポイント] ここで Linter チェックなどを挟むことが可能。
-                # 今回は Coder の完了報告を行うため、状態を更新して再度 Router へ回す。
+                if not result_content:
+                    logger.warning("Coder returned empty response. Terminating loop to prevent context corruption.")
+                    result_content = "(Coder did not generate any output, but task may have been completed via Tool Calls.)"
+
                 current_context.append({"role": "assistant", "content": result_content})
                 user_input = f"Coder 処理完了。以下の結果をユーザーに報告してください: {result_content}"
                 
-                # 無限ループ防止
                 loop_count += 1
                 continue
 
@@ -107,40 +102,51 @@ class Orchestrator:
         """指定されたモデルエンドポイントを呼び出す"""
         model_name = self.settings.llm.models.get(model_key, "default")
 
-# システムプロンプトを最初のuserメッセージに結合して注入（Gemma互換）
+        # システムプロンプトを最初のuserメッセージに結合して注入（Gemma互換）
         full_messages = []
         system_prompt_applied = False
         
         for msg in messages:
-            if msg.get("role") == "system":
-                continue # 既存のsystemロールは無視
+            role = msg.get("role")
+            content = msg.get("content", "")
             
-            # 最初のuserメッセージにシステムプロンプトを合体させる
-            if msg.get("role") == "user" and not system_prompt_applied:
+            if role == "system":
+                continue 
+            
+            if role == "user" and not system_prompt_applied:
                 full_messages.append({
                     "role": "user",
-                    "content": f"{self.system_prompt}\n\n{msg.get('content')}"
+                    "content": f"{self.system_prompt}\n\n{content}"
                 })
                 system_prompt_applied = True
             else:
-                full_messages.append(msg)
+                full_messages.append({"role": role, "content": content})
+
+        # 万が一 user メッセージが一つもなかった場合
+        if not system_prompt_applied:
+             full_messages.insert(0, {"role": "user", "content": self.system_prompt})
 
         payload = {
             "model": model_name,
             "messages": full_messages,
-            "stream": stream
+            "stream": stream,
+            "max_tokens": 4096  # 途中切れ防止
         }
 
         try:
-            resp = await self.http_client.post(
-                f"{endpoint}/chat/completions",
-                json=payload
-            )
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                logger.error(f"{model_key} Error: {resp.status_code} - {resp.text}")
-                return self._error_response(f"{model_key} Error: {resp.status_code}")
+            logger.debug(f"Calling LLM ({model_key}) with {len(full_messages)} messages.")
+            async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as client:
+                resp = await client.post(
+                    f"{endpoint}/chat/completions",
+                    json=payload
+                )
+                if resp.status_code == 200:
+                    result = resp.json()
+                    logger.debug(f"LLM Response ({model_key}): {result}")
+                    return result
+                else:
+                    logger.error(f"{model_key} Error: {resp.status_code} - {resp.text}")
+                    return self._error_response(f"{model_key} Error: {resp.status_code}")
         except Exception as e:
             logger.error(f"{model_key} Connection Error: {e}")
             return self._error_response(f"{model_key} Connection Error: {e}")
