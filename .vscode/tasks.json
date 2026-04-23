@@ -6,11 +6,23 @@
             "type": "shell",
             "command": "node",
             "args": [
-                ".agents/scripts/launcher.js"
+                ".agents/scripts/monitor.js"
             ],
+            "isBackground": true,
             "runOptions": {
                 "runOn": "folderOpen"
             },
+            "problemMatcher": [
+                {
+                    "owner": "analyzer",
+                    "pattern": [],
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": "^\\[Analyzer\\] Analysis started",
+                        "endsPattern": "^\\[Analyzer\\] Analysis finished"
+                    }
+                }
+            ],
             "presentation": {
                 "reveal": "never",
                 "panel": "dedicated",

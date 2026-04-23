@@ -4,5 +4,6 @@
     },
     "files.readonlyInclude": {
         "**/.analyze/status.json": true
-    }
+    },
+    "task.allowAutomaticTasks": "on"
 }
