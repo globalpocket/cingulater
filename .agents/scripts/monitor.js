@@ -63,7 +63,7 @@ async function runAnalysis(event, filePath) {
         // 実行するツールリスト
         const tools = [
             { name: 'Repomix', cmd: 'npx', args: ['-y', 'repomix', '--output', '.analyze/repomix.txt', '--include', 'src/**'] },
-            { name: 'Ruff', cmd: 'ruff', args: ['check', 'src'] },
+            { name: 'Ruff', cmd: 'ruff', args: ['check', 'src', '--format=concise'] },
             { name: 'Semgrep', cmd: 'semgrep', args: ['scan', '--config', 'auto', 'src', '--json'] }
         ];
 
