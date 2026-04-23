@@ -31,7 +31,15 @@ function updateStatus(state, details = {}) {
 
 // 1. 環境セットアップ
 function setup() {
+    console.log('VSCODE_OBA_START'); // 純粋なテキストのみ出力（VS Code検知用）
     log('🚀 Starting setup...');
+    
+    // 起動時に古いロックファイルを削除（強制終了対策）
+    if (fs.existsSync(LOCK_FILE)) {
+        log('🧹 Removing stale lock file from previous run.');
+        fs.unlinkSync(LOCK_FILE);
+    }
+
     try {
         require.resolve('chokidar');
         log('✅ chokidar is already installed.');
@@ -56,19 +64,44 @@ async function runAnalysis(event, filePath) {
     }
 
     try {
+        console.log('VSCODE_OBA_START'); // 監視区間開始マーカー
         fs.writeFileSync(LOCK_FILE, process.pid.toString());
         updateStatus('analyzing', { trigger: { event, file: path.basename(filePath) } });
         // 実行するツールリスト
         const tools = [
             { name: 'Repomix', cmd: 'npx', args: ['-y', 'repomix', '--output', '.analyze/repomix.txt', '--include', 'src/**'] },
-            { name: 'Ruff', cmd: 'ruff', args: ['check', 'src'] },
+            { name: 'Ruff', cmd: 'ruff', args: ['check', 'src', '--output-format', 'concise', '--color', 'never'] },
             { name: 'Semgrep', cmd: 'semgrep', args: ['scan', '--config', 'auto', 'src', '--json'] }
         ];
 
         for (const tool of tools) {
             log(`🛠️ Running ${tool.name}...`);
             await new Promise((resolve) => {
-                const proc = spawn(tool.cmd, tool.args, { shell: true, stdio: 'inherit' });
+                const proc = spawn(tool.cmd, tool.args, { shell: true, stdio: ['inherit', 'pipe', 'inherit'] });
+                
+                if (tool.name === 'Ruff') {
+                    proc.stdout.on('data', (data) => {
+                        const lines = data.toString().split('\n');
+                        for (const line of lines) {
+                            if (!line.trim()) continue;
+                            // Match concise format: "filepath:line:col: E501 ..."
+                            const match = line.match(/^([^:]+:\d+:\d+:)\s+([A-Z])/);
+                            if (match) {
+                                const prefix = match[1]; // e.g., "src/main.py:1:8:"
+                                const ruleType = match[2]; // e.g., "F", "E", "W"
+                                const severity = (ruleType === 'F' || ruleType === 'E') ? 'error' : 'warning';
+                                // Output with explicit severity for VS Code
+                                console.log(`${prefix} ${severity}: ${line.slice(prefix.length).trim()}`);
+                            } else {
+                                console.log(line);
+                            }
+                        }
+                    });
+                } else {
+                    // For other tools, just pipe to stdout
+                    proc.stdout.on('data', (data) => process.stdout.write(data));
+                }
+
                 proc.on('close', (code) => {
                     log(`✅ ${tool.name} finished with code ${code}`);
                     resolve();
@@ -84,6 +117,7 @@ async function runAnalysis(event, filePath) {
     } finally {
         if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
         setTimeout(() => updateStatus('idle'), 5000); // 5秒後に idle に戻す
+        console.log('VSCODE_OBA_READY'); // 監視区間終了マーカー
     }
 }
 
@@ -103,7 +137,9 @@ function startMonitor() {
         .on('change', path => runAnalysis('change', path))
         .on('unlink', path => runAnalysis('unlink', path));
 
-    log('✅ Watcher is ready and waiting for changes.');
+    log('Watcher setup complete.');
+    // 起動時に初回解析を実行し、既存の問題を問題パネルに表示させる
+    runAnalysis('startup', 'workspace');
 }
 
 // 実行

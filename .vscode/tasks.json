@@ -14,19 +14,29 @@
             },
             "problemMatcher": [
                 {
+                    "owner": "ruff",
+                    "source": "ruff",
+                    "fileLocation": ["relative", "${workspaceFolder}"],
                     "pattern": {
-                        "regexp": "^$"
+                        "regexp": "^([^:]+):(\\d+):(\\d+):\\s+(error|warning):\\s+(.*)$",
+                        "file": 1,
+                        "line": 2,
+                        "column": 3,
+                        "severity": 4,
+                        "message": 5
                     },
                     "background": {
                         "activeOnStart": true,
-                        "beginsPattern": "^.*Starting setup",
-                        "endsPattern": "^.*Watcher is ready"
+                        "beginsPattern": "^VSCODE_OBA_START$",
+                        "endsPattern": "^VSCODE_OBA_READY$"
                     }
                 }
             ],
             "presentation": {
                 "reveal": "never",
-                "panel": "dedicated"
+                "panel": "dedicated",
+                "showReuseMessage": false,
+                "clear": true
             }
         }
     ]
