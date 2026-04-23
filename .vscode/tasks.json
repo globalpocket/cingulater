@@ -12,7 +12,18 @@
             "runOptions": {
                 "runOn": "folderOpen"
             },
-            "problemMatcher": [],
+            "problemMatcher": [
+                {
+                    "pattern": {
+                        "regexp": "^$"
+                    },
+                    "background": {
+                        "activeOnStart": true,
+                        "beginsPattern": "^.*Starting setup",
+                        "endsPattern": "^.*Watcher is ready"
+                    }
+                }
+            ],
             "presentation": {
                 "reveal": "never",
                 "panel": "dedicated"
