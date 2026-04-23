@@ -43,17 +43,25 @@ class AgentSettings(BaseSettings):
     ]
 
 
+class RouterSettings(BaseModel):
+    confidence_threshold: float = 0.5
+    max_routing_loops: int = 5
+
+
 class LLMSettings(BaseSettings):
-    orchestrator_endpoint: str = "http://localhost:8080/v1"
-    executor_endpoint: str = "http://localhost:8081/v1"
+    router_endpoint: str = "local"
+    interlocutor_endpoint: str = "http://localhost:8080/v1"
+    coder_endpoint: str = "http://localhost:8081/v1"
     timeout_sec: int = 300
     tokenizer: str = "auto"
     max_context_tokens: int = 12000
     model_dir: str = "~/.local/share/brownie/models"
     models: Dict[str, str] = {
-        "orchestrator": "mlx-community/gemma-4-26b-a4b-it-4bit",
-        "executor": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+        "router": "BAAI/bge-reranker-v2-m3",
+        "interlocutor": "mlx-community/gemma-4-26b-a4b-it-4bit",
+        "coder": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
     }
+    router: RouterSettings = RouterSettings()
 
 
 class WorkspaceSettings(BaseSettings):

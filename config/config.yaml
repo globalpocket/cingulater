@@ -14,15 +14,17 @@ agent:
     - "globalpocket/brownie-sampleproject"
   exclude_repositories: [] # 監視から完全に除外するリポジトリ (owner/repo 形式)
 llm:
-  orchestrator_endpoint: "http://localhost:8080/v1"
-  executor_endpoint: "http://localhost:8081/v1"
+  router_endpoint: "local"
+  interlocutor_endpoint: "http://localhost:8080/v1"
+  coder_endpoint: "http://localhost:8081/v1"
   timeout_sec: 300
   tokenizer: "auto"
   max_context_tokens: 12000
   model_dir: "~/.local/share/brownie/models"
   models:
-    orchestrator: "mlx-community/gemma-4-26b-a4b-it-4bit"
-    executor: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    router: "BAAI/bge-reranker-v2-m3"
+    interlocutor: "mlx-community/gemma-4-26b-a4b-it-4bit"
+    coder: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
 workspace:
   sandbox_user_id: 1000
   sandbox_group_id: 1000

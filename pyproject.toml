@@ -16,6 +16,8 @@ dependencies = [
     "httpx>=0.25.0",
     "mcp>=1.27.0",
     "mlx-lm>=0.31.3",
+    "sentence-transformers>=5.4.1",
+    "torch>=2.11.0",
 ]
 
 [build-system]
