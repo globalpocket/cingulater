@@ -49,11 +49,13 @@ async def chat_completions(request: ChatCompletionRequest):
     if isinstance(result, dict) and "choices" in result:
         message = result["choices"][0]["message"]
         content = message.get("content")
+        
+        # contentが空の場合の安全対策と理由の表示
         if not content:
             if "tool_calls" in message:
                 content = f"[Tool Call Requested by Model]: {message['tool_calls']}"
             else:
-                content = f"[Empty Response] Raw message from Core: {message}"
+                content = f"[Empty Response] Raw message: {message}"
     else:
         content = "Error: Invalid response from core."
     

@@ -102,35 +102,30 @@ class Orchestrator:
         """指定されたモデルエンドポイントを呼び出す"""
         model_name = self.settings.llm.models.get(model_key, "default")
 
-        # システムプロンプトを最初のuserメッセージに結合して注入（Gemma互換）
+        # システムプロンプトを注入（Gemma互換）
         full_messages = []
         system_prompt_applied = False
         
         for msg in messages:
-            role = msg.get("role")
-            content = msg.get("content", "")
+            if msg.get("role") == "system":
+                continue # 既存のsystemロールは無視
             
-            if role == "system":
-                continue 
-            
-            if role == "user" and not system_prompt_applied:
+            # 最初のuserメッセージにシステムプロンプトを合体させる
+            if msg.get("role") == "user" and not system_prompt_applied:
                 full_messages.append({
                     "role": "user",
-                    "content": f"{self.system_prompt}\n\n{content}"
+                    "content": f"{self.system_prompt}\n\n{msg.get('content')}"
                 })
                 system_prompt_applied = True
             else:
-                full_messages.append({"role": role, "content": content})
+                full_messages.append(msg)
 
-        # 万が一 user メッセージが一つもなかった場合
-        if not system_prompt_applied:
-             full_messages.insert(0, {"role": "user", "content": self.system_prompt})
-
+        # max_tokens: 4096 を追加（途切れるバグを修正）
         payload = {
             "model": model_name,
             "messages": full_messages,
             "stream": stream,
-            "max_tokens": 4096  # 途中切れ防止
+            "max_tokens": 4096
         }
 
         try:
