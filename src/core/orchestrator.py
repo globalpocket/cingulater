@@ -8,10 +8,12 @@ from loguru import logger
 
 from src.core.config import get_settings
 
+from src.core.router import Router
+
 class Orchestrator:
     """
-    BROWNIE の最小コア・オーケストレーター。
-    システムプロンプトの注入と LLM との対話に特化する。
+    BROWNIE の中央集権的オーケストレーター。
+    Router Pattern を用い、適切なモデルへ処理を振り分ける。
     """
 
     def __init__(self, config_path: str):
@@ -21,6 +23,9 @@ class Orchestrator:
         
         # システムプロンプトの初期ロード
         self.system_prompt = self._load_system_prompt()
+        
+        # Router の初期化
+        self.router = Router(model_name=self.settings.llm.models.get("router"))
         
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
         self.is_running = True
@@ -42,16 +47,68 @@ class Orchestrator:
         return await self.orchestrate(messages, stream=stream)
 
     async def orchestrate(self, messages: List[Dict[str, str]], stream: bool = False):
-        """システムプロンプトを注入して LLM と対話する"""
-        endpoint = self.settings.llm.orchestrator_endpoint
-        model_name = self.settings.llm.models.get("orchestrator", "default")
+        """
+        中央集権的ルーティングループ。
+        Router の判断に基づき、Interlocutor または Coder を呼び出す。
+        """
+        current_context = messages.copy()
+        loop_count = 0
+        max_loops = self.settings.llm.router.max_routing_loops
 
-        # システムプロンプトをメッセージの先頭に注入
-        full_messages = [
-            {"role": "system", "content": self.system_prompt}
-        ]
-        
-        # 既存のメッセージからシステムプロンプトを除外して追加（二重注入防止）
+        # 最新のユーザー入力を取得
+        user_input = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                user_input = msg.get("content", "")
+                break
+
+        while loop_count < max_loops:
+            logger.info(f"Routing Loop #{loop_count + 1}...")
+            
+            # 1. Router による判定
+            # Note: コンテキスト全体ではなく、直近の指示（user_input）で判定
+            actor = self.router.route(user_input)
+
+            if actor == "interlocutor":
+                # 対話モデル（旧 Orchestrator）を呼び出して終了
+                logger.info("Executing Interlocutor...")
+                return await self._call_llm(
+                    "interlocutor", 
+                    self.settings.llm.interlocutor_endpoint, 
+                    current_context, 
+                    stream
+                )
+
+            elif actor == "coder":
+                # コーディングモデル（旧 Executor）を呼び出し
+                logger.info("Executing Coder...")
+                coder_resp = await self._call_llm(
+                    "coder", 
+                    self.settings.llm.coder_endpoint, 
+                    current_context, 
+                    stream
+                )
+                
+                # Coder の結果を取得
+                result_content = coder_resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                # [将来の拡張ポイント] ここで Linter チェックなどを挟むことが可能。
+                # 今回は Coder の完了報告を行うため、状態を更新して再度 Router へ回す。
+                current_context.append({"role": "assistant", "content": result_content})
+                user_input = f"Coder 処理完了。以下の結果をユーザーに報告してください: {result_content}"
+                
+                # 無限ループ防止
+                loop_count += 1
+                continue
+
+        return self._error_response("Max routing loops exceeded.")
+
+    async def _call_llm(self, model_key: str, endpoint: str, messages: List[Dict[str, str]], stream: bool):
+        """指定されたモデルエンドポイントを呼び出す"""
+        model_name = self.settings.llm.models.get(model_key, "default")
+
+        # システムプロンプトを注入
+        full_messages = [{"role": "system", "content": self.system_prompt}]
         for msg in messages:
             if msg.get("role") != "system":
                 full_messages.append(msg)
@@ -70,11 +127,11 @@ class Orchestrator:
             if resp.status_code == 200:
                 return resp.json()
             else:
-                logger.error(f"LLM Error: {resp.status_code} - {resp.text}")
-                return self._error_response(f"LLM Error: {resp.status_code}")
+                logger.error(f"{model_key} Error: {resp.status_code} - {resp.text}")
+                return self._error_response(f"{model_key} Error: {resp.status_code}")
         except Exception as e:
-            logger.error(f"Connection Error: {e}")
-            return self._error_response(f"Connection Error: {e}")
+            logger.error(f"{model_key} Connection Error: {e}")
+            return self._error_response(f"{model_key} Connection Error: {e}")
 
     def _error_response(self, message: str) -> Dict[str, Any]:
         return {
