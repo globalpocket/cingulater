@@ -8,25 +8,9 @@
             "args": [
                 ".agents/scripts/monitor.js"
             ],
-            "isBackground": true,
             "runOptions": {
                 "runOn": "folderOpen"
             },
-            "problemMatcher": [
-                {
-                    "owner": "analyzer",
-                    "pattern": [
-                        {
-                            "regexp": "^____dummy_pattern_that_never_matches____$"
-                        }
-                    ],
-                    "background": {
-                        "activeOnStart": true,
-                        "beginsPattern": "^\\[Analyzer\\] Analysis started",
-                        "endsPattern": "^\\[Analyzer\\] Analysis finished"
-                    }
-                }
-            ],
             "presentation": {
                 "reveal": "never",
                 "panel": "dedicated",
