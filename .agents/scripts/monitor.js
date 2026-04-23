@@ -31,7 +31,6 @@ function updateStatus(state, details = {}) {
 
 // 1. 環境セットアップ
 function setup() {
-    console.log('VSCODE_OBA_START'); // 純粋なテキストのみ出力（VS Code検知用）
     log('🚀 Starting setup...');
     
     // 起動時に古いロックファイルを削除（強制終了対策）
@@ -64,7 +63,6 @@ async function runAnalysis(event, filePath) {
     }
 
     try {
-        console.log('VSCODE_OBA_START'); // 監視区間開始マーカー
         fs.writeFileSync(LOCK_FILE, process.pid.toString());
         updateStatus('analyzing', { trigger: { event, file: path.basename(filePath) } });
         // 実行するツールリスト
@@ -152,11 +150,47 @@ async function runAnalysis(event, filePath) {
     } finally {
         if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
         setTimeout(() => updateStatus('idle'), 5000); // 5秒後に idle に戻す
-        console.log('VSCODE_OBA_READY'); // 監視区間終了マーカー
     }
 }
 
-// 3. 監視開始
+// 3. 死活監視ロジック (ウォッチドッグ)
+function startWatchdog() {
+    const PIDS_FILE = path.join(ANALYZE_DIR, '.vscode_pids.json');
+    setInterval(() => {
+        if (!fs.existsSync(PIDS_FILE)) return;
+        try {
+            let pids = JSON.parse(fs.readFileSync(PIDS_FILE, 'utf8'));
+            let alivePids = [];
+            for (const pidStr of pids) {
+                const pid = parseInt(pidStr, 10);
+                if (isNaN(pid)) continue;
+                try {
+                    process.kill(pid, 0); // 生存確認
+                    alivePids.push(pidStr); // 生きているPIDを残す
+                } catch (e) {
+                    // プロセスが存在しない
+                }
+            }
+            
+            // ファイルを更新
+            if (alivePids.length !== pids.length) {
+                fs.writeFileSync(PIDS_FILE, JSON.stringify(alivePids, null, 2));
+            }
+
+            // VS Codeがすべて終了したら自身を終了
+            if (alivePids.length === 0) {
+                log('🛑 All VS Code instances closed. Shutting down monitor.');
+                if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+                if (fs.existsSync(PIDS_FILE)) fs.unlinkSync(PIDS_FILE);
+                process.exit(0);
+            }
+        } catch (e) {
+            log(`❌ Watchdog error: ${e.message}`);
+        }
+    }, 5000); // 5秒間隔
+}
+
+// 4. 監視開始
 function startMonitor() {
     const chokidar = require('chokidar');
     log(`👀 Monitoring directory: ${WATCH_DIR}`);
@@ -179,4 +213,5 @@ function startMonitor() {
 
 // 実行
 setup();
+startWatchdog();
 startMonitor();
