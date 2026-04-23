@@ -12,18 +12,21 @@
             "runOptions": {
                 "runOn": "folderOpen"
             },
-            "problemMatcher": [
-                {
-                    "pattern": {
-                        "regexp": "^$"
-                    },
-                    "background": {
-                        "activeOnStart": true,
-                        "beginsPattern": "^.*Starting setup",
-                        "endsPattern": "^.*Watcher is ready"
-                    }
+            "problemMatcher": {
+                "owner": "node",
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "message": 4
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "Starting setup|Monitoring directory",
+                    "endsPattern": "Watcher is ready|Analysis complete"
                 }
-            ],
+            },
             "presentation": {
                 "reveal": "never",
                 "panel": "dedicated"
