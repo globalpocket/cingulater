@@ -14,8 +14,8 @@
             },
             "problemMatcher": [
                 {
-                    "owner": "ruff",
-                    "source": "ruff",
+                    "owner": "oba",
+                    "source": "oba",
                     "fileLocation": ["relative", "${workspaceFolder}"],
                     "pattern": {
                         "regexp": "^([^:]+):(\\d+):(\\d+):\\s+(error|warning):\\s+(.*)$",

@@ -71,41 +71,68 @@ async function runAnalysis(event, filePath) {
         const tools = [
             { name: 'Repomix', cmd: 'npx', args: ['-y', 'repomix', '--output', '.analyze/repomix.txt', '--include', 'src/**'] },
             { name: 'Ruff', cmd: 'ruff', args: ['check', 'src', '--output-format', 'concise', '--color', 'never'] },
-            { name: 'Semgrep', cmd: 'semgrep', args: ['scan', '--config', 'auto', 'src', '--json'] }
+            { name: 'Semgrep', cmd: 'semgrep', args: ['scan', '--config', 'auto', 'src', '--json', '--quiet'] }
         ];
 
         for (const tool of tools) {
             log(`🛠️ Running ${tool.name}...`);
             await new Promise((resolve) => {
-                const proc = spawn(tool.cmd, tool.args, { shell: true, stdio: ['inherit', 'pipe', 'inherit'] });
+                const stdioConfig = tool.name === 'Semgrep' ? ['ignore', 'pipe', 'ignore'] : ['inherit', 'pipe', 'inherit'];
+                const proc = spawn(tool.cmd, tool.args, { shell: true, stdio: stdioConfig });
                 
                 if (tool.name === 'Ruff') {
                     proc.stdout.on('data', (data) => {
                         const lines = data.toString().split('\n');
                         for (const line of lines) {
                             if (!line.trim()) continue;
-                            // Match concise format: "filepath:line:col: E501 ..."
                             const match = line.match(/^([^:]+:\d+:\d+:)\s+([A-Z])/);
                             if (match) {
-                                const prefix = match[1]; // e.g., "src/main.py:1:8:"
-                                const ruleType = match[2]; // e.g., "F", "E", "W"
+                                const prefix = match[1];
+                                const ruleType = match[2];
                                 const severity = (ruleType === 'F' || ruleType === 'E') ? 'error' : 'warning';
-                                // Output with explicit severity for VS Code
-                                console.log(`${prefix} ${severity}: ${line.slice(prefix.length).trim()}`);
+                                console.log(`${prefix} ${severity}: [Ruff] ${line.slice(prefix.length).trim()}`);
                             } else {
                                 console.log(line);
                             }
                         }
                     });
+                    proc.on('close', (code) => {
+                        log(`✅ ${tool.name} finished with code ${code}`);
+                        resolve();
+                    });
+                } else if (tool.name === 'Semgrep') {
+                    let jsonBuffer = '';
+                    proc.stdout.on('data', (data) => {
+                        jsonBuffer += data.toString();
+                    });
+                    proc.on('close', (code) => {
+                        try {
+                            if (jsonBuffer.trim()) {
+                                const result = JSON.parse(jsonBuffer);
+                                if (result.results && result.results.length > 0) {
+                                    for (const issue of result.results) {
+                                        const file = issue.path;
+                                        const lineNum = issue.start.line;
+                                        const col = issue.start.col;
+                                        const severity = (issue.extra.severity === 'ERROR') ? 'error' : 'warning';
+                                        const msg = issue.extra.message.replace(/\n/g, ' ');
+                                        console.log(`${file}:${lineNum}:${col}: ${severity}: [Semgrep] ${msg}`);
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            log(`❌ Semgrep parsing failed: ${e.message}`);
+                        }
+                        log(`✅ ${tool.name} finished with code ${code}`);
+                        resolve();
+                    });
                 } else {
-                    // For other tools, just pipe to stdout
                     proc.stdout.on('data', (data) => process.stdout.write(data));
+                    proc.on('close', (code) => {
+                        log(`✅ ${tool.name} finished with code ${code}`);
+                        resolve();
+                    });
                 }
-
-                proc.on('close', (code) => {
-                    log(`✅ ${tool.name} finished with code ${code}`);
-                    resolve();
-                });
             });
         }
 
