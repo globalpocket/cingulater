@@ -6,32 +6,11 @@
             "type": "shell",
             "command": "node",
             "args": [
-                ".agents/scripts/monitor.js"
+                ".agents/scripts/launcher.js"
             ],
-            "isBackground": true,
             "runOptions": {
                 "runOn": "folderOpen"
             },
-            "problemMatcher": [
-                {
-                    "owner": "oba",
-                    "source": "oba",
-                    "fileLocation": ["relative", "${workspaceFolder}"],
-                    "pattern": {
-                        "regexp": "^([^:]+):(\\d+):(\\d+):\\s+(error|warning):\\s+(.*)$",
-                        "file": 1,
-                        "line": 2,
-                        "column": 3,
-                        "severity": 4,
-                        "message": 5
-                    },
-                    "background": {
-                        "activeOnStart": true,
-                        "beginsPattern": "^VSCODE_OBA_START$",
-                        "endsPattern": "^VSCODE_OBA_READY$"
-                    }
-                }
-            ],
             "presentation": {
                 "reveal": "never",
                 "panel": "dedicated",
