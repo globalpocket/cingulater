@@ -1,2 +1,8 @@
 {
+    "files.exclude": {
+        "**/.analyze/**": false
+    },
+    "files.readonlyInclude": {
+        "**/.analyze/status.json": true
+    }
 }
