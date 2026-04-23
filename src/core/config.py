@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from pydantic import computed_field
+from pydantic import BaseModel, computed_field
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
