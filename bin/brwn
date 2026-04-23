@@ -4,61 +4,112 @@ import sys
 
 # プロジェクトルートの .venv を優先的に読み込む
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-venv_site_packages = os.path.join(base_dir, ".venv", "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+venv_site_packages = os.path.join(
+    base_dir,
+    ".venv",
+    "lib",
+    f"python{sys.version_info.major}.{sys.version_info.minor}",
+    "site-packages",
+)
 if os.path.exists(venv_site_packages):
     sys.path.insert(0, venv_site_packages)
 sys.path.insert(0, base_dir)
 
-import subprocess
-import time
-import signal
-import argparse
-import requests
+import subprocess  # noqa: E402
+import time  # noqa: E402
+import signal  # noqa: E402
+import argparse  # noqa: E402
+import requests  # noqa: E402
 
 # Build info
 BUILD_ID = "2026.04.21.DR"
+
 
 def get_running_engine_pid():
     """LSOFでポート8137を使用しているPIDを取得"""
     try:
         output = subprocess.check_output(["lsof", "-t", "-i", ":8137"]).decode().strip()
         if output:
-            return int(output.split('\n')[0])
-    except:
+            return int(output.split("\n")[0])
+    except Exception:
         pass
     return None
 
+
 def is_engine_running(port=8137):
     import socket
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(('localhost', port)) == 0
+        return s.connect_ex(("localhost", port)) == 0
+
+
+def ensure_llm_servers_started():
+    try:
+        from src.core.config import get_settings
+        from src.mcp.llm_launcher import launch_llm_server, check_llm_status
+        from urllib.parse import urlparse
+
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(base_dir, "config", "config.yaml")
+        settings = get_settings(config_path)
+
+        # Orchestrator
+        orch_url = urlparse(settings.llm.orchestrator_endpoint)
+        orch_port = orch_url.port or 8080
+        orch_model = settings.llm.models.get("orchestrator")
+
+        # Executor
+        exec_url = urlparse(settings.llm.executor_endpoint)
+        exec_port = exec_url.port or 8081
+        exec_model = settings.llm.models.get("executor")
+
+        servers_to_check = [
+            (orch_port, orch_model, "Orchestrator"),
+            (exec_port, exec_model, "Executor"),
+        ]
+
+        for port, model, name in servers_to_check:
+            if model and port:
+                if not check_llm_status(port):
+                    print(f"🚀 Starting {name} LLM Server ({model}) on port {port}...")
+                    res = launch_llm_server(model, port)
+                    print(f"  -> {res}")
+                else:
+                    print(f"✅ {name} LLM Server is already running on port {port}.")
+    except Exception as e:
+        print(f"⚠️ Could not verify/start LLM servers: {e}")
+
 
 def ensure_engine_started():
+    ensure_llm_servers_started()
+
     if is_engine_running():
         return True
-    
+
     print("🚀 Starting Brownie Engine in background...")
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     venv_python = os.path.join(base_dir, ".venv", "bin", "python")
-    
+
     # PYTHONPATHをベースディレクトリに設定してModuleNotFoundErrorを回避
     env = os.environ.copy()
-    env["PYTHONPATH"] = base_dir + (os.pathsep + env.get("PYTHONPATH", "") if env.get("PYTHONPATH") else "")
-    
+    env["PYTHONPATH"] = base_dir + (
+        os.pathsep + env.get("PYTHONPATH", "") if env.get("PYTHONPATH") else ""
+    )
+
     # ログディレクトリの確保
     os.makedirs(os.path.join(base_dir, "logs"), exist_ok=True)
     log_file_path = os.path.join(base_dir, "logs", "engine.log")
     log_file = open(log_file_path, "a")
-    
+
     subprocess.Popen(
         [venv_python, "src/api/server.py"],
         stdout=log_file,
         stderr=log_file,
         env=env,
         start_new_session=True,
-        cwd=base_dir
+        cwd=base_dir,
     )
-    
+
     # 起動（ポート有効化）を待機
     for _ in range(15):
         if is_engine_running():
@@ -67,6 +118,7 @@ def ensure_engine_started():
         time.sleep(1)
     print(f"❌ Failed to start engine. Check {log_file_path}")
     return False
+
 
 def run_command(args):
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -106,10 +158,14 @@ def run_command(args):
     elif args.action == "run":
         prompt = " ".join(args.remainder)
         try:
-            res = requests.post("http://localhost:8137/v1/chat/completions", json={
-                "model": "brownie-v2",
-                "messages": [{"role": "user", "content": prompt}]
-            }, timeout=300)
+            res = requests.post(
+                "http://localhost:8137/v1/chat/completions",
+                json={
+                    "model": "brownie-v2",
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=300,
+            )
             if res.status_code == 200:
                 print(res.json()["choices"][0]["message"]["content"])
             else:
@@ -117,9 +173,12 @@ def run_command(args):
         except Exception as e:
             print(f"Connection Error: {e}")
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Brownie CLI")
-    parser.add_argument("action", nargs="?", help="Action (chat, start, stop, etc.) or just a prompt")
+    parser.add_argument(
+        "action", nargs="?", help="Action (chat, start, stop, etc.) or just a prompt"
+    )
     parser.add_argument("remainder", nargs=argparse.REMAINDER)
     args = parser.parse_args()
 
@@ -131,5 +190,5 @@ if __name__ == "__main__":
         # アクションが定義外：すべてをプロンプト（単発実行）として扱う
         args.remainder = [args.action] + args.remainder
         args.action = "run"
-            
+
     run_command(args)
