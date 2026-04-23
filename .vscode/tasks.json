@@ -15,7 +15,11 @@
             "problemMatcher": [
                 {
                     "owner": "analyzer",
-                    "pattern": [],
+                    "pattern": [
+                        {
+                            "regexp": "^____dummy_pattern_that_never_matches____$"
+                        }
+                    ],
                     "background": {
                         "activeOnStart": true,
                         "beginsPattern": "^\\[Analyzer\\] Analysis started",
