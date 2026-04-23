@@ -12,24 +12,7 @@
             "runOptions": {
                 "runOn": "folderOpen"
             },
-            "problemMatcher": [
-                {
-                    "owner": "python",
-                    "fileLocation": ["relative", "${workspaceFolder}"],
-                    "pattern": {
-                        "regexp": "^(.+):(\\d+):(\\d+):\\s+(.*)$",
-                        "file": 1,
-                        "line": 2,
-                        "column": 3,
-                        "message": 4
-                    },
-                    "background": {
-                        "activeOnStart": true,
-                        "beginsPattern": "Starting setup|Monitoring directory",
-                        "endsPattern": "Watcher is ready|Analysis complete"
-                    }
-                }
-            ],
+            "problemMatcher": [],
             "presentation": {
                 "reveal": "never",
                 "panel": "dedicated"

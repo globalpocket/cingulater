@@ -58,20 +58,16 @@ async function runAnalysis(event, filePath) {
     try {
         fs.writeFileSync(LOCK_FILE, process.pid.toString());
         updateStatus('analyzing', { trigger: { event, file: path.basename(filePath) } });
-        log(`🔍 Event: ${event} on ${filePath}. Starting analysis...`);
-
         // 実行するツールリスト
         const tools = [
             { name: 'Repomix', cmd: 'npx', args: ['-y', 'repomix', '--output', '.analyze/repomix.txt', '--include', 'src/**'] },
-            { name: 'Ruff', cmd: 'ruff', args: ['check', 'src', '--format=concise'] },
+            { name: 'Ruff', cmd: 'ruff', args: ['check', 'src'] },
             { name: 'Semgrep', cmd: 'semgrep', args: ['scan', '--config', 'auto', 'src', '--json'] }
         ];
 
         for (const tool of tools) {
             log(`🛠️ Running ${tool.name}...`);
             await new Promise((resolve) => {
-                // stdio: 'inherit' を使用して出力を親プロセスの stdout に直接流す
-                // これにより VS Code の Problem Matcher が出力を拾えるようになる
                 const proc = spawn(tool.cmd, tool.args, { shell: true, stdio: 'inherit' });
                 proc.on('close', (code) => {
                     log(`✅ ${tool.name} finished with code ${code}`);
