@@ -53,19 +53,19 @@ def ensure_llm_servers_started():
         config_path = os.path.join(base_dir, "config", "config.yaml")
         settings = get_settings(config_path)
 
-        # Orchestrator
-        orch_url = urlparse(settings.llm.orchestrator_endpoint)
-        orch_port = orch_url.port or 8080
-        orch_model = settings.llm.models.get("orchestrator")
+        # Interlocutor
+        inter_url = urlparse(settings.llm.interlocutor_endpoint)
+        inter_port = inter_url.port or 8080
+        inter_model = settings.llm.models.get("interlocutor")
 
-        # Executor
-        exec_url = urlparse(settings.llm.executor_endpoint)
-        exec_port = exec_url.port or 8081
-        exec_model = settings.llm.models.get("executor")
+        # Coder
+        coder_url = urlparse(settings.llm.coder_endpoint)
+        coder_port = coder_url.port or 8081
+        coder_model = settings.llm.models.get("coder")
 
         servers_to_check = [
-            (orch_port, orch_model, "Orchestrator"),
-            (exec_port, exec_model, "Executor"),
+            (inter_port, inter_model, "Interlocutor"),
+            (coder_port, coder_model, "Coder"),
         ]
 
         for port, model, name in servers_to_check:
