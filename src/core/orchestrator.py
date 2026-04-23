@@ -107,10 +107,22 @@ class Orchestrator:
         """指定されたモデルエンドポイントを呼び出す"""
         model_name = self.settings.llm.models.get(model_key, "default")
 
-        # システムプロンプトを注入
-        full_messages = [{"role": "system", "content": self.system_prompt}]
+# システムプロンプトを最初のuserメッセージに結合して注入（Gemma互換）
+        full_messages = []
+        system_prompt_applied = False
+        
         for msg in messages:
-            if msg.get("role") != "system":
+            if msg.get("role") == "system":
+                continue # 既存のsystemロールは無視
+            
+            # 最初のuserメッセージにシステムプロンプトを合体させる
+            if msg.get("role") == "user" and not system_prompt_applied:
+                full_messages.append({
+                    "role": "user",
+                    "content": f"{self.system_prompt}\n\n{msg.get('content')}"
+                })
+                system_prompt_applied = True
+            else:
                 full_messages.append(msg)
 
         payload = {
