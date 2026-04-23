@@ -17,6 +17,18 @@ function log(message) {
     fs.appendFileSync(LOG_FILE, formattedMessage);
 }
 
+// ステータス更新関数
+function updateStatus(state, details = {}) {
+    const statusPath = path.join(ANALYZE_DIR, 'status.json');
+    const statusData = {
+        state: state, // 'analyzing', 'success', 'error', 'idle'
+        lastUpdate: new Date().toISOString(),
+        ...details
+    };
+    if (!fs.existsSync(ANALYZE_DIR)) fs.mkdirSync(ANALYZE_DIR, { recursive: true });
+    fs.writeFileSync(statusPath, JSON.stringify(statusData, null, 2));
+}
+
 // 1. 環境セットアップ
 function setup() {
     log('🚀 Starting setup...');
@@ -45,6 +57,7 @@ async function runAnalysis(event, filePath) {
 
     try {
         fs.writeFileSync(LOCK_FILE, process.pid.toString());
+        updateStatus('analyzing', { trigger: { event, file: path.basename(filePath) } });
         log(`🔍 Event: ${event} on ${filePath}. Starting analysis...`);
 
         // 実行するツールリスト
@@ -57,7 +70,9 @@ async function runAnalysis(event, filePath) {
         for (const tool of tools) {
             log(`🛠️ Running ${tool.name}...`);
             await new Promise((resolve) => {
-                const proc = spawn(tool.cmd, tool.args, { shell: true });
+                // stdio: 'inherit' を使用して出力を親プロセスの stdout に直接流す
+                // これにより VS Code の Problem Matcher が出力を拾えるようになる
+                const proc = spawn(tool.cmd, tool.args, { shell: true, stdio: 'inherit' });
                 proc.on('close', (code) => {
                     log(`✅ ${tool.name} finished with code ${code}`);
                     resolve();
@@ -66,10 +81,13 @@ async function runAnalysis(event, filePath) {
         }
 
         log('✨ Analysis complete.');
+        updateStatus('success');
     } catch (err) {
         log(`❌ Analysis failed: ${err.message}`);
+        updateStatus('error', { error: err.message });
     } finally {
         if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+        setTimeout(() => updateStatus('idle'), 5000); // 5秒後に idle に戻す
     }
 }
 
