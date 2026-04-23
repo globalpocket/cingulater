@@ -69,7 +69,7 @@ async function runAnalysis(event, filePath) {
         updateStatus('analyzing', { trigger: { event, file: path.basename(filePath) } });
         // 実行するツールリスト
         const tools = [
-            { name: 'Repomix', cmd: 'npx', args: ['-y', 'repomix', '--output', '.analyze/repomix.txt', '--include', 'src/**'] },
+            { name: 'Repomix', cmd: 'npx', args: ['-y', 'repomix', 'src', '--output', '.analyze/repomix.txt'] },
             { name: 'Ruff', cmd: 'ruff', args: ['check', 'src', '--output-format', 'concise', '--color', 'never'] },
             { name: 'Semgrep', cmd: 'semgrep', args: ['scan', '--config', 'auto', 'src', '--json', '--quiet'] }
         ];
@@ -77,8 +77,16 @@ async function runAnalysis(event, filePath) {
         for (const tool of tools) {
             log(`🛠️ Running ${tool.name}...`);
             await new Promise((resolve) => {
-                const stdioConfig = tool.name === 'Semgrep' ? ['ignore', 'pipe', 'ignore'] : ['inherit', 'pipe', 'inherit'];
-                const proc = spawn(tool.cmd, tool.args, { shell: true, stdio: stdioConfig });
+                const stdioConfig = tool.name === 'Semgrep' ? ['inherit', 'pipe', 'pipe'] : ['inherit', 'pipe', 'inherit'];
+                const proc = spawn(tool.cmd, tool.args, { 
+                    shell: true, 
+                    stdio: stdioConfig,
+                    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH}` }
+                });
+                
+                if (tool.name === 'Semgrep') {
+                    proc.stderr.on('data', () => {}); // Discard stderr to keep terminal clean
+                }
                 
                 if (tool.name === 'Ruff') {
                     proc.stdout.on('data', (data) => {
