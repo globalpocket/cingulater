@@ -6,8 +6,8 @@ from typing import Any, Dict, List
 import httpx
 from loguru import logger
 
-from src.core.config import get_settings
-from src.core.router import Router
+from core.config import get_settings
+from core.router import Router
 
 class Orchestrator:
     """

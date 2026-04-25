@@ -234,7 +234,5 @@ fi
 
 # 8. 高度な解析エンジンのセットアップ (Tree-sitter Grammars)
 echo "Setting up advanced analysis engine (Tree-sitter)..."
-# パッケージ方式に移行したため、uv sync で全て揃う。最後にロードチェックのみ実行。
-$UV_CMD run scripts/build_grammars.py
 
 echo "Brownie setup completed successfully!"

@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from loguru import logger
 
-from src.core.orchestrator import Orchestrator
+from core.orchestrator import Orchestrator
 
 app = FastAPI(title="Brownie OpenAI-Compatible API")
 orchestrator: Optional[Orchestrator] = None
