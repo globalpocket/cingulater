@@ -111,7 +111,7 @@ def ensure_engine_started():
     )
 
     # 起動（ポート有効化）を待機
-    for _ in range(15):
+    for _ in range(45):
         if is_engine_running():
             print("✅ Engine is online.")
             return True
