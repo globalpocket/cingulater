@@ -1,5 +1,7 @@
+import re
+import yaml
 from pathlib import Path
-from typing import Any, List, Dict
+from typing import Any, Dict, List
 
 import httpx
 from loguru import logger
@@ -45,12 +47,10 @@ class Orchestrator:
 
     async def orchestrate(self, messages: List[Dict[str, str]], stream: bool = False):
         """
-        中央集権的ルーティングループ。
         Router の判断に基づき、Interlocutor または Coder を呼び出す。
+        Coderの場合は事前にYAMLで計画を立案させ、タスクランナーとして順次実行する。
         """
         current_context = messages.copy()
-        loop_count = 0
-        max_loops = self.settings.llm.router.max_routing_loops
 
         # 最新のユーザー入力を取得
         user_input = ""
@@ -59,44 +59,99 @@ class Orchestrator:
                 user_input = msg.get("content", "")
                 break
 
-        while loop_count < max_loops:
-            logger.info(f"Routing Loop #{loop_count + 1}...")
+        # 1. Router による判定
+        actor = self.router.route(user_input)
+
+        if actor == "interlocutor":
+            logger.info("Executing Interlocutor...")
+            return await self._call_llm(
+                "interlocutor", 
+                self.settings.llm.interlocutor_endpoint, 
+                current_context, 
+                stream
+            )
+
+        elif actor == "coder":
+            # ==========================================
+            # 1. 計画立案フェーズ (YAML出力強制)
+            # ==========================================
+            logger.info("Executing Planning Phase...")
+            planning_prompt = (
+                "直前の依頼を達成するための実装計画を、以下のYAMLフォーマットで出力してください。\n"
+                "必ずYAMLコードブロック(```yaml ... ```)内に記述し、この段階では実際のコード修正やツール実行は絶対に行わないでください。\n\n"
+                "```yaml\n"
+                "plan:\n"
+                "  - step: 1\n"
+                "    description: \"対象ファイルの特定と内容の読み込み\"\n"
+                "  - step: 2\n"
+                "    description: \"XXXのロジックをYYYに変更する\"\n"
+                "  - step: 3\n"
+                "    description: \"テストまたは検証を実行する\"\n"
+                "```"
+            )
+            planning_context = current_context + [{"role": "user", "content": planning_prompt}]
             
-            # 1. Router による判定
-            actor = self.router.route(user_input)
+            plan_resp = await self._call_llm("coder", self.settings.llm.coder_endpoint, planning_context, stream=False)
+            plan_content = plan_resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+            # ==========================================
+            # 2. タスクリストのパース
+            # ==========================================
+            yaml_match = re.search(r"```yaml\s*(.*?)\s*```", plan_content, re.DOTALL)
+            steps = []
+            if yaml_match:
+                try:
+                    plan_data = yaml.safe_load(yaml_match.group(1))
+                    steps = plan_data.get("plan", [])
+                except yaml.YAMLError as e:
+                    logger.error(f"Failed to parse YAML plan: {e}")
+            
+            if not steps:
+                logger.error("LLM failed to output a valid YAML plan.")
+                return self._error_response("システムエラー: 実行計画のパースに失敗しました。もう一度やり直してください。")
 
-            if actor == "interlocutor":
-                logger.info("Executing Interlocutor...")
-                return await self._call_llm(
-                    "interlocutor", 
-                    self.settings.llm.interlocutor_endpoint, 
-                    current_context, 
-                    stream
+            logger.info(f"Generated Plan with {len(steps)} steps.")
+            
+            # 計画全体をユーザーへの返答として履歴に積んでおく
+            current_context.append({"role": "assistant", "content": f"以下の手順で実行します。\n{plan_content}"})
+
+            # ==========================================
+            # 3. タスクランナーループ (各工程の実行)
+            # ==========================================
+            final_result = ""
+            for step_info in steps:
+                step_num = step_info.get("step")
+                desc = step_info.get("description")
+                
+                logger.info(f"Runner: Executing Step {step_num}: {desc}")
+                
+                # Coderに「このステップだけを実行せよ」と制限をかけて指示
+                step_prompt = (
+                    f"【システム指示: Step {step_num} の実行】\n"
+                    f"現在のタスク: {desc}\n\n"
+                    f"上記のタスクのみを実行し、完了したら結果を報告してください。次のステップへは進まないでください。"
                 )
-
-            elif actor == "coder":
-                logger.info("Executing Coder...")
-                coder_resp = await self._call_llm(
-                    "coder", 
-                    self.settings.llm.coder_endpoint, 
-                    current_context, 
-                    stream
-                )
+                current_context.append({"role": "user", "content": step_prompt})
                 
-                # Coder の結果を取得
-                result_content = coder_resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+                coder_resp = await self._call_llm("coder", self.settings.llm.coder_endpoint, current_context, stream=False)
+                step_result = coder_resp.get("choices", [{}])[0].get("message", {}).get("content", "")
                 
-                if not result_content:
-                    logger.warning("Coder returned empty response. Terminating loop to prevent context corruption.")
-                    result_content = "(Coder did not generate any output, but task may have been completed via Tool Calls.)"
+                # 結果を履歴に積む
+                current_context.append({"role": "assistant", "content": step_result})
+                final_result = step_result
 
-                current_context.append({"role": "assistant", "content": result_content})
-                user_input = f"Coder 処理完了。以下の結果をユーザーに報告してください: {result_content}"
-                
-                loop_count += 1
-                continue
-
-        return self._error_response("Max routing loops exceeded.")
+            # ==========================================
+            # 4. 完了報告
+            # ==========================================
+            return {
+                "choices": [{
+                    "message": {
+                        "role": "assistant", 
+                        "content": f"すべての計画ステップ（全{len(steps)}工程）が完了しました。\n\n最終報告:\n{final_result}"
+                    },
+                    "finish_reason": "stop"
+                }]
+            }
 
     async def _call_llm(self, model_key: str, endpoint: str, messages: List[Dict[str, str]], stream: bool):
         """指定されたモデルエンドポイントを呼び出す"""
