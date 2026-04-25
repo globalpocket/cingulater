@@ -5,5 +5,12 @@
     "files.readonlyInclude": {
         "**/.analyze/status.json": true
     },
-    "task.allowAutomaticTasks": "on"
+    "task.allowAutomaticTasks": "on",
+    "python.analysis.extraPaths": [
+        "."
+    ],
+    "python.analysis.ignore": [
+        "src/brownie_chat/proto/*",
+        ".analyze"
+    ]
 }

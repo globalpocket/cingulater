@@ -33,3 +33,7 @@ managed = true
 src = ["src"]
 line-length = 88
 target-version = "py312"
+
+[tool.pyright]
+extraPaths = ["."]
+extendPath = ["."]

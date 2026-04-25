@@ -1,8 +1,0 @@
-#!/bin/bash
-# BROWNIE スタンドアロン分析ランナー
-
-# プロジェクトルートに移動
-cd "$(dirname "$0")/.."
-
-# uv を使用して分析スクリプトを実行
-/Users/satoshitanaka/.local/bin/uv run python scripts/analyze_all.py

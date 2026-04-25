@@ -20,11 +20,6 @@ from typing_extensions import Annotated
 # プロジェクトルートをパスに追加 (設計書 3.2 補足)
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from src.core.agent import CoderAgent  # noqa: E402
-from src.core.config import get_settings  # noqa: E402
-from src.core.orchestrator import Orchestrator  # noqa: E402
-from src.core.sandbox_manager import SandboxManager  # noqa: E402
-
 # 1. ログ設定
 log_file = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "logs", "brownie.log")
@@ -78,23 +73,15 @@ logger.info(f"Loguru initialized. Level: {log_level}, File: {log_file}")
 
 
 class BrownieApp:
-    def __init__(self, config_path: str):
-        self.settings = get_settings(config_path)
-        # 起動時にインフラ接続性を検証する
-        self.settings.validate_connectivity()
-        self.orchestrator = Orchestrator(config_path)
+    def __init__(self):
         self.stop_event = asyncio.Event()
 
     async def run(self):
         """メインプロセスの実行 (設計書 3.2: 生存信号送信・LLM死活監視)"""
-        # メメインプロセスの起動ログ (Build 情報を含む)
+        # メインプロセスの起動ログ (Build 情報を含む)
         logger.info(
             f"Starting Brownie Main Process (Build: {self.settings.build_id})..."
         )
-        agent_path = os.path.abspath(CoderAgent.__module__.replace(".", "/") + ".py")
-        logger.info(f"  - Loaded Agent from: {CoderAgent.__module__} in {agent_path}")
-        logger.info(f"  - Loaded Orchestrator from: {Orchestrator.__module__}")
-        logger.info(f"  - Loaded Sandbox from: {SandboxManager.__module__}")
 
         # 設計書に基づき、シグナルハンドラを設定
         loop = asyncio.get_running_loop()
@@ -102,12 +89,7 @@ class BrownieApp:
             loop.add_signal_handler(s, lambda: asyncio.create_task(self.shutdown()))
 
         try:
-            # 1. スケジュールのセットアップ (オーケストレーターから分離)
-            from src.core.workers.scheduler import setup_schedules
-
-            await setup_schedules()
-
-            # 2. 起動
+            # 1. 起動
             orchestrator_task = asyncio.create_task(self.orchestrator.start())
 
             # 2. 定期的な生存信号（Watchdog向け）
