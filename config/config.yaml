@@ -1,35 +1,20 @@
+# config/config.yaml
 agent:
-  polling_interval_sec: 30
-  max_auto_retries: 30
-  max_llm_retries: 5
-  max_history_steps: 15 # 履歴保持件数。DB肥大化防止。
-  oob_webhook_url: "" # トークン失効・LLM停止等のFatalエラー用
-  queue_ux_notification: true # 順番待ち時にGitHubへ推定時間をコメント
-  inference_priority: # タスク優先度 (1=高)
-    manual_issue: 1
-    review_comment: 2
-    auto_wiki: 3
-  repositories:
-    - "globalpocket/brownie"
-    - "globalpocket/brownie-sampleproject"
-  exclude_repositories: [] # 監視から完全に除外するリポジトリ (owner/repo 形式)
+  # RAG（長期記憶）やポーリングは外部ツール/トリガーに任せるため、
+  # ここには最低限のエラーハンドリング設定のみ残します。
+  max_retries: 3
+
 llm:
-  router_endpoint: "local"
+  # 軽量化されたモデル設定。ルーターはLLM（interlocutorと同じ）を利用します。
+  models:
+    router: "mlx-community/gemma-4-26b-a4b-it-4bit"
+    interlocutor: "mlx-community/gemma-4-26b-a4b-it-4bit"
+    coder: "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"
+
   interlocutor_endpoint: "http://localhost:8080/v1"
   coder_endpoint: "http://localhost:8081/v1"
-  timeout_sec: 300
-  tokenizer: "auto"
-  max_context_tokens: 12000
-  model_dir: "~/.local/share/brownie/models"
-  models:
-    router: "BAAI/bge-reranker-v2-m3"
-    interlocutor: "mlx-community/gemma-4-26b-a4b-it-4bit"
-    coder: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+  timeout_sec: 120
+
 workspace:
-  sandbox_user_id: 1000
-  sandbox_group_id: 1000
-  lfs_enabled: true
-  base_dir: "~/.local/share/brownie/workspaces"
-database:
-  db_path: "~/.local/share/brownie/brownie.db"
-  memory_path: "~/.local/share/brownie/vector_db"
+  sandbox_user: "brownie_sandbox"
+  base_path: "./workspace"

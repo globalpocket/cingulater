@@ -1,9 +1,0 @@
-description: "1分ごとに挨拶をするデモ用スケジュールワークフロー"
-triggers:
-  - type: cron
-    value: "* * * * *"
-start_node: "node_hello"
-nodes:
-  node_hello:
-    prompt_file: "scheduled_hello.md"
-    next: "END"

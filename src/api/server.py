@@ -1,13 +1,13 @@
 import os
 import time
 from typing import List, Optional
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.orchestrator import Orchestrator
 
-app = FastAPI(title="Brownie OpenAI-Compatible API")
 orchestrator: Optional[Orchestrator] = None
 
 class ChatMessage(BaseModel):
@@ -31,9 +31,9 @@ class ChatCompletionResponse(BaseModel):
     model: str = "brownie-v2"
     choices: List[ChatCompletionResponseChoice]
 
-@app.on_event("startup")
-async def startup_event():
-    """サーバー起動時に Orchestrator を初期化し、MCP ゲートウェイに接続する"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- サーバー起動時 ---
     global orchestrator
     config_path = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
     logger.info(f"Initializing Brownie Core (Config: {config_path})")
@@ -42,14 +42,15 @@ async def startup_event():
     # MCP ゲートウェイとの接続を開始
     await orchestrator.start()
     logger.info("Brownie Engine is online and connected to MCP Gateway.")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """サーバー停止時に接続を安全にクリーンアップする"""
-    global orchestrator
+    
+    yield  # ここでサーバーがリクエストを処理し続けます
+    
+    # --- サーバー停止時 ---
     if orchestrator:
         logger.info("Shutting down Brownie Core...")
         await orchestrator.shutdown()
+
+app = FastAPI(title="Brownie OpenAI-Compatible API", lifespan=lifespan)
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(request: ChatCompletionRequest):
@@ -83,7 +84,3 @@ async def chat_completions(request: ChatCompletionRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "engine_ready": orchestrator is not None}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8137)
