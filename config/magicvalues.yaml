@@ -1,6 +1,0 @@
-agent:
-  polling_interval_sec: 15
-llm:
-  router:
-    confidence_threshold: 0.5
-    max_routing_loops: 5

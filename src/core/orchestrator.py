@@ -241,19 +241,34 @@ class Orchestrator:
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
         self.system_prompt_path = self.project_root / ".brwn" / "system_prompt.md"
+        self.mcp_config_path = self.project_root / "mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
         self.router = Router(settings=self.settings)
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
         
-        gateway_cmd = os.getenv("BROWNIE_GATEWAY_CMD", "mcp-gateway")
+        # --- mcp_config.json から Gateway の起動設定を動的に読み込む ---
+        gateway_cmd = "mcp-gateway"
+        gateway_args = []
+        
+        if self.mcp_config_path.exists():
+            try:
+                with open(self.mcp_config_path, "r", encoding="utf-8") as f:
+                    mcp_config = json.load(f)
+                    servers = mcp_config.get("mcpServers", {})
+                    if "mcp-routing-gateway" in servers:
+                        gw_conf = servers["mcp-routing-gateway"]
+                        gateway_cmd = gw_conf.get("command", gateway_cmd)
+                        gateway_args = gw_conf.get("args", gateway_args)
+            except Exception as e:
+                logger.error(f"Failed to load mcp_config.json: {e}")
+
+        # 環境変数によるオーバーライド（テスト時などに使用）
+        gateway_cmd = os.getenv("BROWNIE_GATEWAY_CMD", gateway_cmd)
+        
         self.mcp_client = GatewayClient(
             command=gateway_cmd,
-            args=[
-                "--work-dir", str(self.project_root),
-                "--config", "gateway_config.json",
-                "--mcp-config", "gateway_mcp_config.json"
-            ]
+            args=gateway_args
         )
 
     async def start(self):
