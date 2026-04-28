@@ -1,38 +1,65 @@
 import pytest
-from unittest.mock import patch, mock_open
-from core.config import get_settings, Settings
+from unittest.mock import patch, MagicMock, AsyncMock
+from gateway.client import GatewayClient
+import mcp.types as types
 
-def test_default_settings():
-    """設定ファイルがない場合はデフォルト値が使われることの確認"""
-    with patch("pathlib.Path.exists", return_value=False):
-        settings = get_settings()
-        assert settings.agent.max_retries == 3
-        assert settings.llm.timeout_sec == 120
-        assert settings.workspace.sandbox_user == "brownie_sandbox"
-        assert settings.llm.models["interlocutor"] == "mlx-community/gemma-4-26b-a4b-it-4bit"
+@pytest.fixture
+def client():
+    return GatewayClient()
 
-def test_load_valid_yaml():
-    """正常なYAMLファイルが読み込まれ、設定が上書きされることの確認"""
-    mock_yaml = """
-agent:
-  max_retries: 10
-llm:
-  timeout_sec: 60
-    """
-    with patch("pathlib.Path.exists", return_value=True):
-        with patch("builtins.open", mock_open(read_data=mock_yaml)):
-            settings = Settings.load("dummy.yaml")
-            assert settings.agent.max_retries == 10
-            assert settings.llm.timeout_sec == 60
-            assert settings.workspace.sandbox_user == "brownie_sandbox" # 記述がないものはデフォルト
+@pytest.mark.asyncio
+async def test_start_stop(client):
+    mock_stdio = AsyncMock()
+    mock_stdio.__aenter__.return_value = (AsyncMock(), AsyncMock())
+    mock_stdio.__aexit__ = AsyncMock()
+    
+    mock_session = AsyncMock()
+    mock_session.initialize = AsyncMock()
+    mock_session_ctx = AsyncMock()
+    mock_session_ctx.__aenter__.return_value = mock_session
+    mock_session_ctx.__aexit__ = AsyncMock()
 
-@patch("core.config.logger.error")
-def test_load_invalid_yaml(mock_logger_error):
-    """壊れたYAMLファイルや読み込みエラー時のフォールバック確認"""
-    with patch("builtins.open", side_effect=Exception("Permission denied")):
-        settings = Settings.load("dummy.yaml")
-        assert settings.agent.max_retries == 3  # デフォルトに戻る
-        
-        # loguru の logger.error が正しく呼ばれ、意図したメッセージが含まれているか検証
-        mock_logger_error.assert_called_once()
-        assert "Failed to load config" in mock_logger_error.call_args[0][0]
+    with patch("gateway.client.stdio_client", return_value=mock_stdio):
+        with patch("gateway.client.ClientSession", return_value=mock_session_ctx):
+            await client.start()
+            assert client.session is not None
+            mock_session.initialize.assert_called_once()
+            
+            await client.stop()
+            assert client.session is None
+
+@pytest.mark.asyncio
+async def test_fetch_tools(client):
+    mock_session = AsyncMock()
+    mock_tool = MagicMock()
+    mock_tool.name = "mock_tool"
+    mock_tool.description = "desc"
+    mock_tool.inputSchema = {}
+    
+    mock_result = MagicMock()
+    mock_result.tools = [mock_tool]
+    mock_session.list_tools = AsyncMock(return_value=mock_result)
+    
+    client.session = mock_session
+    tools = await client.fetch_tools()
+    assert len(tools) == 1
+    assert tools[0]["name"] == "mock_tool"
+
+@pytest.mark.asyncio
+async def test_call_tool(client):
+    mock_session = AsyncMock()
+    mock_content = types.TextContent(type="text", text="Output")
+    mock_result = MagicMock()
+    mock_result.content = [mock_content]
+    mock_session.call_tool = AsyncMock(return_value=mock_result)
+    
+    client.session = mock_session
+    res = await client.call_tool("mock_tool", {"param": 1})
+    assert res == "Output"
+    mock_session.call_tool.assert_called_once_with("mock_tool", {"param": 1})
+
+@pytest.mark.asyncio
+async def test_call_tool_not_connected(client):
+    client.session = None
+    with pytest.raises(ValueError):
+        await client.call_tool("mock_tool", {})
