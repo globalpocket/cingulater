@@ -1,0 +1,4 @@
+name: interlocutor
+steps:
+  - type: llm_chat
+    model_key: interlocutor
