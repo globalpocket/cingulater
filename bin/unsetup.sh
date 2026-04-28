@@ -23,12 +23,12 @@ fi
 
 # 1. 設定の読み込み (削除前に実施)
 MODEL_DIR="~/.local/share/brownie/models"
-if [ -f "config/config.yaml" ]; then
+if [ -f "config.yaml" ]; then
     # uv が使える場合は優先使用、使えない場合は grep で簡易取得
     if command -v uv &> /dev/null && [ -d ".venv" ]; then
-        MODEL_DIR=$(uv run python -c "import yaml; print(yaml.safe_load(open('config/config.yaml'))['llm'].get('model_dir', '~/.local/share/brownie/models'))" 2>/dev/null || echo "~/.local/share/brownie/models")
+        MODEL_DIR=$(uv run python -c "import yaml; print(yaml.safe_load(open('config.yaml'))['llm'].get('model_dir', '~/.local/share/brownie/models'))" 2>/dev/null || echo "~/.local/share/brownie/models")
     else
-        MODEL_DIR=$(grep 'model_dir:' config/config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'" || echo "~/.local/share/brownie/models")
+        MODEL_DIR=$(grep 'model_dir:' config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'" || echo "~/.local/share/brownie/models")
     fi
 fi
 EXPANDED_MODEL_DIR=$(echo $MODEL_DIR | sed "s|^~|$HOME|")
@@ -47,11 +47,11 @@ import yaml
 import os
 import shutil
 
-if not os.path.exists('config/config.yaml'):
-    print('config/config.yaml not found. Skipping data cleanup.')
+if not os.path.exists('config.yaml'):
+    print('config.yaml not found. Skipping data cleanup.')
     exit(0)
 
-with open('config/config.yaml', 'r') as f:
+with open('config.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
 # 削除対象: DB本体, ベクトルDB/Memory, ワークスペース, 管理ファイル(PID/Lock)

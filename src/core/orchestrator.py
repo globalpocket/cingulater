@@ -17,7 +17,10 @@ import mcp.types as types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
-# --- Config & Settings (Step 1 統合) ---
+
+# ==========================================
+# 1. Config & Settings
+# ==========================================
 class AgentSettings(BaseModel):
     max_retries: int = Field(default=3)
 
@@ -41,15 +44,20 @@ class Settings(BaseSettings):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 yaml_data = yaml.safe_load(f) or {}
+            
+            # YAML のデータを Pydantic モデルに流し込む
             return cls(**yaml_data)
         except Exception as e:
             logger.error(f"Failed to load config from {config_path}: {e}")
             return cls()
 
-def get_settings(config_path: str = "config/config.yaml") -> Settings:
+def get_settings(config_path: str = "config.yaml") -> Settings:
     return Settings.load(config_path)
 
-# --- Router (Step 2 統合) ---
+
+# ==========================================
+# 2. Router
+# ==========================================
 class Router:
     """
     BROWNIE Router: 入力プロンプトに対して最適な担当モデルを選択する。
@@ -117,7 +125,10 @@ class Router:
             logger.error(f"Router LLM Error: {e}. Defaulting to interlocutor.")
             return "interlocutor"
 
-# --- Gateway Client (Step 3 統合) ---
+
+# ==========================================
+# 3. Gateway Client
+# ==========================================
 class GatewayClient:
     """
     Brownie から MCP Routing Gateway に接続し、ツール一覧の取得や実行を行うクライアント。
@@ -148,7 +159,7 @@ class GatewayClient:
             # 初期化ハンドシェイク
             await self.session.initialize()
             
-            logger.info("✅ Successfully connected to MCP Routing Gateway.")
+            logger.info(f"✅ Successfully connected to MCP Routing Gateway via {self.command}.")
         except Exception as e:
             logger.error(f"❌ Failed to connect to Gateway: {e}")
             raise
@@ -198,7 +209,10 @@ class GatewayClient:
                 
         return output.strip()
 
-# --- Core Tools & Orchestrator ---
+
+# ==========================================
+# 4. Core Orchestrator & Virtual Tool
+# ==========================================
 class MCPVirtualTool(Tool):
     """
     MCP Gateway から取得したツール定義を smolagents 形式に動的変換するラッパー。
@@ -219,10 +233,12 @@ class MCPVirtualTool(Tool):
         self.mcp_client = mcp_client
         self._loop = loop
         self.is_initialized = True
+        # 動的な引数(kwargs)を受け入れるために、smolagents のシグネチャ検証をスキップ
         self.skip_forward_signature_validation = True
         super().__init__()
 
     def forward(self, **kwargs):
+        # smolagents(同期)から非同期の mcp_client を安全に呼び出す
         future = asyncio.run_coroutine_threadsafe(
             self.mcp_client.call_tool(self.name, kwargs),
             self._loop
@@ -256,6 +272,7 @@ class Orchestrator:
                 with open(self.mcp_config_path, "r", encoding="utf-8") as f:
                     mcp_config = json.load(f)
                     servers = mcp_config.get("mcpServers", {})
+                    # mcp_config.json に定義された mcp-routing-gateway の設定を使用する
                     if "mcp-routing-gateway" in servers:
                         gw_conf = servers["mcp-routing-gateway"]
                         gateway_cmd = gw_conf.get("command", gateway_cmd)
@@ -313,6 +330,7 @@ class Orchestrator:
         steps = workflow.get("steps", [])
 
         for i, step in enumerate(steps):
+            # model_key の明示的な指定を必須とする
             model_key = step.get("model_key")
             if not model_key:
                 logger.error(f"Validation Error: Step {i+1} is missing required 'model_key'.")
@@ -335,6 +353,7 @@ class Orchestrator:
                 history = "\n".join([f"{m['role']}: {m['content']}" for m in current_context])
                 instruction = f"{self.system_prompt}\n\n[History]\n{history}\n\n[Task]\n{description}"
 
+                # OpenAIServerModel は内部で openai SDK を使用
                 agent_model = OpenAIServerModel(
                     model_id=model_name,
                     api_base=endpoint,
@@ -349,6 +368,7 @@ class Orchestrator:
                 agent = ToolCallingAgent(tools=step_tools, model=agent_model, max_steps=10)
                 
                 try:
+                    # smolagents の実行(同期)を別スレッドに逃がす
                     result = await asyncio.to_thread(agent.run, instruction)
                     final_result = str(result)
                     current_context.append({"role": "assistant", "content": f"[Result Step {i+1}]\n{final_result}"})

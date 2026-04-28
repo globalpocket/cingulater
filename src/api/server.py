@@ -35,7 +35,7 @@ class ChatCompletionResponse(BaseModel):
 async def lifespan(app: FastAPI):
     # --- サーバー起動時 ---
     global orchestrator
-    config_path = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
+    config_path = os.getenv("BROWNIE_CONFIG", "config.yaml")
     logger.info(f"Initializing Brownie Core (Config: {config_path})")
     orchestrator = Orchestrator(config_path)
     
