@@ -33,10 +33,23 @@ class ChatCompletionResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
+    """サーバー起動時に Orchestrator を初期化し、MCP ゲートウェイに接続する"""
     global orchestrator
     config_path = os.getenv("BROWNIE_CONFIG", "config/config.yaml")
     logger.info(f"Initializing Brownie Core (Config: {config_path})")
     orchestrator = Orchestrator(config_path)
+    
+    # MCP ゲートウェイとの接続を開始
+    await orchestrator.start()
+    logger.info("Brownie Engine is online and connected to MCP Gateway.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """サーバー停止時に接続を安全にクリーンアップする"""
+    global orchestrator
+    if orchestrator:
+        logger.info("Shutting down Brownie Core...")
+        await orchestrator.shutdown()
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(request: ChatCompletionRequest):
@@ -50,7 +63,6 @@ async def chat_completions(request: ChatCompletionRequest):
         message = result["choices"][0]["message"]
         content = message.get("content")
         
-        # contentが空の場合の安全対策と理由の表示
         if not content:
             if "tool_calls" in message:
                 content = f"[Tool Call Requested by Model]: {message['tool_calls']}"

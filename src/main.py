@@ -11,13 +11,16 @@ from typing import Optional
 from dotenv import load_dotenv
 from loguru import logger
 
-# .env ファイルの読み込み (設計書 11.2 補足)
+# .env ファイルの読み込み
 load_dotenv()
 
 import typer
 from typing_extensions import Annotated
 
-# プロジェクトルートをパスに追加 (設計書 3.2 補足)
+from core.config import get_settings
+from core.orchestrator import Orchestrator
+
+# プロジェクトルートをパスに追加
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 # 1. ログ設定
@@ -28,8 +31,6 @@ os.makedirs(os.path.dirname(log_file), exist_ok=True)
 log_level = "DEBUG" if os.environ.get("BROWNIE_DEBUG") == "1" else "INFO"
 
 
-# Loguru の初期化 (stderr とファイルの両方に出力)
-# 標準 logging を Loguru にリダイレクトするためのハンドラ設定
 class InterceptHandler(logging.Handler):
     def emit(self, record):
         try:
@@ -49,8 +50,6 @@ class InterceptHandler(logging.Handler):
 
 def setup_logging():
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
-
-    # 既存のハンドラをクリアして Loguru で再構築
     logger.remove()
     log_format = (
         "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
@@ -69,58 +68,50 @@ def setup_logging():
 
 
 setup_logging()
-logger.info(f"Loguru initialized. Level: {log_level}, File: {log_file}")
 
 
 class BrownieApp:
-    def __init__(self):
+    def __init__(self, config_file: str):
+        self.settings = get_settings(config_file)
+        self.orchestrator = Orchestrator(config_file)
         self.stop_event = asyncio.Event()
 
     async def run(self):
-        """メインプロセスの実行 (設計書 3.2: 生存信号送信・LLM死活監視)"""
-        # メインプロセスの起動ログ (Build 情報を含む)
+        """メインプロセスの実行"""
         logger.info(
             f"Starting Brownie Main Process (Build: {self.settings.build_id})..."
         )
 
-        # 設計書に基づき、シグナルハンドラを設定
         loop = asyncio.get_running_loop()
         for s in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(s, lambda: asyncio.create_task(self.shutdown()))
 
         try:
-            # 1. 起動
-            orchestrator_task = asyncio.create_task(self.orchestrator.start())
+            # 1. Orchestrator の開始（MCP ゲートウェイ接続を含む）
+            await self.orchestrator.start()
 
             # 2. 定期的な生存信号（Watchdog向け）
-            asyncio.create_task(self._send_survival_signals())
+            survival_task = asyncio.create_task(self._send_survival_signals())
 
-            # 3. 待機
+            # 3. 停止シグナルを待機
             await self.stop_event.wait()
-
-            # 4. 停止
-            orchestrator_task.cancel()
-            try:
-                await orchestrator_task
-            except asyncio.CancelledError:
-                pass
+            
+            survival_task.cancel()
 
         except Exception:
             logger.exception("Fatal error in main process")
         finally:
+            # 4. Orchestrator の安全な停止
+            await self.orchestrator.shutdown()
             logger.info("Brownie Main Process stopped.")
 
     async def _send_survival_signals(self):
-        """Watchdogへの生存信号の送信 (設計書 3.2: 生存信号)"""
         pid = os.getpid()
         data_dir = Path.home() / ".local" / "share" / "brownie"
         data_dir.mkdir(parents=True, exist_ok=True)
         signal_file = str(data_dir / "survival.signal")
-        logger.info(f"Starting survival signal: {signal_file}")
         try:
             while not self.stop_event.is_set():
-                logger.debug(f"Writing survival signal to {signal_file}")
-                # PID をファイル名に含め、内容も JSON 化して詳細情報を付与する
                 with open(signal_file, "w") as f:
                     f.write(
                         json.dumps(
@@ -131,16 +122,14 @@ class BrownieApp:
                             }
                         )
                     )
-                # 30秒ごとに更新
                 await asyncio.sleep(30)
         finally:
             if os.path.exists(signal_file):
                 os.remove(signal_file)
-                logger.info(f"Removed survival signal: {signal_file}")
 
     async def shutdown(self):
-        """シャットダウン処理"""
-        logger.info("Shutting down Brownie...")
+        """シャットダウンシグナルの受信"""
+        logger.info("Shutdown signal received. Closing Brownie...")
         self.stop_event.set()
 
 
@@ -149,15 +138,11 @@ def main(
         Optional[str], typer.Option("--config", "-c", help="Path to config yaml file")
     ] = None,
 ):
-    """
-    BROWNIE: Autonomous AI Coding Agent 🚀
-    """
+    """BROWNIE: Autonomous AI Coding Agent 🚀"""
     config_file = config or os.getenv("BROWNIE_CONFIG", "config/config.yaml")
 
-    # プロセスグループの設定 (設計書 3.2 補足: 一括停止を容易にするため)
     if hasattr(os, "setpgrp"):
         os.setpgrp()
-        logger.debug("Process group ID set to current PID.")
 
     try:
         app = BrownieApp(config_file)
@@ -166,7 +151,6 @@ def main(
         logger.exception(
             "FATAL ERROR: System is crashing. Killing all related processes."
         )
-        # 自分を含むプロセスグループ全体に SIGTERM を送信して一括停止
         if hasattr(os, "killpg"):
             try:
                 os.killpg(0, signal.SIGTERM)

@@ -1,18 +1,22 @@
 import re
 import yaml
+import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 from loguru import logger
 
 from core.config import get_settings
 from core.router import Router
+from mcp.client import GatewayClient
+
 
 class Orchestrator:
     """
     BROWNIE の中央集権的オーケストレーター。
     Router Pattern を用い、適切なモデルへ処理を振り分ける。
+    GatewayClient を通じて MCP ゲートウェイと接続し、AI に安全なツールを提供する。
     """
 
     def __init__(self, config_path: str):
@@ -27,7 +31,21 @@ class Orchestrator:
         self.router = Router(model_name=self.settings.llm.models.get("router"))
         
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
+        
+        # MCP ゲートウェイ用クライアントの初期化
+        self.mcp_client = GatewayClient(
+            command="mcp-gateway",
+            args=[
+                "--config", str(self.project_root / "gateway_config.json"),
+                "--mcp-config", str(self.project_root / "mcp_config.json")
+            ]
+        )
         self.is_running = True
+
+    async def start(self):
+        """MCP ゲートウェイとの接続を開始する"""
+        await self.mcp_client.start()
+        logger.info("✅ Orchestrator: MCP Gateway Client started.")
 
     def _load_system_prompt(self) -> str:
         """.brwn/system_prompt.md を読み込む"""
@@ -116,9 +134,12 @@ class Orchestrator:
             current_context.append({"role": "assistant", "content": f"以下の手順で実行します。\n{plan_content}"})
 
             # ==========================================
-            # 3. タスクランナーループ (各工程の実行)
+            # 3. タスクランナーループ (MCPツール対応版)
             # ==========================================
             final_result = ""
+            # ゲートウェイから利用可能な安全なツール一覧を取得
+            available_tools = await self.mcp_client.fetch_tools()
+
             for step_info in steps:
                 step_num = step_info.get("step")
                 desc = step_info.get("description")
@@ -129,16 +150,51 @@ class Orchestrator:
                 step_prompt = (
                     f"【システム指示: Step {step_num} の実行】\n"
                     f"現在のタスク: {desc}\n\n"
-                    f"上記のタスクのみを実行し、完了したら結果を報告してください。次のステップへは進まないでください。"
+                    f"必要に応じてツールを使用し、このステップを完了させてください。完了したら結果を報告してください。次のステップへは進まないでください。"
                 )
                 current_context.append({"role": "user", "content": step_prompt})
                 
-                coder_resp = await self._call_llm("coder", self.settings.llm.coder_endpoint, current_context, stream=False)
-                step_result = coder_resp.get("choices", [{}])[0].get("message", {}).get("content", "")
-                
-                # 結果を履歴に積む
-                current_context.append({"role": "assistant", "content": step_result})
-                final_result = step_result
+                # ツール実行ループ: AIが「完了」と判断するまで回す
+                while True:
+                    coder_resp = await self._call_llm(
+                        "coder", 
+                        self.settings.llm.coder_endpoint, 
+                        current_context, 
+                        stream=False,
+                        tools=available_tools
+                    )
+                    
+                    message = coder_resp.get("choices", [{}])[0].get("message", {})
+                    current_context.append(message)
+                    
+                    tool_calls = message.get("tool_calls")
+                    if not tool_calls:
+                        # ツール呼び出しがなければ、このステップは完了
+                        final_result = message.get("content", "")
+                        break
+                    
+                    # 各ツール呼び出しを順次実行
+                    for tool_call in tool_calls:
+                        t_name = tool_call["function"]["name"]
+                        try:
+                            t_args = json.loads(tool_call["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            t_args = {}
+                        
+                        logger.info(f"Executing tool: {t_name}")
+                        try:
+                            tool_result = await self.mcp_client.call_tool(t_name, t_args)
+                        except Exception as e:
+                            logger.error(f"Tool execution failed: {e}")
+                            tool_result = f"Error executing tool {t_name}: {str(e)}"
+                        
+                        # 実行結果を履歴に追加してAIにフィードバック
+                        current_context.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "name": t_name,
+                            "content": tool_result
+                        })
 
             # ==========================================
             # 4. 完了報告
@@ -153,7 +209,7 @@ class Orchestrator:
                 }]
             }
 
-    async def _call_llm(self, model_key: str, endpoint: str, messages: List[Dict[str, str]], stream: bool):
+    async def _call_llm(self, model_key: str, endpoint: str, messages: List[Dict[str, str]], stream: bool, tools: Optional[List[dict]] = None):
         """指定されたモデルエンドポイントを呼び出す"""
         model_name = self.settings.llm.models.get(model_key, "default")
 
@@ -182,6 +238,9 @@ class Orchestrator:
             "stream": stream,
             "max_tokens": 4096
         }
+        
+        if tools:
+            payload["tools"] = tools
 
         try:
             logger.debug(f"Calling LLM ({model_key}) with {len(full_messages)} messages.")
@@ -210,5 +269,8 @@ class Orchestrator:
         }
 
     async def shutdown(self):
+        """プロセスの安全な停止処理"""
         self.is_running = False
+        await self.mcp_client.stop()
         await self.http_client.aclose()
+        logger.info("Orchestrator: Shutdown complete.")
