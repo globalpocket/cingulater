@@ -12,5 +12,6 @@
     "python.analysis.ignore": [
         "src/brownie_chat/proto/*",
         ".analyze"
-    ]
+    ],
+    "sarif-viewer.connectToGithubCodeScanning": "on"
 }
