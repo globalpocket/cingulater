@@ -2,18 +2,203 @@ import os
 import yaml
 import json
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from contextlib import AsyncExitStack
 
 import httpx
 from loguru import logger
 from smolagents import Tool, ToolCallingAgent, OpenAIServerModel
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
 
-from core.config import get_settings
-from core.router import Router
-from gateway.client import GatewayClient
+import mcp.types as types
+from mcp.client.session import ClientSession
+from mcp.client.stdio import stdio_client, StdioServerParameters
 
+# --- Config & Settings (Step 1 統合) ---
+class AgentSettings(BaseModel):
+    max_retries: int = Field(default=3)
 
+class LLMSettings(BaseModel):
+    models: dict[str, str] = Field(default_factory=dict)
+    interlocutor_endpoint: str = Field(default="http://localhost:8080/v1")
+    coder_endpoint: str = Field(default="http://localhost:8081/v1")
+    timeout_sec: int = Field(default=120)
+
+class WorkspaceSettings(BaseModel):
+    sandbox_user: str = Field(default="brownie_sandbox")
+    base_path: str = Field(default="./workspace")
+
+class Settings(BaseSettings):
+    agent: AgentSettings = Field(default_factory=AgentSettings)
+    llm: LLMSettings = Field(default_factory=LLMSettings)
+    workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
+
+    @classmethod
+    def load(cls, config_path: str) -> "Settings":
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                yaml_data = yaml.safe_load(f) or {}
+            return cls(**yaml_data)
+        except Exception as e:
+            logger.error(f"Failed to load config from {config_path}: {e}")
+            return cls()
+
+def get_settings(config_path: str = "config/config.yaml") -> Settings:
+    return Settings.load(config_path)
+
+# --- Router (Step 2 統合) ---
+class Router:
+    """
+    BROWNIE Router: 入力プロンプトに対して最適な担当モデルを選択する。
+    LLMによるゼロショット分類（およびヒューリスティック）を使用し、
+    巨大な機械学習モデル（torch等）への依存を排除した超軽量版。
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.endpoint = settings.llm.interlocutor_endpoint
+        self.model_name = settings.llm.models.get("interlocutor", "default")
+        self.timeout = settings.llm.timeout_sec
+        
+        # 高速判定用のキーワード（これらが含まれていれば LLM に聞かず即 Coder へ）
+        self.coder_keywords = [
+            "コード", "修正", "実装", "バグ", "エラー", "リファクタ",
+            "スクリプト", "ファイル", "プログラム", "作って", "追加して"
+        ]
+        logger.info("Lightweight LLM Router initialized.")
+
+    async def route(self, query: str) -> str:
+        """
+        クエリに対して最適なモデルラベル('coder' または 'interlocutor')を返す。
+        """
+        if not query:
+            return "interlocutor"
+
+        # 1. ヒューリスティック (高速・一次判定)
+        for kw in self.coder_keywords:
+            if kw in query:
+                logger.debug(f"Router: Keyword match '{kw}' -> coder")
+                return "coder"
+
+        # 2. LLM によるゼロショット判定 (フォールバック)
+        logger.debug("Router: Falling back to LLM classification...")
+        prompt = (
+            "Classify the following user input into one of two categories:\n"
+            "1. 'coder' (requires writing/modifying code, file operations, debugging)\n"
+            "2. 'interlocutor' (general conversation, greetings, simple questions)\n\n"
+            "Output ONLY the category name ('coder' or 'interlocutor'). No other text.\n\n"
+            f"Input: {query}"
+        )
+
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 10,
+            "temperature": 0.0
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(f"{self.endpoint}/chat/completions", json=payload)
+                resp.raise_for_status()
+                result = resp.json()
+                answer = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
+                
+                if "coder" in answer:
+                    logger.debug("Router: LLM decided -> coder")
+                    return "coder"
+                else:
+                    logger.debug("Router: LLM decided -> interlocutor")
+                    return "interlocutor"
+        except Exception as e:
+            logger.error(f"Router LLM Error: {e}. Defaulting to interlocutor.")
+            return "interlocutor"
+
+# --- Gateway Client (Step 3 統合) ---
+class GatewayClient:
+    """
+    Brownie から MCP Routing Gateway に接続し、ツール一覧の取得や実行を行うクライアント。
+    mcp-routing-gateway の BackendClient をベースに、単一接続に最適化。
+    """
+    def __init__(self, command: str = "mcp-gateway", args: Optional[List[str]] = None):
+        # 起動するゲートウェイコマンド (必要に応じて config.yaml のパスなどを args に渡す)
+        self.command = command
+        self.args = args or []
+        self.session: Optional[ClientSession] = None
+        self._exit_stack = AsyncExitStack()
+
+    async def start(self):
+        """ゲートウェイプロセス(stdio)を起動し、セッションを確立する"""
+        try:
+            # 環境変数をそのまま引き継いで実行
+            server_params = StdioServerParameters(
+                command=self.command, 
+                args=self.args, 
+                env=os.environ.copy()
+            )
+            
+            stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
+            read_stream, write_stream = stdio_transport
+            
+            self.session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
+            
+            # 初期化ハンドシェイク
+            await self.session.initialize()
+            
+            logger.info("✅ Successfully connected to MCP Routing Gateway.")
+        except Exception as e:
+            logger.error(f"❌ Failed to connect to Gateway: {e}")
+            raise
+
+    async def stop(self):
+        """ゲートウェイプロセスを安全に終了させる"""
+        await self._exit_stack.aclose()
+        self.session = None
+        logger.info("Gateway connection closed.")
+
+    async def fetch_tools(self) -> List[Dict[str, Any]]:
+        """ゲートウェイが Pydantic で生成した安全な仮想ツール一覧を取得する"""
+        if not self.session:
+            logger.error("Gateway is not connected.")
+            return []
+        
+        try:
+            tools_result = await self.session.list_tools()
+            return [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "inputSchema": t.inputSchema
+                }
+                for t in tools_result.tools
+            ]
+        except Exception as e:
+            logger.error(f"Failed to fetch tools from Gateway: {e}")
+            return []
+
+    async def call_tool(self, tool_name: str, arguments: dict) -> str:
+        """LLMからのツール実行要求をゲートウェイへ送信する"""
+        if not self.session:
+            raise ValueError("Gateway is not connected.")
+        
+        logger.info(f"Calling virtual tool '{tool_name}' via Gateway")
+        result = await self.session.call_tool(tool_name, arguments)
+        
+        # MCP の結果 (TextContent等) を LLM が読みやすい単一の文字列にパース
+        output = ""
+        for content in result.content:
+            if isinstance(content, types.TextContent):
+                output += content.text + "\n"
+            else:
+                # 画像などテキスト以外のコンテンツの場合のフォールバック
+                output += f"[{content.type} content]\n"
+                
+        return output.strip()
+
+# --- Core Tools & Orchestrator ---
 class MCPVirtualTool(Tool):
     """
     MCP Gateway から取得したツール定義を smolagents 形式に動的変換するラッパー。
@@ -34,12 +219,10 @@ class MCPVirtualTool(Tool):
         self.mcp_client = mcp_client
         self._loop = loop
         self.is_initialized = True
-        # 動的な引数(kwargs)を受け入れるために、smolagents のシグネチャ検証をスキップ
         self.skip_forward_signature_validation = True
         super().__init__()
 
     def forward(self, **kwargs):
-        # smolagents(同期)から非同期の mcp_client を安全に呼び出す
         future = asyncio.run_coroutine_threadsafe(
             self.mcp_client.call_tool(self.name, kwargs),
             self._loop
@@ -115,7 +298,6 @@ class Orchestrator:
         steps = workflow.get("steps", [])
 
         for i, step in enumerate(steps):
-            # model_key の明示的な指定を必須とする
             model_key = step.get("model_key")
             if not model_key:
                 logger.error(f"Validation Error: Step {i+1} is missing required 'model_key'.")
@@ -138,7 +320,6 @@ class Orchestrator:
                 history = "\n".join([f"{m['role']}: {m['content']}" for m in current_context])
                 instruction = f"{self.system_prompt}\n\n[History]\n{history}\n\n[Task]\n{description}"
 
-                # OpenAIServerModel は内部で openai SDK を使用
                 agent_model = OpenAIServerModel(
                     model_id=model_name,
                     api_base=endpoint,
@@ -153,7 +334,6 @@ class Orchestrator:
                 agent = ToolCallingAgent(tools=step_tools, model=agent_model, max_steps=10)
                 
                 try:
-                    # smolagents の実行(同期)を別スレッドに逃がす
                     result = await asyncio.to_thread(agent.run, instruction)
                     final_result = str(result)
                     current_context.append({"role": "assistant", "content": f"[Result Step {i+1}]\n{final_result}"})
