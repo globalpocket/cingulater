@@ -1,61 +1,70 @@
-import torch
-from sentence_transformers import CrossEncoder
+import httpx
 from loguru import logger
-from typing import List, Dict
+from core.config import Settings
 
 class Router:
     """
     BROWNIE Router: 入力プロンプトに対して最適な担当モデルを選択する。
-    BAAI/bge-reranker-v2-m3 を使用した Cross-Encoder 判定を行う。
+    LLMによるゼロショット分類（およびヒューリスティック）を使用し、
+    巨大な機械学習モデル（torch等）への依存を排除した超軽量版。
     """
 
-    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3"):
-        logger.info(f"Loading Router model: {model_name}...")
-        # Apple Silicon (mps) または CUDA が利用可能な場合は使用する
-        device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-        self.model = CrossEncoder(model_name, device=device)
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.endpoint = settings.llm.interlocutor_endpoint
+        self.model_name = settings.llm.models.get("interlocutor", "default")
+        self.timeout = settings.llm.timeout_sec
         
-        # 判定用の候補ラベルと説明文
-        self.candidates = [
-            {
-                "label": "interlocutor",
-                "description": "日常会話、挨拶、一般的な質問、情報の要約、感情的な応答、雑談。"
-            },
-            {
-                "label": "coder",
-                "description": "コードの修正、プログラムの作成、バグの修正、リファクタリング、ファイルの書き換え、実装、プログラミング指示。"
-            }
+        # 高速判定用のキーワード（これらが含まれていれば LLM に聞かず即 Coder へ）
+        self.coder_keywords = [
+            "コード", "修正", "実装", "バグ", "エラー", "リファクタ",
+            "スクリプト", "ファイル", "プログラム", "作って", "追加して"
         ]
-        logger.info(f"Router loaded on {device}.")
+        logger.info("Lightweight LLM Router initialized.")
 
-    def route(self, query: str) -> str:
+    async def route(self, query: str) -> str:
         """
-        クエリに対して最適なモデルラベルを返す。
-        相対スコアが最も高いものを選択する。
+        クエリに対して最適なモデルラベル('coder' または 'interlocutor')を返す。
         """
-        # クエリと各説明文のペアを作成
-        pairs = [[query, c["description"]] for c in self.candidates]
-        
-        # スコアリング
-        scores = self.model.predict(pairs)
-        
-        # 結果の解析
-        results = []
-        for i, score in enumerate(scores):
-            results.append({
-                "label": self.candidates[i]["label"],
-                "score": float(score)
-            })
-            logger.debug(f"Router Score - {self.candidates[i]['label']}: {score:.4f}")
+        if not query:
+            return "interlocutor"
 
-        # 最も高いスコアを選択
-        best_match = max(results, key=lambda x: x["score"])
-        
-        logger.info(f"Routing query to: {best_match['label']} (score: {best_match['score']:.4f})")
-        return best_match["label"]
+        # 1. ヒューリスティック (高速・一次判定)
+        for kw in self.coder_keywords:
+            if kw in query:
+                logger.debug(f"Router: Keyword match '{kw}' -> coder")
+                return "coder"
 
-if __name__ == "__main__":
-    # 単体テスト用
-    router = Router()
-    print(f"Test 1: {router.route('こんにちは')}")
-    print(f"Test 2: {router.route('src/main.py を修正して')}")
+        # 2. LLM によるゼロショット判定 (フォールバック)
+        logger.debug("Router: Falling back to LLM classification...")
+        prompt = (
+            "Classify the following user input into one of two categories:\n"
+            "1. 'coder' (requires writing/modifying code, file operations, debugging)\n"
+            "2. 'interlocutor' (general conversation, greetings, simple questions)\n\n"
+            "Output ONLY the category name ('coder' or 'interlocutor'). No other text.\n\n"
+            f"Input: {query}"
+        )
+
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 10,
+            "temperature": 0.0
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(f"{self.endpoint}/chat/completions", json=payload)
+                resp.raise_for_status()
+                result = resp.json()
+                answer = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
+                
+                if "coder" in answer:
+                    logger.debug("Router: LLM decided -> coder")
+                    return "coder"
+                else:
+                    logger.debug("Router: LLM decided -> interlocutor")
+                    return "interlocutor"
+        except Exception as e:
+            logger.error(f"Router LLM Error: {e}. Defaulting to interlocutor.")
+            return "interlocutor"

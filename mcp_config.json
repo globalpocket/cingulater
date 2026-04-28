@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mcp-routing-gateway": {
+      "command": "mcp-gateway",
+      "args": [
+        "--work-dir", ".",
+        "--config", "gateway_config.json",
+        "--mcp-config", "gateway_mcp_config.json"
+      ]
+    }
+  }
+}

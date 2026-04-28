@@ -1,6 +1,7 @@
 import re
 import yaml
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -9,7 +10,7 @@ from loguru import logger
 
 from core.config import get_settings
 from core.router import Router
-from mcp.client import GatewayClient
+from gateway.client import GatewayClient
 
 
 class Orchestrator:
@@ -27,17 +28,21 @@ class Orchestrator:
         # システムプロンプトの初期ロード
         self.system_prompt = self._load_system_prompt()
         
-        # Router の初期化
-        self.router = Router(model_name=self.settings.llm.models.get("router"))
+        # Router の初期化 (Settings を渡す)
+        self.router = Router(settings=self.settings)
         
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
         
-        # MCP ゲートウェイ用クライアントの初期化
+        # 本番運用想定: PATH が通っている前提。必要に応じて環境変数でパスを上書き可能
+        gateway_cmd = os.getenv("BROWNIE_GATEWAY_CMD", "mcp-gateway")
+        logger.debug(f"Using Gateway command: {gateway_cmd}")
+
         self.mcp_client = GatewayClient(
-            command="mcp-gateway",
+            command=gateway_cmd,
             args=[
-                "--config", str(self.project_root / "gateway_config.json"),
-                "--mcp-config", str(self.project_root / "mcp_config.json")
+                "--work-dir", str(self.project_root),
+                "--config", "gateway_config.json",
+                "--mcp-config", "gateway_mcp_config.json"
             ]
         )
         self.is_running = True
@@ -77,8 +82,9 @@ class Orchestrator:
                 user_input = msg.get("content", "")
                 break
 
-        # 1. Router による判定
-        actor = self.router.route(user_input)
+        # 1. Router による判定 (非同期化)
+        actor = await self.router.route(user_input)
+        logger.info(f"Selected Actor: {actor}")
 
         if actor == "interlocutor":
             logger.info("Executing Interlocutor...")
@@ -231,7 +237,6 @@ class Orchestrator:
             else:
                 full_messages.append(msg)
 
-        # max_tokens: 4096 を追加（途切れるバグを修正）
         payload = {
             "model": model_name,
             "messages": full_messages,

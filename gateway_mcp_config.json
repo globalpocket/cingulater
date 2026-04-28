@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mlx-launcher": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/globalpocket/mcp-mlx-launcher.git",
+        "mcp-mlx-launcher"
+      ]
+    }
+  }
+}

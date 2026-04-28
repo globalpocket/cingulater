@@ -15,11 +15,11 @@ if os.path.exists(venv_site_packages):
     sys.path.insert(0, venv_site_packages)
 sys.path.insert(0, base_dir)
 
-import subprocess  # noqa: E402
-import time  # noqa: E402
-import signal  # noqa: E402
-import argparse  # noqa: E402
-import requests  # noqa: E402
+import subprocess
+import time
+import signal
+import argparse
+import requests
 
 # Build info
 BUILD_ID = "2026.04.21.DR"
@@ -43,46 +43,7 @@ def is_engine_running(port=8137):
         return s.connect_ex(("localhost", port)) == 0
 
 
-def ensure_llm_servers_started():
-    try:
-        from src.core.config import get_settings
-        from src.mcp.llm_launcher import launch_llm_server, check_llm_status
-        from urllib.parse import urlparse
-
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(base_dir, "config", "config.yaml")
-        settings = get_settings(config_path)
-
-        # Interlocutor
-        inter_url = urlparse(settings.llm.interlocutor_endpoint)
-        inter_port = inter_url.port or 8080
-        inter_model = settings.llm.models.get("interlocutor")
-
-        # Coder
-        coder_url = urlparse(settings.llm.coder_endpoint)
-        coder_port = coder_url.port or 8081
-        coder_model = settings.llm.models.get("coder")
-
-        servers_to_check = [
-            (inter_port, inter_model, "Interlocutor"),
-            (coder_port, coder_model, "Coder"),
-        ]
-
-        for port, model, name in servers_to_check:
-            if model and port:
-                if not check_llm_status(port):
-                    print(f"🚀 Starting {name} LLM Server ({model}) on port {port}...")
-                    res = launch_llm_server(model, port)
-                    print(f"  -> {res}")
-                else:
-                    print(f"✅ {name} LLM Server is already running on port {port}.")
-    except Exception as e:
-        print(f"⚠️ Could not verify/start LLM servers: {e}")
-
-
 def ensure_engine_started():
-    ensure_llm_servers_started()
-
     if is_engine_running():
         return True
 
