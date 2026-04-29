@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List, Optional
+from typing import List, Optional, Dict
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -8,6 +8,7 @@ from loguru import logger
 
 from core.orchestrator import Orchestrator
 
+# グローバルな Orchestrator インスタンス
 orchestrator: Optional[Orchestrator] = None
 
 class ChatMessage(BaseModel):
@@ -33,22 +34,28 @@ class ChatCompletionResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- サーバー起動時 ---
+    """サーバーの起動・終了処理を管理するライフイベントハンドラ"""
     global orchestrator
     config_path = os.getenv("BROWNIE_CONFIG", "config.yaml")
     logger.info(f"Initializing Brownie Core (Config: {config_path})")
+    
+    # オーケストレーターの初期化
     orchestrator = Orchestrator(config_path)
     
     # MCP ゲートウェイとの接続を開始
     await orchestrator.start()
     logger.info("Brownie Engine is online and connected to MCP Gateway.")
     
-    yield  # ここでサーバーがリクエストを処理し続けます
+    yield
     
-    # --- サーバー停止時 ---
+    # サーバー終了時のクリーンアップ
     if orchestrator:
         logger.info("Shutting down Brownie Core...")
-        await orchestrator.shutdown()
+        # Orchestrator の終了メソッド (stop または shutdown) を呼び出し
+        if hasattr(orchestrator, "stop"):
+            await orchestrator.stop()
+        elif hasattr(orchestrator, "shutdown"):
+            await orchestrator.shutdown()
 
 app = FastAPI(title="Brownie OpenAI-Compatible API", lifespan=lifespan)
 
@@ -57,26 +64,40 @@ async def chat_completions(request: ChatCompletionRequest):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Brownie Engine is not initialized")
 
+    # メッセージを辞書形式に変換
     messages_dict = [m.model_dump() for m in request.messages]
+    
+    # Orchestrator で推論を実行
     result = await orchestrator.submit_chat_completion(messages_dict, stream=request.stream)
     
     if isinstance(result, dict) and "choices" in result:
-        message = result["choices"][0]["message"]
-        content = message.get("content")
+        raw_message = result["choices"][0]["message"]
         
+        # 🎯 修正の核心: content が空でも reasoning があればそれを採用する
+        content = raw_message.get("content", "")
+        reasoning = raw_message.get("reasoning", "")
+        
+        # content が空で reasoning がある場合、それを回答として扱う
+        if not content and reasoning:
+            content = reasoning
+            
+        # それでも空の場合のフォールバック
         if not content:
-            if "tool_calls" in message:
-                content = f"[Tool Call Requested by Model]: {message['tool_calls']}"
+            if "tool_calls" in raw_message:
+                content = f"[Tool Call Requested]: {raw_message['tool_calls']}"
             else:
-                content = f"[Empty Response] Raw message: {message}"
+                content = f"[Empty Response] Raw message: {raw_message}"
+        
+        # クライアントが期待する ChatMessage 形式に整形
+        final_message = ChatMessage(role="assistant", content=content)
     else:
-        content = "Error: Invalid response from core."
+        final_message = ChatMessage(role="assistant", content="Error: Invalid response from core.")
     
     return ChatCompletionResponse(
         choices=[
             ChatCompletionResponseChoice(
                 index=0,
-                message=ChatMessage(role="assistant", content=content)
+                message=final_message
             )
         ]
     )
@@ -84,3 +105,8 @@ async def chat_completions(request: ChatCompletionRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "engine_ready": orchestrator is not None}
+
+if __name__ == "__main__":
+    import uvicorn
+    # Brownie 既定のポート 8137 で起動
+    uvicorn.run(app, host="0.0.0.0", port=8137)
