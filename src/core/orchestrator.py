@@ -388,9 +388,14 @@ class Orchestrator:
 
     async def _call_llm(self, model_key: str, endpoint: str, messages: List[Dict[str, str]], stream: bool):
         model_name = self.settings.llm.models.get(model_key, "default")
+        
+        # システムプロンプトを独立した "system" ロールとして先頭に配置
+        api_messages = [{"role": "system", "content": self.system_prompt}]
+        api_messages.extend(messages)
+        
         payload = {
             "model": model_name,
-            "messages": [{"role": "user", "content": f"{self.system_prompt}\n\n{m['content']}"} if i == 0 else m for i, m in enumerate(messages)],
+            "messages": api_messages,
             "stream": stream
         }
         try:
