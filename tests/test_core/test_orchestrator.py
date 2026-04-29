@@ -1,4 +1,5 @@
 import pytest
+import json
 from unittest.mock import patch, MagicMock, AsyncMock
 from core.orchestrator import Orchestrator, Settings, Router, GatewayClient
 import mcp.types as types
@@ -25,7 +26,6 @@ def orchestrator(mock_gateway):
 async def test_start_shutdown(orchestrator, mock_gateway):
     await orchestrator.start()
     mock_gateway.start.assert_called_once()
-    # Auto-launch の call_tool が呼ばれることを確認（最低でも1回以上呼ばれる）
     assert mock_gateway.call_tool.call_count >= 0
     await orchestrator.shutdown()
     mock_gateway.stop.assert_called_once()
@@ -133,7 +133,6 @@ async def test_submit_chat_completion_proxies_to_llm(orchestrator):
     
     with patch("httpx.AsyncClient.post", return_value=mock_resp):
         orchestrator.router.route = AsyncMock(return_value="interlocutor")
-        # ワークフローのモック
         yaml_data = {"steps": [{"type": "llm_chat", "model_key": "interlocutor"}]}
         with patch("builtins.open", MagicMock()):
             with patch("yaml.safe_load", return_value=yaml_data):
@@ -144,6 +143,68 @@ async def test_submit_chat_completion_proxies_to_llm(orchestrator):
                         "stream": False
                     })
                     assert res["choices"][0]["message"]["content"] == "Response"
+
+# --- 新規追加: システムプロンプトのマージ処理テスト ---
+@pytest.mark.asyncio
+async def test_call_llm_system_prompt_merge(orchestrator):
+    mock_resp = MagicMock(status_code=200)
+    mock_resp.json.return_value = {"choices": [{"message": {"content": "Response"}}]}
+    
+    with patch("httpx.AsyncClient.post", return_value=mock_resp) as mock_post:
+        await orchestrator._call_llm("interlocutor", "http://dummy", {
+            "messages": [{"role": "system", "content": "Roo Custom System"}, {"role": "user", "content": "Hi"}],
+            "stream": False
+        })
+        
+        call_kwargs = mock_post.call_args[1]
+        sent_messages = call_kwargs["json"]["messages"]
+        assert len(sent_messages) == 2
+        # BrownieのシステムプロンプトとRooのシステムプロンプトが結合されていることを確認
+        assert "You are BROWNIE." in sent_messages[0]["content"]
+        assert "Roo Custom System" in sent_messages[0]["content"]
+
+# --- 新規追加: 一括JSON返却時のストリーム変換（フォールバック）テスト ---
+@pytest.mark.asyncio
+async def test_call_llm_stream_fallback(orchestrator):
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "application/json"}
+    
+    # ツール使用時にmlx_lm.serverが返すような一括JSON
+    fallback_json = json.dumps({
+        "id": "chatcmpl-123",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Sure, I'll use the tool.",
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "test_tool", "arguments": "{}"}}]
+            },
+            "finish_reason": "tool_calls"
+        }]
+    }).encode("utf-8")
+    
+    mock_resp.aread.return_value = fallback_json
+    
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_resp
+    
+    with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
+        gen = await orchestrator._call_llm("interlocutor", "http://dummy", {
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True
+        })
+        
+        chunks = [c async for c in gen]
+        assert len(chunks) == 1
+        chunk = chunks[0]
+        assert chunk["object"] == "chat.completion.chunk"
+        # message が delta に変換されていることを確認
+        assert "delta" in chunk["choices"][0]
+        assert chunk["choices"][0]["delta"]["role"] == "assistant"
+        assert chunk["choices"][0]["delta"]["content"] == "Sure, I'll use the tool."
+        # tool_callsにindexが補完されていることを確認
+        assert chunk["choices"][0]["delta"]["tool_calls"][0]["index"] == 0
 
 # === GatewayClient Tests ===
 @pytest.fixture

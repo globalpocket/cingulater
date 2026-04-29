@@ -308,22 +308,72 @@ class Orchestrator:
         payload = request_data.copy()
         payload["model"] = self.settings.llm.models.get(model_key, "default")
         
-        # システムプロンプトを先頭に挿入
-        messages = [{"role": "system", "content": self.system_prompt}] + payload.get("messages", [])
+        # システムプロンプトの衝突を回避（Rooのシステムプロンプトに安全にマージする）
+        messages = list(payload.get("messages", []))
+        if messages and messages[0]["role"] == "system":
+            new_sys = dict(messages[0])
+            new_sys["content"] = self.system_prompt + "\n\n" + new_sys.get("content", "")
+            messages[0] = new_sys
+        else:
+            messages.insert(0, {"role": "system", "content": self.system_prompt})
         payload["messages"] = messages
 
         if request_data.get("stream"):
             async def generator():
-                async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as client:
-                    async with client.stream("POST", f"{endpoint}/chat/completions", json=payload) as resp:
-                        async for line in resp.aiter_lines():
-                            if line.startswith("data: ") and line[6:] != "[DONE]":
-                                yield json.loads(line[6:])
+                try:
+                    async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as client:
+                        async with client.stream("POST", f"{endpoint}/chat/completions", json=payload) as resp:
+                            if resp.status_code != 200:
+                                error_text = await resp.aread()
+                                yield {"choices": [{"delta": {"content": f"ERROR: LLM Error {resp.status_code}: {error_text.decode('utf-8', errors='ignore')}"}, "finish_reason": "error"}]}
+                                return
+                            
+                            content_type = resp.headers.get("content-type", "")
+                            # mlx_lm 等がツール使用時に stream=True を無視して一括JSONで返してきた場合のフォールバック
+                            if "application/json" in content_type:
+                                body = await resp.aread()
+                                try:
+                                    full_json = json.loads(body)
+                                    for choice in full_json.get("choices", []):
+                                        message = choice.get("message", {})
+                                        delta = {}
+                                        if "role" in message: delta["role"] = message["role"]
+                                        if "content" in message: delta["content"] = message["content"]
+                                        # Tool Callをストリーム仕様のdelta形式（index必須）に変換
+                                        if "tool_calls" in message:
+                                            delta_tcs = []
+                                            for idx, tc in enumerate(message["tool_calls"]):
+                                                tc_copy = dict(tc)
+                                                tc_copy["index"] = idx
+                                                delta_tcs.append(tc_copy)
+                                            delta["tool_calls"] = delta_tcs
+                                        choice["delta"] = delta
+                                        if "message" in choice:
+                                            del choice["message"]
+                                    
+                                    full_json["object"] = "chat.completion.chunk"
+                                    yield full_json
+                                except Exception as e:
+                                    logger.error(f"Failed to parse fallback JSON: {e}")
+                                    yield {"choices": [{"delta": {"content": "ERROR: Failed to parse fallback JSON"}, "finish_reason": "error"}]}
+                            else:
+                                # 正常なSSEストリームの処理
+                                async for line in resp.aiter_lines():
+                                    if line.startswith("data: ") and line[6:] != "[DONE]":
+                                        try:
+                                            yield json.loads(line[6:])
+                                        except json.JSONDecodeError:
+                                            pass
+                except Exception as e:
+                    yield {"choices": [{"delta": {"content": f"ERROR: Conn Error: {e}"}, "finish_reason": "error"}]}
             return generator()
         else:
-            async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as client:
-                resp = await client.post(f"{endpoint}/chat/completions", json=payload)
-                return resp.json()
+            try:
+                async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as client:
+                    resp = await client.post(f"{endpoint}/chat/completions", json=payload)
+                    return resp.json() if resp.status_code == 200 else self._error_response(f"LLM Error: {resp.status_code}")
+            except Exception as e:
+                return self._error_response(f"Conn Error: {e}")
 
     def _error_response(self, msg: str):
         return {"choices": [{"message": {"role": "assistant", "content": f"ERROR: {msg}"}, "finish_reason": "error"}]}
