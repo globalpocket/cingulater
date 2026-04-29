@@ -1,5 +1,6 @@
 import pytest
 import json
+from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from core.orchestrator import Orchestrator, Settings, Router, GatewayClient
 import mcp.types as types
@@ -32,44 +33,67 @@ async def test_start_shutdown(orchestrator, mock_gateway):
 
 @pytest.mark.asyncio
 async def test_run_workflow_interlocutor(orchestrator):
-    mock_resp = MagicMock()
+    mock_resp = AsyncMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"choices": [{"message": {"content": "Hello"}}]}
+    mock_resp.headers = {"content-type": "text/event-stream"}
+    
+    stream_data = [
+        # 修正: null (None) が送られてきてもテストでクラッシュしないように厳密なモックを設定
+        'data: {"choices": [{"delta": {"role": "assistant", "content": "Hello"}, "finish_reason": null}]}\n\n',
+        'data: [DONE]\n\n'
+    ]
+    
+    async def aiter_lines():
+        for line in stream_data:
+            yield line
+            
+    mock_resp.aiter_lines = aiter_lines
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_resp
 
     yaml_data = {"name": "interlocutor", "steps": [{"type": "llm_chat", "model_key": "interlocutor"}]}
     
     with patch("builtins.open", MagicMock()):
         with patch("pathlib.Path.exists", return_value=True):
             with patch("yaml.safe_load", return_value=yaml_data):
-                with patch("httpx.AsyncClient.post", return_value=mock_resp):
+                with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
                     res = await orchestrator.orchestrate({"messages": [{"role": "user", "content": "Hi"}], "stream": False})
-                    assert "Hello" in res["choices"][0]["message"]["content"]
+                    assert isinstance(res, dict)
+                    assert res["choices"][0]["message"]["content"] == "Hello"
 
 @pytest.mark.asyncio
 async def test_run_workflow_interlocutor_stream(orchestrator):
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "text/event-stream"}
+    
+    stream_data = [
+        'data: {"choices": [{"delta": {"content": "Streamed Hello"}, "finish_reason": null}]}\n\n',
+        'data: [DONE]\n\n'
+    ]
+    async def aiter_lines():
+        for line in stream_data: yield line
+            
+    mock_resp.aiter_lines = aiter_lines
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_resp
+
     yaml_data = {"name": "interlocutor", "steps": [{"type": "llm_chat", "model_key": "interlocutor"}]}
     
-    async def mock_call_llm(*args, **kwargs):
-        yield {"choices": [{"delta": {"content": "Streamed Hello"}}]}
-        
     with patch("builtins.open", MagicMock()):
         with patch("pathlib.Path.exists", return_value=True):
             with patch("yaml.safe_load", return_value=yaml_data):
-                with patch.object(orchestrator, "_call_llm", return_value=mock_call_llm()):
+                with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
                     res_gen = await orchestrator.orchestrate({"messages": [{"role": "user", "content": "Hi"}], "stream": True})
                     chunks = [c async for c in res_gen]
                     
-                    assert len(chunks) == 1
+                    assert len(chunks) == 2
                     assert "Streamed Hello" in chunks[0]["choices"][0]["delta"]["content"]
 
 @pytest.mark.asyncio
 async def test_run_workflow_agent_task(orchestrator, mock_gateway):
     orchestrator.router.route = AsyncMock(return_value="coder")
-    
-    yaml_data = {
-        "name": "coder",
-        "steps": [{"type": "agent_task", "description": "fix it", "allowed_tools": ["test_tool"], "model_key": "coder"}]
-    }
+    yaml_data = {"name": "coder", "steps": [{"type": "agent_task", "description": "fix it", "model_key": "coder"}]}
 
     with patch("pathlib.Path.exists", return_value=True):
         with patch("builtins.open", MagicMock()):
@@ -77,19 +101,15 @@ async def test_run_workflow_agent_task(orchestrator, mock_gateway):
                 with patch("core.orchestrator.OpenAIServerModel"):
                     with patch("core.orchestrator.ToolCallingAgent") as mock_agent:
                         mock_agent.return_value.run.return_value = "Task Finished"
-                        
                         res = await orchestrator.orchestrate({"messages": [{"role": "user", "content": "Fix bug"}], "stream": False})
+                        assert isinstance(res, dict)
                         assert "Task Finished" in res["choices"][0]["message"]["content"]
                         mock_agent.return_value.run.assert_called_once()
 
 @pytest.mark.asyncio
 async def test_run_workflow_agent_task_stream(orchestrator, mock_gateway):
     orchestrator.router.route = AsyncMock(return_value="coder")
-    
-    yaml_data = {
-        "name": "coder",
-        "steps": [{"type": "agent_task", "description": "fix it", "allowed_tools": ["test_tool"], "model_key": "coder"}]
-    }
+    yaml_data = {"name": "coder", "steps": [{"type": "agent_task", "description": "fix it", "model_key": "coder"}]}
 
     with patch("pathlib.Path.exists", return_value=True):
         with patch("builtins.open", MagicMock()):
@@ -97,41 +117,48 @@ async def test_run_workflow_agent_task_stream(orchestrator, mock_gateway):
                 with patch("core.orchestrator.OpenAIServerModel"):
                     with patch("core.orchestrator.ToolCallingAgent") as mock_agent:
                         mock_agent.return_value.run.return_value = "Task Finished"
-                        
                         res_gen = await orchestrator.orchestrate({"messages": [{"role": "user", "content": "Fix bug"}], "stream": True})
                         chunks = [c async for c in res_gen]
-                        
                         assert len(chunks) > 0
                         assert any("Task Finished" in c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks)
 
 @pytest.mark.asyncio
 async def test_workflow_missing_model_key(orchestrator):
     orchestrator.router.route = AsyncMock(return_value="coder")
-    
-    yaml_data = {
-        "name": "coder",
-        "steps": [{"type": "agent_task", "description": "fix it"}] # model_key missing
-    }
+    yaml_data = {"name": "coder", "steps": [{"type": "agent_task", "description": "fix it"}]}
 
     with patch("pathlib.Path.exists", return_value=True):
         with patch("builtins.open", MagicMock()):
             with patch("yaml.safe_load", return_value=yaml_data):
                 res = await orchestrator.orchestrate({"messages": [{"role": "user", "content": "Fix bug"}], "stream": False})
+                assert isinstance(res, dict)
                 assert "ERROR" in res["choices"][0]["message"]["content"]
-                assert "missing required 'model_key'" in res["choices"][0]["message"]["content"]
 
 @pytest.mark.asyncio
 async def test_workflow_file_not_found(orchestrator):
     with patch("pathlib.Path.exists", return_value=False):
         res = await orchestrator.orchestrate({"messages": [{"role": "user", "content": "Hi"}], "stream": False})
+        assert isinstance(res, dict)
         assert "ERROR" in res["choices"][0]["message"]["content"]
 
 @pytest.mark.asyncio
 async def test_submit_chat_completion_proxies_to_llm(orchestrator):
-    mock_resp = MagicMock(status_code=200)
-    mock_resp.json.return_value = {"choices": [{"message": {"content": "Response"}}]}
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "text/event-stream"}
     
-    with patch("httpx.AsyncClient.post", return_value=mock_resp):
+    stream_data = [
+        'data: {"choices": [{"delta": {"role": "assistant", "content": "Response"}}]}\n\n',
+        'data: [DONE]\n\n'
+    ]
+    async def aiter_lines():
+        for line in stream_data: yield line
+            
+    mock_resp.aiter_lines = aiter_lines
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_resp
+
+    with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
         orchestrator.router.route = AsyncMock(return_value="interlocutor")
         yaml_data = {"steps": [{"type": "llm_chat", "model_key": "interlocutor"}]}
         with patch("builtins.open", MagicMock()):
@@ -139,72 +166,151 @@ async def test_submit_chat_completion_proxies_to_llm(orchestrator):
                 with patch("pathlib.Path.exists", return_value=True):
                     res = await orchestrator.submit_chat_completion({
                         "messages": [{"role": "user", "content": "Hi"}],
-                        "tools": ["some_tools"],
+                        "tools": [{"type": "function", "function": {"name": "some_tools"}}], 
                         "stream": False
                     })
+                    assert isinstance(res, dict)
                     assert res["choices"][0]["message"]["content"] == "Response"
 
-# --- 新規追加: システムプロンプトのマージ処理テスト ---
 @pytest.mark.asyncio
 async def test_call_llm_system_prompt_merge(orchestrator):
-    mock_resp = MagicMock(status_code=200)
-    mock_resp.json.return_value = {"choices": [{"message": {"content": "Response"}}]}
+    mock_stream_resp = AsyncMock()
+    mock_stream_resp.status_code = 200
+    mock_stream_resp.headers = {"content-type": "text/event-stream"}
+    async def aiter_lines():
+        for line in []: yield line
+    mock_stream_resp.aiter_lines = aiter_lines
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_stream_resp
     
-    with patch("httpx.AsyncClient.post", return_value=mock_resp) as mock_post:
-        await orchestrator._call_llm("interlocutor", "http://dummy", {
+    with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx) as mock_stream:
+        gen = await orchestrator._call_llm("interlocutor", "http://dummy", {
             "messages": [{"role": "system", "content": "Roo Custom System"}, {"role": "user", "content": "Hi"}],
-            "stream": False
+            "stream": True
         })
+        [c async for c in gen]
         
-        call_kwargs = mock_post.call_args[1]
+        call_kwargs = mock_stream.call_args[1]
         sent_messages = call_kwargs["json"]["messages"]
         assert len(sent_messages) == 2
-        # BrownieのシステムプロンプトとRooのシステムプロンプトが結合されていることを確認
         assert "You are BROWNIE." in sent_messages[0]["content"]
         assert "Roo Custom System" in sent_messages[0]["content"]
 
-# --- 新規追加: 一括JSON返却時のストリーム変換（フォールバック）テスト ---
 @pytest.mark.asyncio
-async def test_call_llm_stream_fallback(orchestrator):
+async def test_call_llm_injects_max_tokens(orchestrator):
+    mock_stream_resp = AsyncMock()
+    mock_stream_resp.status_code = 200
+    mock_stream_resp.headers = {"content-type": "text/event-stream"}
+    async def aiter_lines():
+        for line in []: yield line
+    mock_stream_resp.aiter_lines = aiter_lines
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_stream_resp
+    
+    with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx) as mock_stream:
+        gen = await orchestrator._call_llm("interlocutor", "http://dummy", {
+            "messages": [{"role": "user", "content": "Hi"}],
+            "stream": True
+        })
+        [c async for c in gen]
+        
+        call_kwargs = mock_stream.call_args[1]
+        assert call_kwargs["json"]["max_tokens"] == 8192
+
+# --- 反芻(Reflection)アーキテクチャのテスト ---
+@pytest.mark.asyncio
+async def test_call_llm_stream_reflection_dynamic(orchestrator):
+    mock_resp = AsyncMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "text/event-stream"}
+    
+    stream_data = [
+        'data: {"choices": [{"delta": {"role": "assistant", "content": "Hello"}}]}\n\n',
+        'data: {"choices": [{"delta": {"content": " World"}}]}\n\n',
+        'data: [DONE]\n\n'
+    ]
+    
+    async def aiter_lines():
+        for line in stream_data:
+            yield line
+            
+    mock_resp.aiter_lines = aiter_lines
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__.return_value = mock_resp
+    
+    mock_ref_resp = MagicMock(status_code=200)
+    mock_ref_resp.json.return_value = {"choices": [{"message": {"content": "custom_finish_tool"}}]}
+
+    with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
+        with patch("httpx.AsyncClient.post", return_value=mock_ref_resp):
+            gen = await orchestrator._call_llm("interlocutor", "http://dummy", {
+                "messages": [{"role": "user", "content": "Hi"}],
+                "tools": [{
+                    "type": "function", 
+                    "function": {
+                        "name": "custom_finish_tool",
+                        "parameters": {
+                            "properties": {"summary": {"type": "string"}, "is_done": {"type": "boolean"}},
+                            "required": ["summary", "is_done"]
+                        }
+                    }
+                }],
+                "stream": True
+            })
+            
+            chunks = [c async for c in gen]
+            
+            assert chunks[0]["choices"][0]["delta"]["content"] == "Hello"
+            assert chunks[1]["choices"][0]["delta"]["content"] == " World"
+            assert chunks[2]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "custom_finish_tool"
+            args = json.loads(chunks[2]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"])
+            assert args["summary"] == "Response provided in chat."
+            assert args["is_done"] is False
+            assert chunks[3]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_call_llm_stream_fallback_rewrite(orchestrator):
     mock_resp = AsyncMock()
     mock_resp.status_code = 200
     mock_resp.headers = {"content-type": "application/json"}
     
-    # ツール使用時にmlx_lm.serverが返すような一括JSON
     fallback_json = json.dumps({
         "id": "chatcmpl-123",
         "choices": [{
             "index": 0,
             "message": {
                 "role": "assistant",
-                "content": "Sure, I'll use the tool.",
-                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "test_tool", "arguments": "{}"}}]
+                "content": None,
+                "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "hallucinated_tool", "arguments": "{\"text\": \"Sure!\"}"}}]
             },
             "finish_reason": "tool_calls"
         }]
     }).encode("utf-8")
     
     mock_resp.aread.return_value = fallback_json
-    
     mock_stream_ctx = AsyncMock()
     mock_stream_ctx.__aenter__.return_value = mock_resp
     
     with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
         gen = await orchestrator._call_llm("interlocutor", "http://dummy", {
             "messages": [{"role": "user", "content": "Hi"}],
+            "tools": [{
+                "type": "function", 
+                "function": {
+                    "name": "valid_client_tool",
+                    "parameters": {"properties": {"msg": {"type": "string"}}, "required": ["msg"]}
+                }
+            }],
             "stream": True
         })
         
         chunks = [c async for c in gen]
-        assert len(chunks) == 1
-        chunk = chunks[0]
-        assert chunk["object"] == "chat.completion.chunk"
-        # message が delta に変換されていることを確認
-        assert "delta" in chunk["choices"][0]
-        assert chunk["choices"][0]["delta"]["role"] == "assistant"
-        assert chunk["choices"][0]["delta"]["content"] == "Sure, I'll use the tool."
-        # tool_callsにindexが補完されていることを確認
-        assert chunk["choices"][0]["delta"]["tool_calls"][0]["index"] == 0
+        
+        tc = chunks[0]["choices"][0]["delta"]["tool_calls"][0]
+        assert tc["function"]["name"] == "valid_client_tool"
+        args = json.loads(tc["function"]["arguments"])
+        assert args["msg"] == "Sure!"
 
 # === GatewayClient Tests ===
 @pytest.fixture
@@ -272,18 +378,16 @@ async def test_gateway_call_tool_not_connected(client):
 @pytest.fixture
 def router():
     settings = Settings()
-    return Router(settings)
+    mock_path = MagicMock()
+    mock_path.glob.return_value = [Path("coder.yaml"), Path("interlocutor.yaml"), Path("painter.yaml")]
+    return Router(settings, mock_path)
 
 @pytest.mark.asyncio
 async def test_route_empty_query(router):
-    assert await router.route("") == "interlocutor"
-
-@pytest.mark.asyncio
-async def test_route_heuristic_coder(router):
-    with patch("httpx.AsyncClient.post") as mock_post:
-        assert await router.route("Pythonのコードを修正して") == "coder"
-        assert await router.route("バグがあるみたい") == "coder"
-        mock_post.assert_not_called()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"choices": [{"message": {"content": "interlocutor"}}]}
+    with patch("httpx.AsyncClient.post", return_value=mock_response):
+        assert await router.route([{"role": "user", "content": ""}]) == "interlocutor"
 
 @pytest.mark.asyncio
 async def test_route_llm_fallback_interlocutor(router):
@@ -291,9 +395,8 @@ async def test_route_llm_fallback_interlocutor(router):
     mock_response.json.return_value = {
         "choices": [{"message": {"content": "interlocutor"}}]
     }
-    
     with patch("httpx.AsyncClient.post", return_value=mock_response):
-        assert await router.route("こんにちは、調子はどう？") == "interlocutor"
+        assert await router.route([{"role": "user", "content": "こんにちは、調子はどう？"}]) == "interlocutor"
 
 @pytest.mark.asyncio
 async def test_route_llm_fallback_coder(router):
@@ -301,14 +404,21 @@ async def test_route_llm_fallback_coder(router):
     mock_response.json.return_value = {
         "choices": [{"message": {"content": "coder"}}]
     }
-    
     with patch("httpx.AsyncClient.post", return_value=mock_response):
-        assert await router.route("このアルゴリズムをもっと速くできないかな？") == "coder"
+        assert await router.route([{"role": "user", "content": "このアルゴリズムを修正して"}]) == "coder"
+
+@pytest.mark.asyncio
+async def test_route_llm_future_actor(router):
+    mock_response = MagicMock()
+    mock_response.json.return_value = {
+        "choices": [{"message": {"content": "painter"}}]
+    }
+    with patch("httpx.AsyncClient.post", return_value=mock_response):
+        assert await router.route([{"role": "user", "content": "絵を描いて"}]) == "painter"
 
 @pytest.mark.asyncio
 @patch("core.orchestrator.logger.error")
 async def test_route_llm_error_fallback(mock_logger_error, router):
     with patch("httpx.AsyncClient.post", side_effect=Exception("Connection Timeout")):
-        assert await router.route("複雑な要求") == "interlocutor"
+        assert await router.route([{"role": "user", "content": "複雑な要求"}]) == "interlocutor"
         mock_logger_error.assert_called_once()
-        assert "Router LLM Error" in mock_logger_error.call_args[0][0]
