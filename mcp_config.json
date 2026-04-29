@@ -7,6 +7,12 @@
         "--config", "gateway_config.json",
         "--mcp-config", "gateway_mcp_config.json"
       ]
+    },
+    "docker": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-docker"
+      ]
     }
   }
 }

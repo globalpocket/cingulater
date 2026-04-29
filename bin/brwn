@@ -5,17 +5,11 @@ import signal
 import subprocess
 import argparse
 import time
-import fcntl
 import socket
 from pathlib import Path
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(base_dir)
-
-if sys.platform == 'darwin' and 'DOCKER_HOST' not in os.environ:
-    default_sock = os.path.expanduser("~/.docker/run/docker.sock")
-    if os.path.exists(default_sock):
-        os.environ['DOCKER_HOST'] = f"unix://{default_sock}"
 
 venv_python = os.path.join(base_dir, ".venv", "bin", "python")
 
@@ -38,7 +32,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 PID_FILE = DATA_DIR / "brownie.pid"
 LOCK_FILE = DATA_DIR / "brownie.lock"
 
-LLM_PORT = 8080
 ENGINE_PORT = 8137
 
 def get_running_pid():
@@ -46,8 +39,8 @@ def get_running_pid():
         try:
             with open(PID_FILE, "r") as f:
                 pid = int(f.read().strip())
-                os.kill(pid, 0)
-                return pid
+            os.kill(pid, 0)
+            return pid
         except (ValueError, ProcessLookupError, PermissionError):
             pass
     return None
@@ -55,7 +48,7 @@ def get_running_pid():
 def kill_all_brownie():
     print("🧹 Cleaning up all Brownie-related processes...")
     try:
-        ps_cmd = f"ps -eo pid,args | grep '{base_dir}' | grep 'python' | grep -E 'watchdog\\.py|main\\.py|api/server\\.py|mlx_lm\\.server' | grep -v 'grep'"
+        ps_cmd = f"ps -eo pid,args | grep '{base_dir}' | grep 'python' | grep -E 'watchdog\\.py|main\\.py|api/server\\.py' | grep -v 'grep'"
         output = subprocess.check_output(ps_cmd, shell=True).decode().strip()
         if output:
             for line in output.split("\n"):
@@ -76,38 +69,8 @@ def kill_all_brownie():
         except FileNotFoundError:
             pass
 
-def get_docker_compose_cmd():
-    try:
-        if subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-            return ["docker", "compose"]
-    except: pass
-    try:
-        if subprocess.run(["docker-compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-            return ["docker-compose"]
-    except: pass
-    return None
-
-def manage_docker_services(base_dir, action):
-    cmd_base = get_docker_compose_cmd()
-    if not cmd_base:
-        return "UNKNOWN"
-    try:
-        if action == "start":
-            subprocess.run(cmd_base + ["up", "-d", "chromadb", "redis"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif action == "stop":
-            subprocess.run(cmd_base + ["stop", "chromadb", "redis"], cwd=base_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        elif action == "status":
-            res = subprocess.run(cmd_base + ["ps", "--services", "--filter", "status=running"], cwd=base_dir, capture_output=True, text=True)
-            active_services = []
-            if "chromadb" in res.stdout: active_services.append("ChromaDB")
-            if "redis" in res.stdout: active_services.append("Redis")
-            return ", ".join(active_services) if active_services else "STOPPED"
-    except:
-        return "ERROR"
-
 def is_port_open(port):
     try:
-        # IPv4/IPv6のどちらでも適切に解決できるように変更
         with socket.create_connection(("localhost", port), timeout=1):
             return True
     except (ConnectionRefusedError, socket.timeout, OSError):
@@ -120,55 +83,13 @@ def wait_for_port(port, timeout=120, proc=None):
         if is_port_open(port):
             print(" OK!")
             return True
-        # プロセスが裏で死んだ場合は即座にエラーとして終了する
         if proc is not None and proc.poll() is not None:
             print(f" ERROR: Process crashed (Exit code: {proc.returncode})")
             return False
-        
-        # 待機中であることを示すドットを毎秒出力
         print(".", end="", flush=True)
         time.sleep(1)
     print(" Timeout!")
     return False
-
-def get_dynamic_model():
-    """config.yamlから動的にモデル名を取得"""
-    config_path = os.path.join(base_dir, "config.yaml")
-    if not os.path.exists(config_path):
-        config_path = os.path.join(base_dir, "config", "config.yaml")
-    try:
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
-            return config.get("llm", {}).get("models", {}).get("router") or config.get("llm", {}).get("models", {}).get("interlocutor")
-    except:
-        return None
-
-def start_llm_server():
-    if is_port_open(LLM_PORT):
-        print(f"✅ LLM Server is already running on port {LLM_PORT}.")
-        return True
-
-    model_name = get_dynamic_model()
-    if not model_name:
-        print("⚠️ No model defined in config.yaml. Skipping LLM auto-start.")
-        return False
-
-    print(f"🧠 Starting LLM Server dynamically for model: {model_name} (Port {LLM_PORT})...")
-    os.makedirs(os.path.join(base_dir, "logs"), exist_ok=True)
-    llm_log = open(os.path.join(base_dir, "logs", "llm_server.log"), "a")
-    
-    process = subprocess.Popen(
-        [venv_python, "-m", "mlx_lm.server", "--model", model_name, "--port", str(LLM_PORT)],
-        stdout=llm_log, stderr=llm_log, start_new_session=True
-    )
-    
-    # モデルのロード完了（ポート開放）を待つ。死んだらエラー吐いて抜ける。
-    if wait_for_port(LLM_PORT, timeout=120, proc=process):
-        print("✅ LLM Server is online.")
-        return True
-    else:
-        print("❌ Failed to start LLM Server. Check logs/llm_server.log for details.")
-        return False
 
 def start_engine_server():
     if is_port_open(ENGINE_PORT):
@@ -203,8 +124,6 @@ def start_engine_server():
         return False
 
 def ensure_servers_running():
-    manage_docker_services(base_dir, "start")
-    start_llm_server()
     return start_engine_server()
 
 def run_chat_interface():
@@ -223,7 +142,6 @@ def run_command(args):
             print(f"Error: Brownie is already running (PID: {pid}).")
             sys.exit(1)
 
-    # 引数なし(./bin/brwn)の場合はここを通る。起動＆チャット画面へ
     if action == "default":
         ensure_servers_running()
         run_chat_interface()
@@ -248,7 +166,6 @@ def run_command(args):
             except: pass
         
         kill_all_brownie()
-        manage_docker_services(base_dir, "stop")
         
         if action == "restart":
             time.sleep(1)
@@ -256,12 +173,9 @@ def run_command(args):
 
     elif action == "status":
         pid = get_running_pid()
-        llm_status = "ONLINE" if is_port_open(LLM_PORT) else "OFFLINE"
         engine_status = "ONLINE" if is_port_open(ENGINE_PORT) else "OFFLINE"
         
         print(f"Brownie Engine : {engine_status} (PID: {pid or 'Unknown'})")
-        print(f"LLM Server     : {llm_status} (Port {LLM_PORT})")
-        print(f"Docker Services: {manage_docker_services(base_dir, 'status')}")
 
     elif action in ["logs", "log"]:
         log_file = os.path.join(base_dir, "logs", "engine.log")
@@ -273,7 +187,6 @@ def run_command(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Brownie CLI")
-    # nargs="?" と default="default" により、引数なし実行を許可
     parser.add_argument("action", nargs="?", default="default", choices=["start", "stop", "restart", "status", "logs", "log", "chat", "debug", "reset", "logout", "default"])
     args = parser.parse_args()
     run_command(args)
