@@ -1,4 +1,5 @@
 import pytest
+import json
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 
@@ -35,3 +36,33 @@ def test_chat_completions(test_client):
     
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "Hi there!"
+
+def test_chat_completions_stream(test_client):
+    client, mock_orch = test_client
+    
+    # ストリーミング要求に対しても、内部的には同じように一括結果を返す
+    mock_orch.submit_chat_completion.return_value = {
+        "choices": [{"message": {"content": "Hi there from stream!"}}]
+    }
+    
+    response = client.post("/v1/chat/completions", json={
+        "model": "brownie-v2",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "stream": True
+    })
+    
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
+    
+    # SSEフォーマットの検証
+    content = response.text
+    lines = content.strip().split("\n\n")
+    assert len(lines) == 2
+    
+    data_chunk = lines[0].replace("data: ", "")
+    data_done = lines[1]
+    
+    chunk_json = json.loads(data_chunk)
+    assert chunk_json["choices"][0]["delta"]["content"] == "Hi there from stream!"
+    assert chunk_json["choices"][0]["finish_reason"] == "stop"
+    assert data_done == "data: [DONE]"
