@@ -1,3 +1,4 @@
+# src/api/server.py
 import os
 import time
 import json
@@ -10,6 +11,14 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.orchestrator import Orchestrator
+from core.events import (
+    TextDeltaEvent,
+    ToolCallStartEvent,
+    ToolCallDeltaEvent,
+    SystemToolCallEvent,
+    WorkflowFinishEvent,
+    ErrorEvent
+)
 
 orchestrator: Optional[Orchestrator] = None
 
@@ -95,10 +104,8 @@ async def chat_completions(request: ChatCompletionRequest):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Brownie Engine is not initialized")
 
-    # リクエスト全体を辞書化（tools, temperature, tool_choice等すべて含む）
     request_data = request.model_dump(exclude_none=True)
     
-    # 内部エンジン用に content を文字列に正規化
     for m in request_data.get("messages", []):
         if isinstance(m.get("content"), list):
             text_parts = []
@@ -107,40 +114,144 @@ async def chat_completions(request: ChatCompletionRequest):
                     text_parts.append(part.get("text", ""))
             m["content"] = "\n".join(text_parts)
     
+    model_name = request.model
+
     if request.stream:
         async def generate():
             try:
-                stream_gen = await orchestrator.submit_chat_completion(request_data)
-                async for chunk in stream_gen:
-                    yield f"data: {json.dumps(chunk)}\n\n"
+                base_chunk = {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model_name
+                }
+                
+                async for event in orchestrator.process_workflow(request_data):
+                    chunk = base_chunk.copy()
+                    if isinstance(event, TextDeltaEvent):
+                        chunk["choices"] = [{"index": 0, "delta": {"content": event.content}, "finish_reason": None}]
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        
+                    elif isinstance(event, ToolCallStartEvent):
+                        chunk["choices"] = [{"index": 0, "delta": {
+                            "tool_calls": [{
+                                "index": event.index,
+                                "id": event.id,
+                                "type": "function",
+                                "function": {"name": event.tool_name, "arguments": ""}
+                            }]
+                        }, "finish_reason": None}]
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        
+                    elif isinstance(event, ToolCallDeltaEvent):
+                        chunk["choices"] = [{"index": 0, "delta": {
+                            "tool_calls": [{
+                                "index": event.index,
+                                "function": {"arguments": event.arguments}
+                            }]
+                        }, "finish_reason": None}]
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        
+                    elif isinstance(event, SystemToolCallEvent):
+                        # API仕様に合わせてStartとDeltaの2チャンクに分割して配信する
+                        start_chunk = base_chunk.copy()
+                        start_chunk["choices"] = [{"index": 0, "delta": {
+                            "tool_calls": [{
+                                "index": event.index,
+                                "id": event.id,
+                                "type": "function",
+                                "function": {"name": event.tool_name, "arguments": ""}
+                            }]
+                        }, "finish_reason": None}]
+                        yield f"data: {json.dumps(start_chunk)}\n\n"
+                        
+                        arg_chunk = base_chunk.copy()
+                        arg_chunk["choices"] = [{"index": 0, "delta": {
+                            "tool_calls": [{
+                                "index": event.index,
+                                "function": {"arguments": json.dumps(event.arguments)}
+                            }]
+                        }, "finish_reason": None}]
+                        yield f"data: {json.dumps(arg_chunk)}\n\n"
+                        
+                    elif isinstance(event, ErrorEvent):
+                        chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Brownie Error: {event.message}]\n\n"}, "finish_reason": "error"}]
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                        
+                    elif isinstance(event, WorkflowFinishEvent):
+                        chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": event.finish_reason}]
+                        yield f"data: {json.dumps(chunk)}\n\n"
+
             except Exception as e:
                 logger.error(f"Streaming error: {e}")
+                err_chunk = {
+                    "id": f"chatcmpl-{int(time.time())}",
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"content": f"Internal Server Error: {e}"}, "finish_reason": "error"}]
+                }
+                yield f"data: {json.dumps(err_chunk)}\n\n"
             finally:
                 yield "data: [DONE]\n\n"
                 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     else:
-        result = await orchestrator.submit_chat_completion(request_data)
+        full_content = ""
+        tool_calls_dict = {}
+        finish_reason = "stop"
+        has_error = False
+        error_message = ""
         
-        if not isinstance(result, dict) or "choices" not in result:
-            logger.error(f"Invalid orchestrator response: {result}")
-            raise HTTPException(status_code=500, detail="Invalid response from core engine.")
-        
-        message_data = result["choices"][0].get("message", {})
-        
-        chat_message = ChatMessage(
-            role=message_data.get("role", "assistant"),
-            content=message_data.get("content"),
-            tool_calls=message_data.get("tool_calls")
-        )
-        
+        try:
+            async for event in orchestrator.process_workflow(request_data):
+                if isinstance(event, TextDeltaEvent):
+                    full_content += event.content
+                elif isinstance(event, ToolCallStartEvent):
+                    tool_calls_dict[event.index] = {
+                        "id": event.id,
+                        "type": "function",
+                        "function": {"name": event.tool_name, "arguments": ""}
+                    }
+                elif isinstance(event, ToolCallDeltaEvent):
+                    if event.index in tool_calls_dict:
+                        tool_calls_dict[event.index]["function"]["arguments"] += event.arguments
+                elif isinstance(event, SystemToolCallEvent):
+                    tool_calls_dict[event.index] = {
+                        "id": event.id,
+                        "type": "function",
+                        "function": {"name": event.tool_name, "arguments": json.dumps(event.arguments)}
+                    }
+                elif isinstance(event, WorkflowFinishEvent):
+                    finish_reason = event.finish_reason
+                elif isinstance(event, ErrorEvent):
+                    has_error = True
+                    error_message = event.message
+                    finish_reason = "error"
+        except Exception as e:
+            logger.error(f"Error processing workflow: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+            
+        if has_error:
+            full_content += f"\n\nERROR: {error_message}"
+
+        message = {"role": "assistant"}
+        if full_content:
+            message["content"] = full_content
+        else:
+            message["content"] = None
+
+        if tool_calls_dict:
+            message["tool_calls"] = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())]
+
         return ChatCompletionResponse(
+            model=model_name,
             choices=[
                 ChatCompletionResponseChoice(
                     index=0,
-                    message=chat_message,
-                    finish_reason=result["choices"][0].get("finish_reason", "stop")
+                    message=ChatMessage(**message),
+                    finish_reason=finish_reason
                 )
             ]
         )
