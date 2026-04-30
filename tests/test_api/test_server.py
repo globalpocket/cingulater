@@ -127,12 +127,51 @@ def test_chat_completions_stream(test_client):
     lines = content.strip().split("\n\n")
     assert len(lines) == 3
     
-    data_chunk1 = lines[0].replace("data: ", "")
-    data_chunk2 = lines[1].replace("data: ", "")
+    data_chunk1 = json.loads(lines[0].replace("data: ", ""))
+    data_chunk2 = json.loads(lines[1].replace("data: ", ""))
     data_done = lines[2]
     
-    assert json.loads(data_chunk1)["choices"][0]["delta"]["content"] == "Hi there from stream!"
-    assert json.loads(data_chunk2)["choices"][0]["finish_reason"] == "stop"
+    # 最初のチャンクに role: assistant が含まれることの確認
+    assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
+    assert data_chunk1["choices"][0]["delta"]["content"] == "Hi there from stream!"
+    assert data_chunk2["choices"][0]["finish_reason"] == "stop"
+    assert data_done == "data: [DONE]"
+
+def test_chat_completions_system_tool_calls_stream(test_client):
+    client, mock_orch = test_client
+    
+    async def mock_workflow(*args, **kwargs):
+        yield SystemToolCallEvent(index=0, id="call_sys", tool_name="sys_tool", arguments={"key": "val"})
+        yield WorkflowFinishEvent(finish_reason="tool_calls")
+        
+    mock_orch.process_workflow.side_effect = mock_workflow
+    
+    response = client.post("/v1/chat/completions", json={
+        "model": "brownie-v2",
+        "messages": [{"role": "user", "content": "Use system tool"}],
+        "stream": True
+    })
+    
+    assert response.status_code == 200
+    
+    content = response.text
+    lines = content.strip().split("\n\n")
+    assert len(lines) == 3
+    
+    data_chunk1 = json.loads(lines[0].replace("data: ", ""))
+    data_chunk2 = json.loads(lines[1].replace("data: ", ""))
+    data_done = lines[2]
+    
+    # 最初のチャンクに role: assistant が含まれることの確認
+    assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
+    
+    # 1つのチャンクで tool_calls が飛び、arguments が JSON文字列として組み立てられていることの確認
+    tc = data_chunk1["choices"][0]["delta"]["tool_calls"][0]
+    assert tc["id"] == "call_sys"
+    assert tc["function"]["name"] == "sys_tool"
+    assert json.loads(tc["function"]["arguments"]) == {"key": "val"}
+    
+    assert data_chunk2["choices"][0]["finish_reason"] == "tool_calls"
     assert data_done == "data: [DONE]"
 
 def test_chat_completions_error_response(test_client):

@@ -126,21 +126,32 @@ async def chat_completions(request: ChatCompletionRequest):
                     "model": model_name
                 }
                 
+                is_first_chunk = True
+                
                 async for event in orchestrator.process_workflow(request_data):
                     chunk = base_chunk.copy()
+                    
                     if isinstance(event, TextDeltaEvent):
-                        chunk["choices"] = [{"index": 0, "delta": {"content": event.content}, "finish_reason": None}]
+                        delta = {"content": event.content}
+                        if is_first_chunk:
+                            delta["role"] = "assistant"
+                            is_first_chunk = False
+                        chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
                         yield f"data: {json.dumps(chunk)}\n\n"
                         
                     elif isinstance(event, ToolCallStartEvent):
-                        chunk["choices"] = [{"index": 0, "delta": {
+                        delta = {
                             "tool_calls": [{
                                 "index": event.index,
                                 "id": event.id,
                                 "type": "function",
                                 "function": {"name": event.tool_name, "arguments": ""}
                             }]
-                        }, "finish_reason": None}]
+                        }
+                        if is_first_chunk:
+                            delta["role"] = "assistant"
+                            is_first_chunk = False
+                        chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
                         yield f"data: {json.dumps(chunk)}\n\n"
                         
                     elif isinstance(event, ToolCallDeltaEvent):
@@ -153,26 +164,23 @@ async def chat_completions(request: ChatCompletionRequest):
                         yield f"data: {json.dumps(chunk)}\n\n"
                         
                     elif isinstance(event, SystemToolCallEvent):
-                        # API仕様に合わせてStartとDeltaの2チャンクに分割して配信する
-                        start_chunk = base_chunk.copy()
-                        start_chunk["choices"] = [{"index": 0, "delta": {
+                        # API仕様に合わせて、システムが生成したツールコールを1つのチャンクとして送信
+                        delta = {
                             "tool_calls": [{
                                 "index": event.index,
                                 "id": event.id,
                                 "type": "function",
-                                "function": {"name": event.tool_name, "arguments": ""}
+                                "function": {
+                                    "name": event.tool_name, 
+                                    "arguments": json.dumps(event.arguments)
+                                }
                             }]
-                        }, "finish_reason": None}]
-                        yield f"data: {json.dumps(start_chunk)}\n\n"
-                        
-                        arg_chunk = base_chunk.copy()
-                        arg_chunk["choices"] = [{"index": 0, "delta": {
-                            "tool_calls": [{
-                                "index": event.index,
-                                "function": {"arguments": json.dumps(event.arguments)}
-                            }]
-                        }, "finish_reason": None}]
-                        yield f"data: {json.dumps(arg_chunk)}\n\n"
+                        }
+                        if is_first_chunk:
+                            delta["role"] = "assistant"
+                            is_first_chunk = False
+                        chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
+                        yield f"data: {json.dumps(chunk)}\n\n"
                         
                     elif isinstance(event, ErrorEvent):
                         chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Brownie Error: {event.message}]\n\n"}, "finish_reason": "error"}]
