@@ -3,28 +3,31 @@ import pytest
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
-from core.orchestrator import Orchestrator, Settings, Router, GatewayClient, IntentClassifierService
+from core.orchestrator import Orchestrator, Settings, Router, GatewayClient, IntentRerankerService
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
 import mcp.types as types
 
-def test_intent_classifier_service():
-    with patch("core.orchestrator.pipeline") as mock_pipeline:
-        mock_classifier = MagicMock()
-        mock_classifier.return_value = {"labels": ["doc 1", "doc 2"], "scores": [0.95, 0.12]}
-        mock_pipeline.return_value = mock_classifier
+def test_intent_reranker_service():
+    with patch("core.orchestrator.CrossEncoder") as mock_cross_encoder:
+        mock_model = MagicMock()
+        # predictはスコアのリストを返す
+        mock_model.predict.return_value = [0.95, 0.12]
+        mock_cross_encoder.return_value = mock_model
         
-        IntentClassifierService._instance = None
+        IntentRerankerService._instance = None
         
-        classifier = IntentClassifierService()
-        result = classifier.classify("test query", ["doc 1", "doc 2"])
+        reranker = IntentRerankerService()
+        result = reranker.rerank("test query", ["doc 1", "doc 2"])
         
-        mock_pipeline.assert_called_once_with("zero-shot-classification", model="facebook/bart-large-mnli")
-        assert result["scores"] == [0.95, 0.12]
-        assert result["labels"] == ["doc 1", "doc 2"]
+        mock_cross_encoder.assert_called_once_with("BAAI/bge-reranker-v2-m3")
+        assert result[0]["document"] == "doc 1"
+        assert result[0]["score"] == 0.95
+        assert result[1]["document"] == "doc 2"
+        assert result[1]["score"] == 0.12
         
-        classifier2 = IntentClassifierService()
-        assert classifier is classifier2
-        assert mock_pipeline.call_count == 1
+        reranker2 = IntentRerankerService()
+        assert reranker is reranker2
+        assert mock_cross_encoder.call_count == 1
 
 @pytest.mark.asyncio
 async def test_router_route():
@@ -33,7 +36,7 @@ async def test_router_route():
     with patch("pathlib.Path.glob") as mock_glob, \
          patch("builtins.open", MagicMock()), \
          patch("yaml.safe_load") as mock_yaml_load, \
-         patch("core.orchestrator.IntentClassifierService") as mock_classifier_cls:
+         patch("core.orchestrator.IntentRerankerService") as mock_reranker_cls:
          
         mock_path1 = MagicMock()
         mock_path1.stem = "coder"
@@ -46,12 +49,12 @@ async def test_router_route():
             {"name": "interlocutor", "description": "Chat with user"}
         ]
         
-        mock_classifier = MagicMock()
-        mock_classifier.classify.return_value = {
-            "labels": ["Expert: interlocutor\nDescription: Chat with user", "Expert: coder\nDescription: Write code"],
-            "scores": [0.9, 0.1]
-        }
-        mock_classifier_cls.return_value = mock_classifier
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            {"document": "Chat with user", "score": 0.9},
+            {"document": "Write code", "score": 0.1}
+        ]
+        mock_reranker_cls.return_value = mock_reranker
         
         mock_orch = MagicMock()
         mock_orch._extract_intent = AsyncMock(return_value="Chat with user")
@@ -61,9 +64,10 @@ async def test_router_route():
         
         assert selected == "interlocutor"
         mock_orch._extract_intent.assert_called_once()
-        mock_classifier.classify.assert_called_once()
-        args, _ = mock_classifier.classify.call_args
-        assert "User Intent: Chat with user" in args[0]
+        mock_reranker.rerank.assert_called_once()
+        args, _ = mock_reranker.rerank.call_args
+        # 抽出されたIntentがそのまま渡されているか
+        assert args[0] == "Chat with user"
 
 @pytest.fixture
 def mock_gateway():
@@ -197,14 +201,13 @@ async def test_call_llm_stream_reflection_dynamic(orchestrator):
     mock_stream_ctx.__aenter__.return_value = mock_resp
 
     with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx), \
-         patch("core.orchestrator.IntentClassifierService") as mock_classifier_cls:
+         patch("core.orchestrator.IntentRerankerService") as mock_reranker_cls:
          
-        mock_classifier = MagicMock()
-        mock_classifier.classify.return_value = {
-            "labels": ["Tool: custom_finish_tool\nDescription: Concludes the interaction"],
-            "scores": [0.99]
-        }
-        mock_classifier_cls.return_value = mock_classifier
+        mock_reranker = MagicMock()
+        mock_reranker.rerank.return_value = [
+            {"document": "Concludes the interaction", "score": 0.99}
+        ]
+        mock_reranker_cls.return_value = mock_reranker
         
         # モックを追加して、ネットワーク呼び出しをスキップさせる
         orchestrator._extract_intent = AsyncMock(return_value="Conclude interaction")
@@ -229,14 +232,13 @@ async def test_call_llm_stream_reflection_dynamic(orchestrator):
         assert isinstance(events[1], TextDeltaEvent) and events[1].content == " World"
         assert isinstance(events[2], SystemToolCallEvent) and events[2].tool_name == "custom_finish_tool"
         
-        # ハードコードされた固定文字列ではなく、動的コンテンツ（"Hello World"）が渡ることを検証
         assert events[2].arguments.get("summary") == "Hello World"
         assert events[2].arguments.get("is_done") is False
         assert isinstance(events[3], WorkflowFinishEvent) and events[3].finish_reason == "tool_calls"
         
-        # Classifierへ正しい引数（抽出したIntent）が渡っているか確認
-        args_call, _ = mock_classifier.classify.call_args
-        assert "Assistant Intent: Conclude interaction" in args_call[0]
+        # Rerankerへ正しい引数（抽出したIntent）が渡っているか確認
+        args_call, _ = mock_reranker.rerank.call_args
+        assert args_call[0] == "Conclude interaction"
 
 @pytest.mark.asyncio
 async def test_call_llm_stream_fallback_rewrite(orchestrator):

@@ -16,7 +16,7 @@ from loguru import logger
 from smolagents import Tool, ToolCallingAgent, OpenAIServerModel
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-from transformers import pipeline
+from sentence_transformers import CrossEncoder
 
 import mcp.types as types
 from mcp.client.session import ClientSession
@@ -69,14 +69,14 @@ def get_settings(config_path: str = "config.yaml") -> Settings:
 
 
 # ==========================================
-# 2. Intent Classifier Service
+# 2. Intent Reranker Service
 # ==========================================
-class IntentClassifierService:
-    """Zero-shot Classificationを利用してIntentとラベルの関連度をスコアリングするシングルトンサービス"""
+class IntentRerankerService:
+    """Rerankerを利用してIntentとドキュメント(説明文)の関連度をスコアリングするシングルトンサービス"""
     _instance = None
     _lock = threading.Lock()
 
-    def __new__(cls, model_name: str = "facebook/bart-large-mnli"):
+    def __new__(cls, model_name: str = "BAAI/bge-reranker-v2-m3"):
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
@@ -84,15 +84,21 @@ class IntentClassifierService:
         return cls._instance
 
     def _initialize(self, model_name: str):
-        logger.info(f"Initializing IntentClassifierService with model: {model_name}")
-        # pipelineはデフォルトでスコアの降順にソートされた辞書を返却します
-        self.classifier = pipeline("zero-shot-classification", model=model_name)
+        logger.info(f"Initializing IntentRerankerService with model: {model_name}")
+        self.reranker = CrossEncoder(model_name)
 
-    def classify(self, text: str, candidate_labels: List[str]) -> Dict[str, Any]:
-        """クエリ(text)と複数の候補(candidate_labels)の関連度を分類・スコアリングして返す"""
-        if not candidate_labels:
-            return {"labels": [], "scores": []}
-        return self.classifier(text, candidate_labels)
+    def rerank(self, query: str, documents: List[str]) -> List[Dict[str, Any]]:
+        """クエリ(query)と複数の候補(documents)の関連度をスコアリングして降順で返す"""
+        if not documents:
+            return []
+        
+        pairs = [[query, doc] for doc in documents]
+        scores = self.reranker.predict(pairs)
+        
+        results = [{"document": doc, "score": float(score)} for doc, score in zip(documents, scores)]
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        return results
 
 
 # ==========================================
@@ -103,13 +109,12 @@ class Router:
         self.settings = settings
         self.workflows_dir = workflows_dir
         self.orchestrator = orchestrator
-        logger.info("Intent Classifier Router initialized.")
+        logger.info("Intent Reranker Router initialized.")
 
     async def route(self, messages: List[Dict[str, Any]]) -> str:
         actors = []
         documents = []
         
-        # ワークフローの定義と説明をロード
         for p in self.workflows_dir.glob("*.yaml"):
             try:
                 with open(p, "r", encoding="utf-8") as f:
@@ -117,7 +122,8 @@ class Router:
                     name = wf_data.get("name", p.stem)
                     desc = wf_data.get("description", f"Expert named {name}")
                     actors.append(name)
-                    documents.append(f"Expert: {name}\nDescription: {desc}")
+                    # 余計な接頭辞を入れず、純粋なDescriptionを比較対象にする
+                    documents.append(desc)
             except Exception as e:
                 logger.error(f"Failed to load workflow {p}: {e}")
                 
@@ -137,23 +143,21 @@ class Router:
 
         # LLMを用いて会話履歴からIntentを抽出
         intent = await self.orchestrator._extract_intent(history_text)
-        query = f"User Intent: {intent}\n\nWhich expert is best suited to handle this intent?"
         
         try:
-            classifier = IntentClassifierService()
-            # CPUバウンドな処理で非同期ループをブロックしないようスレッドで実行
-            result = await asyncio.to_thread(classifier.classify, query, documents)
+            reranker = IntentRerankerService()
+            # 抽出したIntentをそのままクエリとして使用する
+            results = await asyncio.to_thread(reranker.rerank, intent, documents)
             
-            # 結果はスコアの降順で返却されるため、先頭のラベルを取得
-            best_doc = result["labels"][0]
+            best_doc = results[0]["document"]
             best_idx = documents.index(best_doc)
             selected_actor = actors[best_idx]
             
-            logger.info(f"Router selected '{selected_actor}' with score {result['scores'][0]} (Intent: {intent})")
+            logger.info(f"Router selected '{selected_actor}' with score {results[0]['score']:.4f} (Intent: {intent})")
             return selected_actor
             
         except Exception as e:
-            logger.error(f"Router Classifier Error: {e}. Defaulting to interlocutor.")
+            logger.error(f"Router Reranker Error: {e}. Defaulting to interlocutor.")
             return "interlocutor"
 
 
@@ -273,7 +277,6 @@ class Orchestrator:
         return "You are BROWNIE."
 
     async def _extract_intent(self, text: str) -> str:
-        """会話履歴等のテキストをLLMに渡し、ユーザーのIntentを短い英語フレーズとして抽出する"""
         prompt = (
             "Translate the following text to English, extract the core user intent, "
             "and summarize it in a short phrase (e.g., 'Asking a clarifying question', 'Completed the task'). "
@@ -392,7 +395,6 @@ class Orchestrator:
                     
                     content_type = resp.headers.get("content-type", "")
                     
-                    # === JSONフォールバック処理 ===
                     if "application/json" in content_type:
                         body = await resp.aread()
                         try:
@@ -410,7 +412,6 @@ class Orchestrator:
                                         tc_id = tc.get("id", f"call_{idx}")
                                         
                                         if func_name not in available_tool_names and available_tool_names:
-                                            # 未定義ツールの呼び出しを最初のツールにフォールバック(SystemToolCallEventで発行)
                                             fallback_name = available_tool_names[0]
                                             logger.warning(f"[BROWNIE DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
                                             try:
@@ -448,7 +449,6 @@ class Orchestrator:
                                             except Exception:
                                                 pass
                                                 
-                                        # 通常のツールコールの場合はそのまま通過させる
                                         yield ToolCallStartEvent(index=idx, id=tc_id, tool_name=func_name)
                                         yield ToolCallDeltaEvent(index=idx, arguments=args_str)
                                         
@@ -458,7 +458,6 @@ class Orchestrator:
                         except Exception as e:
                             yield ErrorEvent(message=f"Failed to parse fallback JSON: {e}")
                     
-                    # === ストリーム処理 ===
                     else:
                         has_tool_calls = False
                         full_content = ""
@@ -498,27 +497,26 @@ class Orchestrator:
                                 except json.JSONDecodeError:
                                     pass
                                     
-                        # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Classifierを使用)
+                        # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Rerankerを使用)
                         if full_content and not has_tool_calls and available_tools_dict:
-                            logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Classifier) ---")
+                            logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
                             
                             intent = await self._extract_intent(full_content[-1000:])
-                            query = f"Assistant Intent: {intent}\n\nWhich tool should be called next to conclude or answer this intent?"
                             docs = []
                             for tn in available_tool_names:
                                 desc = available_tools_dict[tn].get("description", "No description provided")
-                                docs.append(f"Tool: {tn}\nDescription: {desc}")
+                                docs.append(desc)
                             
                             selected_tool = available_tool_names[0]
                             try:
-                                classifier = IntentClassifierService()
-                                result = await asyncio.to_thread(classifier.classify, query, docs)
-                                best_doc = result["labels"][0]
+                                reranker = IntentRerankerService()
+                                results = await asyncio.to_thread(reranker.rerank, intent, docs)
+                                best_doc = results[0]["document"]
                                 best_idx = docs.index(best_doc)
                                 selected_tool = available_tool_names[best_idx]
-                                logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {result['scores'][0]} (Intent: {intent})")
+                                logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
                             except Exception as e:
-                                logger.error(f"[BROWNIE DEBUG] Reflection Classifier Error: {e}")
+                                logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
                                 
                             tool_schema = available_tools_dict[selected_tool]
                             props = tool_schema.get("parameters", {}).get("properties", {})
