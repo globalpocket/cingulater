@@ -5,6 +5,7 @@ import yaml
 import json
 import asyncio
 import logging
+import threading
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, AsyncGenerator
@@ -15,6 +16,7 @@ from loguru import logger
 from smolagents import Tool, ToolCallingAgent, OpenAIServerModel
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+from sentence_transformers import CrossEncoder
 
 import mcp.types as types
 from mcp.client.session import ClientSession
@@ -67,19 +69,64 @@ def get_settings(config_path: str = "config.yaml") -> Settings:
 
 
 # ==========================================
-# 2. Router
+# 2. Reranker Service
+# ==========================================
+class RerankerService:
+    """Semantic Rerankerのロードとスコアリングを管理するシングルトンサービス"""
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, model_name: str = "BAAI/bge-reranker-v2-m3"):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._initialize(model_name)
+        return cls._instance
+
+    def _initialize(self, model_name: str):
+        logger.info(f"Initializing RerankerService with model: {model_name}")
+        self.model = CrossEncoder(model_name)
+
+    def score(self, query: str, documents: List[str]) -> List[float]:
+        """クエリと複数のドキュメントの関連度をスコアリングして返す"""
+        if not documents:
+            return []
+        pairs = [[query, doc] for doc in documents]
+        scores = self.model.predict(pairs)
+        
+        # モックのリストやNumpy配列など、返り値の型に柔軟に対応する
+        if isinstance(scores, float):
+            return [scores]
+        if hasattr(scores, "tolist"):
+            return scores.tolist()
+        return list(scores)
+
+
+# ==========================================
+# 3. Router
 # ==========================================
 class Router:
     def __init__(self, settings: Settings, workflows_dir: Path):
         self.settings = settings
         self.workflows_dir = workflows_dir
-        self.endpoint = settings.llm.interlocutor_endpoint
-        self.model_name = settings.llm.models.get("interlocutor", "default")
-        self.timeout = settings.llm.timeout_sec
-        logger.info("Dynamic Context-Aware LLM Router initialized.")
+        logger.info("Semantic Reranker Router initialized.")
 
     async def route(self, messages: List[Dict[str, Any]]) -> str:
-        actors = [p.stem for p in self.workflows_dir.glob("*.yaml")]
+        actors = []
+        documents = []
+        
+        # ワークフローの定義と説明をロード
+        for p in self.workflows_dir.glob("*.yaml"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    wf_data = yaml.safe_load(f) or {}
+                    name = wf_data.get("name", p.stem)
+                    desc = wf_data.get("description", f"Expert named {name}")
+                    actors.append(name)
+                    documents.append(f"Expert: {name}\nDescription: {desc}")
+            except Exception as e:
+                logger.error(f"Failed to load workflow {p}: {e}")
+                
         if not actors:
             return "interlocutor"
             
@@ -89,46 +136,29 @@ class Router:
             role = m.get("role", "unknown")
             content = m.get("content", "")
             if isinstance(content, list):
-                content = " ".join([p.get("text", "") for p in content if isinstance(p, dict)])
+                content = " ".join([part.get("text", "") for part in content if isinstance(part, dict)])
             if content and len(content) > 500:
                 content = content[:500] + " ...[truncated]"
             history_text += f"[{role}]: {content}\n"
 
-        prompt = (
-            "You are an intelligent routing agent. Based on the conversation history below, "
-            "select the most appropriate expert to handle the next user request.\n\n"
-            f"Available experts: {', '.join(actors)}\n\n"
-            "[Conversation History]\n"
-            f"{history_text}\n\n"
-            "Rule: Output ONLY the exact name of the chosen expert from the list above. No other text."
-        )
-
-        payload = {
-            "model": self.model_name,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 20,
-            "temperature": 0.0
-        }
-
+        query = f"Conversation History:\n{history_text}\n\nWhich expert is best suited to handle the latest request?"
+        
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(f"{self.endpoint}/chat/completions", json=payload)
-                resp.raise_for_status()
-                result = resp.json()
-                answer = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
-                
-                for actor in actors:
-                    if actor.lower() in answer:
-                        return actor
-                        
-                return "interlocutor"
+            reranker = RerankerService()
+            # CPUバウンドなReranker処理で非同期ループをブロックしないようスレッドで実行
+            scores = await asyncio.to_thread(reranker.score, query, documents)
+            best_idx = scores.index(max(scores))
+            selected_actor = actors[best_idx]
+            logger.info(f"Router selected '{selected_actor}' with score {scores[best_idx]}")
+            return selected_actor
+            
         except Exception as e:
-            logger.error(f"Router LLM Error: {e}. Defaulting to interlocutor.")
+            logger.error(f"Router Reranker Error: {e}. Defaulting to interlocutor.")
             return "interlocutor"
 
 
 # ==========================================
-# 3. Gateway Client
+# 4. Gateway Client
 # ==========================================
 class GatewayClient:
     def __init__(self, command: str = "mcp-gateway", args: Optional[List[str]] = None):
@@ -179,7 +209,7 @@ class GatewayClient:
 
 
 # ==========================================
-# 4. Core Orchestrator
+# 5. Core Orchestrator
 # ==========================================
 class MCPVirtualTool(Tool):
     def __init__(self, mcp_tool_def, mcp_client, loop):
@@ -436,37 +466,25 @@ class Orchestrator:
                                 except json.JSONDecodeError:
                                     pass
                                     
-                        # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック
+                        # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Rerankerを使用)
                         if full_content and not has_tool_calls and available_tools_dict:
-                            logger.info("[BROWNIE DEBUG] --- Reflection Phase Started ---")
-                            prompt = (
-                                "You are a Tool Selection AI. Based on the assistant's final response below, "
-                                "choose the most appropriate tool to conclude the interaction.\n\n"
-                                f"[Assistant Response]\n\"{full_content[-1000:]}\"\n\n"
-                                f"Available tools: {', '.join(available_tool_names)}\n\n"
-                                "Rule: If the assistant asks a question, choose a tool related to 'ask' or 'question'. "
-                                "Otherwise, choose a tool related to 'complete' or 'result'.\n"
-                                "Output ONLY the exact tool name."
-                            )
-                            ref_payload = {
-                                "model": payload["model"],
-                                "messages": [{"role": "user", "content": prompt}],
-                                "max_tokens": 20,
-                                "temperature": 0.0
-                            }
+                            logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
+                            
+                            query = f"Assistant Response:\n\"{full_content[-1000:]}\"\n\nWhich tool should be called next to conclude or answer this response?"
+                            docs = []
+                            for tn in available_tool_names:
+                                desc = available_tools_dict[tn].get("description", "No description provided")
+                                docs.append(f"Tool: {tn}\nDescription: {desc}")
                             
                             selected_tool = available_tool_names[0]
                             try:
-                                async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as ref_client:
-                                    ref_resp = await ref_client.post(f"{endpoint}/chat/completions", json=ref_payload)
-                                    if ref_resp.status_code == 200:
-                                        ans = ref_resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                                        for tn in available_tool_names:
-                                            if tn.lower() in ans.lower():
-                                                selected_tool = tn
-                                                break
+                                reranker = RerankerService()
+                                scores = await asyncio.to_thread(reranker.score, query, docs)
+                                best_idx = scores.index(max(scores))
+                                selected_tool = available_tool_names[best_idx]
+                                logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {scores[best_idx]}")
                             except Exception as e:
-                                logger.error(f"[BROWNIE DEBUG] Reflection AI Error: {e}")
+                                logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
                                 
                             tool_schema = available_tools_dict[selected_tool]
                             props = tool_schema.get("parameters", {}).get("properties", {})
@@ -486,7 +504,6 @@ class Orchestrator:
                                     elif ptype in ["number", "integer"]: args[req] = 0
                                     else: args[req] = "Completed."
                             
-                            # 修正箇所：JSON化せずに、ドメインデータとしてイベント発行
                             yield SystemToolCallEvent(
                                 index=0, 
                                 id=f"call_ref_{int(time.time())}", 

@@ -3,9 +3,57 @@ import pytest
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
-from core.orchestrator import Orchestrator, Settings, Router, GatewayClient
+from core.orchestrator import Orchestrator, Settings, Router, GatewayClient, RerankerService
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
 import mcp.types as types
+
+def test_reranker_service():
+    with patch("core.orchestrator.CrossEncoder") as MockEncoder:
+        mock_model = MagicMock()
+        mock_model.predict.return_value = [0.95, 0.12]
+        MockEncoder.return_value = mock_model
+        
+        RerankerService._instance = None
+        
+        reranker = RerankerService()
+        scores = reranker.score("test query", ["doc 1", "doc 2"])
+        
+        MockEncoder.assert_called_once_with("BAAI/bge-reranker-v2-m3")
+        assert scores == [0.95, 0.12]
+        
+        reranker2 = RerankerService()
+        assert reranker is reranker2
+        assert MockEncoder.call_count == 1
+
+@pytest.mark.asyncio
+async def test_router_route():
+    settings = Settings()
+    
+    with patch("pathlib.Path.glob") as mock_glob, \
+         patch("builtins.open", MagicMock()), \
+         patch("yaml.safe_load") as mock_yaml_load, \
+         patch("core.orchestrator.RerankerService") as mock_reranker_cls:
+         
+        mock_path1 = MagicMock()
+        mock_path1.stem = "coder"
+        mock_path2 = MagicMock()
+        mock_path2.stem = "interlocutor"
+        mock_glob.return_value = [mock_path1, mock_path2]
+        
+        mock_yaml_load.side_effect = [
+            {"name": "coder", "description": "Write code"},
+            {"name": "interlocutor", "description": "Chat with user"}
+        ]
+        
+        mock_reranker = MagicMock()
+        mock_reranker.score.return_value = [0.1, 0.9]
+        mock_reranker_cls.return_value = mock_reranker
+        
+        router = Router(settings, Path("dummy"))
+        selected = await router.route([{"role": "user", "content": "Hello"}])
+        
+        assert selected == "interlocutor"
+        mock_reranker.score.assert_called_once()
 
 @pytest.fixture
 def mock_gateway():
@@ -117,13 +165,20 @@ async def test_call_llm_stream_reflection_dynamic(orchestrator):
     mock_stream_ctx = AsyncMock()
     mock_stream_ctx.__aenter__.return_value = mock_resp
 
-    with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
+    with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx), \
+         patch("core.orchestrator.RerankerService") as mock_reranker_cls:
+         
+        mock_reranker = MagicMock()
+        mock_reranker.score.return_value = [0.99]
+        mock_reranker_cls.return_value = mock_reranker
+
         events = [e async for e in orchestrator._call_llm("interlocutor", "http://dummy", {
             "messages": [{"role": "user", "content": "Hi"}],
             "tools": [{
                 "type": "function", 
                 "function": {
                     "name": "custom_finish_tool",
+                    "description": "Concludes the interaction",
                     "parameters": {
                         "properties": {"summary": {"type": "string"}, "is_done": {"type": "boolean"}},
                         "required": ["summary", "is_done"]

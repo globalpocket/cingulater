@@ -1,4 +1,5 @@
 name: coder
+description: "コードの解析、バグ修正、テスト実行などを行うエンジニアリングタスク。"
 steps:
   - type: agent_task
     description: "プロジェクト構造を解析し、バグの原因を特定してください。"
