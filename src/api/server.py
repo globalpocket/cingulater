@@ -2,6 +2,7 @@
 import os
 import time
 import json
+import uuid
 from typing import List, Optional, Union, Dict, Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
@@ -99,6 +100,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": exc.errors(), "body": body_str},
     )
 
+def _ensure_openai_id(internal_id: str) -> str:
+    """クライアントが期待する厳格なOpenAI IDフォーマット (call_ + 24文字) をサーバー層で保証する"""
+    if internal_id and internal_id.startswith("call_") and len(internal_id) >= 20:
+        return internal_id
+    return f"call_{uuid.uuid4().hex[:24]}"
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     if not orchestrator:
@@ -137,13 +144,14 @@ async def chat_completions(request: ChatCompletionRequest):
                             delta["role"] = "assistant"
                             is_first_chunk = False
                         chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, ToolCallStartEvent):
+                        client_id = _ensure_openai_id(event.id)
                         delta = {
                             "tool_calls": [{
                                 "index": event.index,
-                                "id": event.id,
+                                "id": client_id,
                                 "type": "function",
                                 "function": {"name": event.tool_name, "arguments": ""}
                             }]
@@ -152,7 +160,7 @@ async def chat_completions(request: ChatCompletionRequest):
                             delta["role"] = "assistant"
                             is_first_chunk = False
                         chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, ToolCallDeltaEvent):
                         chunk["choices"] = [{"index": 0, "delta": {
@@ -161,34 +169,48 @@ async def chat_completions(request: ChatCompletionRequest):
                                 "function": {"arguments": event.arguments}
                             }]
                         }, "finish_reason": None}]
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, SystemToolCallEvent):
-                        # API仕様に合わせて、システムが生成したツールコールを1つのチャンクとして送信
-                        delta = {
+                        # API仕様（OpenAI互換）に合わせて、システム発行イベントをStart(名前)とDelta(引数)の2チャンクに分割し、IDフォーマットを保証する
+                        client_id = _ensure_openai_id(event.id)
+                        start_delta = {
                             "tool_calls": [{
                                 "index": event.index,
-                                "id": event.id,
+                                "id": client_id,
                                 "type": "function",
                                 "function": {
                                     "name": event.tool_name, 
-                                    "arguments": json.dumps(event.arguments)
+                                    "arguments": ""
                                 }
                             }]
                         }
                         if is_first_chunk:
-                            delta["role"] = "assistant"
+                            start_delta["role"] = "assistant"
                             is_first_chunk = False
-                        chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        
+                        start_chunk = base_chunk.copy()
+                        start_chunk["choices"] = [{"index": 0, "delta": start_delta, "finish_reason": None}]
+                        yield f"data: {json.dumps(start_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                        
+                        delta_chunk = base_chunk.copy()
+                        delta_chunk["choices"] = [{"index": 0, "delta": {
+                            "tool_calls": [{
+                                "index": event.index,
+                                "function": {
+                                    "arguments": json.dumps(event.arguments, ensure_ascii=False, separators=(',', ':'))
+                                }
+                            }]
+                        }, "finish_reason": None}]
+                        yield f"data: {json.dumps(delta_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, ErrorEvent):
                         chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Brownie Error: {event.message}]\n\n"}, "finish_reason": "error"}]
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, WorkflowFinishEvent):
                         chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": event.finish_reason}]
-                        yield f"data: {json.dumps(chunk)}\n\n"
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
             except Exception as e:
                 logger.error(f"Streaming error: {e}")
@@ -199,7 +221,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     "model": model_name,
                     "choices": [{"index": 0, "delta": {"content": f"Internal Server Error: {e}"}, "finish_reason": "error"}]
                 }
-                yield f"data: {json.dumps(err_chunk)}\n\n"
+                yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
             finally:
                 yield "data: [DONE]\n\n"
                 
@@ -218,7 +240,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     full_content += event.content
                 elif isinstance(event, ToolCallStartEvent):
                     tool_calls_dict[event.index] = {
-                        "id": event.id,
+                        "id": _ensure_openai_id(event.id),
                         "type": "function",
                         "function": {"name": event.tool_name, "arguments": ""}
                     }
@@ -227,9 +249,9 @@ async def chat_completions(request: ChatCompletionRequest):
                         tool_calls_dict[event.index]["function"]["arguments"] += event.arguments
                 elif isinstance(event, SystemToolCallEvent):
                     tool_calls_dict[event.index] = {
-                        "id": event.id,
+                        "id": _ensure_openai_id(event.id),
                         "type": "function",
-                        "function": {"name": event.tool_name, "arguments": json.dumps(event.arguments)}
+                        "function": {"name": event.tool_name, "arguments": json.dumps(event.arguments, ensure_ascii=False, separators=(',', ':'))}
                     }
                 elif isinstance(event, WorkflowFinishEvent):
                     finish_reason = event.finish_reason

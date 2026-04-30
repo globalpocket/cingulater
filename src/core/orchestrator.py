@@ -16,7 +16,7 @@ from loguru import logger
 from smolagents import Tool, ToolCallingAgent, OpenAIServerModel
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-from sentence_transformers import CrossEncoder
+from transformers import pipeline
 
 import mcp.types as types
 from mcp.client.session import ClientSession
@@ -69,14 +69,14 @@ def get_settings(config_path: str = "config.yaml") -> Settings:
 
 
 # ==========================================
-# 2. Reranker Service
+# 2. Intent Classifier Service
 # ==========================================
-class RerankerService:
-    """Semantic Rerankerのロードとスコアリングを管理するシングルトンサービス"""
+class IntentClassifierService:
+    """Zero-shot Classificationを利用してIntentとラベルの関連度をスコアリングするシングルトンサービス"""
     _instance = None
     _lock = threading.Lock()
 
-    def __new__(cls, model_name: str = "BAAI/bge-reranker-v2-m3"):
+    def __new__(cls, model_name: str = "facebook/bart-large-mnli"):
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
@@ -84,32 +84,26 @@ class RerankerService:
         return cls._instance
 
     def _initialize(self, model_name: str):
-        logger.info(f"Initializing RerankerService with model: {model_name}")
-        self.model = CrossEncoder(model_name)
+        logger.info(f"Initializing IntentClassifierService with model: {model_name}")
+        # pipelineはデフォルトでスコアの降順にソートされた辞書を返却します
+        self.classifier = pipeline("zero-shot-classification", model=model_name)
 
-    def score(self, query: str, documents: List[str]) -> List[float]:
-        """クエリと複数のドキュメントの関連度をスコアリングして返す"""
-        if not documents:
-            return []
-        pairs = [[query, doc] for doc in documents]
-        scores = self.model.predict(pairs)
-        
-        # モックのリストやNumpy配列など、返り値の型に柔軟に対応する
-        if isinstance(scores, float):
-            return [scores]
-        if hasattr(scores, "tolist"):
-            return scores.tolist()
-        return list(scores)
+    def classify(self, text: str, candidate_labels: List[str]) -> Dict[str, Any]:
+        """クエリ(text)と複数の候補(candidate_labels)の関連度を分類・スコアリングして返す"""
+        if not candidate_labels:
+            return {"labels": [], "scores": []}
+        return self.classifier(text, candidate_labels)
 
 
 # ==========================================
 # 3. Router
 # ==========================================
 class Router:
-    def __init__(self, settings: Settings, workflows_dir: Path):
+    def __init__(self, settings: Settings, workflows_dir: Path, orchestrator: "Orchestrator"):
         self.settings = settings
         self.workflows_dir = workflows_dir
-        logger.info("Semantic Reranker Router initialized.")
+        self.orchestrator = orchestrator
+        logger.info("Intent Classifier Router initialized.")
 
     async def route(self, messages: List[Dict[str, Any]]) -> str:
         actors = []
@@ -141,19 +135,25 @@ class Router:
                 content = content[:500] + " ...[truncated]"
             history_text += f"[{role}]: {content}\n"
 
-        query = f"Conversation History:\n{history_text}\n\nWhich expert is best suited to handle the latest request?"
+        # LLMを用いて会話履歴からIntentを抽出
+        intent = await self.orchestrator._extract_intent(history_text)
+        query = f"User Intent: {intent}\n\nWhich expert is best suited to handle this intent?"
         
         try:
-            reranker = RerankerService()
-            # CPUバウンドなReranker処理で非同期ループをブロックしないようスレッドで実行
-            scores = await asyncio.to_thread(reranker.score, query, documents)
-            best_idx = scores.index(max(scores))
+            classifier = IntentClassifierService()
+            # CPUバウンドな処理で非同期ループをブロックしないようスレッドで実行
+            result = await asyncio.to_thread(classifier.classify, query, documents)
+            
+            # 結果はスコアの降順で返却されるため、先頭のラベルを取得
+            best_doc = result["labels"][0]
+            best_idx = documents.index(best_doc)
             selected_actor = actors[best_idx]
-            logger.info(f"Router selected '{selected_actor}' with score {scores[best_idx]}")
+            
+            logger.info(f"Router selected '{selected_actor}' with score {result['scores'][0]} (Intent: {intent})")
             return selected_actor
             
         except Exception as e:
-            logger.error(f"Router Reranker Error: {e}. Defaulting to interlocutor.")
+            logger.error(f"Router Classifier Error: {e}. Defaulting to interlocutor.")
             return "interlocutor"
 
 
@@ -238,8 +238,8 @@ class Orchestrator:
         self.mcp_config_path = self.project_root / "mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
-        self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir)
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
+        self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir, orchestrator=self)
         
         gateway_cmd = "mcp-gateway"
         gateway_args = []
@@ -271,6 +271,38 @@ class Orchestrator:
         if self.system_prompt_path.exists():
             return self.system_prompt_path.read_text(encoding="utf-8")
         return "You are BROWNIE."
+
+    async def _extract_intent(self, text: str) -> str:
+        """会話履歴等のテキストをLLMに渡し、ユーザーのIntentを短い英語フレーズとして抽出する"""
+        prompt = (
+            "Translate the following text to English, extract the core user intent, "
+            "and summarize it in a short phrase (e.g., 'Asking a clarifying question', 'Completed the task'). "
+            "Output ONLY the summary phrase.\n\n"
+            f"Text: {text}"
+        )
+        endpoint = self.settings.llm.interlocutor_endpoint
+        model_name = self.settings.llm.models.get("interlocutor", "default")
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1024,
+            "temperature": 0.0,
+            "stream": False
+        }
+        
+        try:
+            resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if content:
+                    logger.debug(f"[Intent Extraction] Original -> Intent: {content}")
+                    return content
+            logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            logger.error(f"Intent extraction error: {e}")
+            
+        return "Unknown intent"
 
     async def process_workflow(self, request_data: Dict[str, Any]) -> AsyncGenerator[AgentEvent, None]:
         messages = request_data.get("messages", [])
@@ -452,10 +484,10 @@ class Orchestrator:
                                             idx = tc.get("index", 0)
                                             fn_name = tc.get("function", {}).get("name")
                                             fn_args = tc.get("function", {}).get("arguments")
-                                            tc_id = tc.get("id")
+                                            tc_id = tc.get("id", f"call_{idx}")
                                             
                                             if fn_name:
-                                                yield ToolCallStartEvent(index=idx, id=tc_id or f"call_{idx}", tool_name=fn_name)
+                                                yield ToolCallStartEvent(index=idx, id=tc_id, tool_name=fn_name)
                                             if fn_args:
                                                 yield ToolCallDeltaEvent(index=idx, arguments=fn_args)
                                                 
@@ -466,11 +498,12 @@ class Orchestrator:
                                 except json.JSONDecodeError:
                                     pass
                                     
-                        # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Rerankerを使用)
+                        # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Classifierを使用)
                         if full_content and not has_tool_calls and available_tools_dict:
-                            logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
+                            logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Classifier) ---")
                             
-                            query = f"Assistant Response:\n\"{full_content[-1000:]}\"\n\nWhich tool should be called next to conclude or answer this response?"
+                            intent = await self._extract_intent(full_content[-1000:])
+                            query = f"Assistant Intent: {intent}\n\nWhich tool should be called next to conclude or answer this intent?"
                             docs = []
                             for tn in available_tool_names:
                                 desc = available_tools_dict[tn].get("description", "No description provided")
@@ -478,13 +511,14 @@ class Orchestrator:
                             
                             selected_tool = available_tool_names[0]
                             try:
-                                reranker = RerankerService()
-                                scores = await asyncio.to_thread(reranker.score, query, docs)
-                                best_idx = scores.index(max(scores))
+                                classifier = IntentClassifierService()
+                                result = await asyncio.to_thread(classifier.classify, query, docs)
+                                best_doc = result["labels"][0]
+                                best_idx = docs.index(best_doc)
                                 selected_tool = available_tool_names[best_idx]
-                                logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {scores[best_idx]}")
+                                logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {result['scores'][0]} (Intent: {intent})")
                             except Exception as e:
-                                logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
+                                logger.error(f"[BROWNIE DEBUG] Reflection Classifier Error: {e}")
                                 
                             tool_schema = available_tools_dict[selected_tool]
                             props = tool_schema.get("parameters", {}).get("properties", {})
@@ -492,21 +526,21 @@ class Orchestrator:
                             
                             args = {}
                             for req in reqs:
-                                if "question" in req.lower() or "ask" in req.lower():
-                                    args[req] = "Please answer the question provided in the chat."
-                                elif "result" in req.lower() or "summary" in req.lower() or "message" in req.lower():
-                                    args[req] = "Response provided in chat."
+                                req_lower = req.lower()
+                                if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response"]):
+                                    args[req] = full_content.strip()
                                 else:
                                     ptype = props.get(req, {}).get("type", "string")
                                     if ptype == "array": args[req] = []
                                     elif ptype == "object": args[req] = {}
                                     elif ptype == "boolean": args[req] = False
                                     elif ptype in ["number", "integer"]: args[req] = 0
-                                    else: args[req] = "Completed."
+                                    else: args[req] = full_content.strip()
                             
+                            tc_id = f"call_ref_{int(time.time())}"
                             yield SystemToolCallEvent(
                                 index=0, 
-                                id=f"call_ref_{int(time.time())}", 
+                                id=tc_id, 
                                 tool_name=selected_tool,
                                 arguments=args
                             )

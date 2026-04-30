@@ -89,7 +89,7 @@ def test_chat_completions_system_tool_calls(test_client):
     client, mock_orch = test_client
     
     async def mock_workflow(*args, **kwargs):
-        yield SystemToolCallEvent(index=0, id="call_sys", tool_name="sys_tool", arguments={"key": "val"})
+        yield SystemToolCallEvent(index=0, id="call_sys_short", tool_name="sys_tool", arguments={"key": "val"})
         yield WorkflowFinishEvent(finish_reason="tool_calls")
         
     mock_orch.process_workflow.side_effect = mock_workflow
@@ -104,6 +104,8 @@ def test_chat_completions_system_tool_calls(test_client):
     resp_json = response.json()
     assert resp_json["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "sys_tool"
     assert "val" in resp_json["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+    # サーバー側でIDが補完されていることを確認
+    assert len(resp_json["choices"][0]["message"]["tool_calls"][0]["id"]) >= 20
 
 def test_chat_completions_stream(test_client):
     client, mock_orch = test_client
@@ -131,7 +133,6 @@ def test_chat_completions_stream(test_client):
     data_chunk2 = json.loads(lines[1].replace("data: ", ""))
     data_done = lines[2]
     
-    # 最初のチャンクに role: assistant が含まれることの確認
     assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
     assert data_chunk1["choices"][0]["delta"]["content"] == "Hi there from stream!"
     assert data_chunk2["choices"][0]["finish_reason"] == "stop"
@@ -156,22 +157,27 @@ def test_chat_completions_system_tool_calls_stream(test_client):
     
     content = response.text
     lines = content.strip().split("\n\n")
-    assert len(lines) == 3
+    # Start chunk, Delta chunk, Finish chunk, DONE
+    assert len(lines) == 4
     
     data_chunk1 = json.loads(lines[0].replace("data: ", ""))
     data_chunk2 = json.loads(lines[1].replace("data: ", ""))
-    data_done = lines[2]
+    data_chunk3 = json.loads(lines[2].replace("data: ", ""))
+    data_done = lines[3]
     
-    # 最初のチャンクに role: assistant が含まれることの確認
+    # 最初のチャンクは role: assistant と name を含む
     assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
+    tc1 = data_chunk1["choices"][0]["delta"]["tool_calls"][0]
+    assert tc1["id"].startswith("call_")
+    assert len(tc1["id"]) >= 20  # サーバー側でID補完されているか
+    assert tc1["function"]["name"] == "sys_tool"
+    assert tc1["function"]["arguments"] == ""
     
-    # 1つのチャンクで tool_calls が飛び、arguments が JSON文字列として組み立てられていることの確認
-    tc = data_chunk1["choices"][0]["delta"]["tool_calls"][0]
-    assert tc["id"] == "call_sys"
-    assert tc["function"]["name"] == "sys_tool"
-    assert json.loads(tc["function"]["arguments"]) == {"key": "val"}
+    # 2つ目のチャンクは arguments を含む
+    tc2 = data_chunk2["choices"][0]["delta"]["tool_calls"][0]
+    assert json.loads(tc2["function"]["arguments"]) == {"key": "val"}
     
-    assert data_chunk2["choices"][0]["finish_reason"] == "tool_calls"
+    assert data_chunk3["choices"][0]["finish_reason"] == "tool_calls"
     assert data_done == "data: [DONE]"
 
 def test_chat_completions_error_response(test_client):
