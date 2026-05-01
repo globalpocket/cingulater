@@ -32,6 +32,7 @@ from core.events import (
     WorkflowFinishEvent,
     ErrorEvent
 )
+from core.llm_client import OpenAILLMClient
 
 
 # ==========================================
@@ -243,6 +244,7 @@ class Orchestrator:
         self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
         self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir, orchestrator=self)
+        self.llm_client = OpenAILLMClient()
         
         gateway_cmd = "mcp-gateway"
         gateway_args = []
@@ -376,166 +378,120 @@ class Orchestrator:
             payload.messages.insert(0, InternalMessage(role="system", content=self.system_prompt))
 
         try:
-            async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as client:
-                json_payload = payload.model_dump(exclude_none=True)
-                async with client.stream("POST", f"{endpoint}/chat/completions", json=json_payload) as resp:
-                    if resp.status_code != 200:
-                        error_text = await resp.aread()
-                        yield ErrorEvent(message=f"LLM Error {resp.status_code}: {error_text.decode('utf-8', errors='ignore')}")
-                        return
-                    
-                    content_type = resp.headers.get("content-type", "")
-                    
-                    if "application/json" in content_type:
-                        body = await resp.aread()
-                        try:
-                            full_json = json.loads(body)
-                            for choice in full_json.get("choices", []):
-                                message = choice.get("message", {})
-                                
-                                if "content" in message and message["content"]:
-                                    yield TextDeltaEvent(content=message["content"])
-                                
-                                if "tool_calls" in message:
-                                    for idx, tc in enumerate(message["tool_calls"]):
-                                        func_name = tc.get("function", {}).get("name")
-                                        args_str = tc.get("function", {}).get("arguments", "{}")
-                                        tc_id = tc.get("id", f"call_{idx}")
-                                        
-                                        if func_name not in available_tool_names and available_tool_names:
-                                            fallback_name = available_tool_names[0]
-                                            logger.warning(f"[BROWNIE DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
-                                            try:
-                                                args = json.loads(args_str)
-                                                text_val = ""
-                                                for v in args.values():
-                                                    if isinstance(v, str) and len(v) > len(text_val):
-                                                        text_val = v
-                                                if not text_val: text_val = str(args)
-                                                
-                                                tool_schema = available_tools_dict[fallback_name]
-                                                fallback_props = tool_schema.get("parameters", {}).get("properties", {})
-                                                fallback_required = tool_schema.get("parameters", {}).get("required", [])
-                                                
-                                                fallback_param_name = "text"
-                                                for pref in ["result", "question", "message", "content", "response"]:
-                                                    if pref in fallback_props:
-                                                        fallback_param_name = pref
-                                                        break
-                                                else:
-                                                    if fallback_props: fallback_param_name = list(fallback_props.keys())[0]
-
-                                                new_args = {fallback_param_name: text_val}
-                                                for req in fallback_required:
-                                                    if req != fallback_param_name:
-                                                        ptype = fallback_props.get(req, {}).get("type", "string")
-                                                        if ptype == "array": new_args[req] = []
-                                                        elif ptype == "object": new_args[req] = {}
-                                                        elif ptype == "boolean": new_args[req] = False
-                                                        elif ptype in ["number", "integer"]: new_args[req] = 0
-                                                        else: new_args[req] = ""
-                                                
-                                                yield SystemToolCallEvent(index=idx, id=tc_id, tool_name=fallback_name, arguments=new_args)
-                                                continue
-                                            except Exception:
-                                                pass
-                                                
-                                        yield ToolCallStartEvent(index=idx, id=tc_id, tool_name=func_name)
-                                        yield ToolCallDeltaEvent(index=idx, arguments=args_str)
-                                        
-                                finish_reason = choice.get("finish_reason", "stop")
-                                yield WorkflowFinishEvent(finish_reason=finish_reason)
-                                
-                        except Exception as e:
-                            yield ErrorEvent(message=f"Failed to parse fallback JSON: {e}")
-                    
-                    else:
-                        has_tool_calls = False
-                        full_content = ""
-                        final_finish_reason = "stop"
+            json_payload = payload.model_dump(exclude_none=True)
+            
+            has_tool_calls = False
+            full_content = ""
+            final_finish_reason = "stop"
+            
+            # OpenAILLMClientを使って標準化チャンクを処理する
+            async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
+                if chunk.content:
+                    full_content += chunk.content
+                    yield TextDeltaEvent(content=chunk.content)
+                
+                if chunk.tool_calls:
+                    has_tool_calls = True
+                    for tc in chunk.tool_calls:
+                        func_name = tc.name
+                        args_str = tc.arguments or ""
+                        tc_id = tc.id or f"call_{tc.index}"
                         
-                        async for line in resp.aiter_lines():
-                            line = line.strip()
-                            if not line or line == "data: [DONE]":
-                                continue
-                                
-                            if line.startswith("data: "):
-                                try:
-                                    chunk = json.loads(line[6:])
-                                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                                    
-                                    if "content" in delta and isinstance(delta["content"], str) and delta["content"]:
-                                        full_content += delta["content"]
-                                        yield TextDeltaEvent(content=delta["content"])
-                                    
-                                    if "tool_calls" in delta:
-                                        has_tool_calls = True
-                                        for tc in delta["tool_calls"]:
-                                            idx = tc.get("index", 0)
-                                            fn_name = tc.get("function", {}).get("name")
-                                            fn_args = tc.get("function", {}).get("arguments")
-                                            tc_id = tc.get("id", f"call_{idx}")
-                                            
-                                            if fn_name:
-                                                yield ToolCallStartEvent(index=idx, id=tc_id, tool_name=fn_name)
-                                            if fn_args:
-                                                yield ToolCallDeltaEvent(index=idx, arguments=fn_args)
-                                                
-                                    chunk_fr = chunk.get("choices", [{}])[0].get("finish_reason")
-                                    if chunk_fr:
-                                        final_finish_reason = chunk_fr
-                                        
-                                except json.JSONDecodeError:
-                                    pass
-                                    
-                        # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Rerankerを使用)
-                        if full_content and not has_tool_calls and available_tools_dict:
-                            logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
-                            
-                            intent = await self._extract_intent(full_content[-1000:])
-                            docs = []
-                            for tn in available_tool_names:
-                                desc = available_tools_dict[tn].get("description", "No description provided")
-                                docs.append(desc)
-                            
-                            selected_tool = available_tool_names[0]
+                        # ハルシネーション対策（存在しないツール名を有効なものに強制書き換え）
+                        if func_name and func_name not in available_tool_names and available_tool_names:
+                            fallback_name = available_tool_names[0]
+                            logger.warning(f"[BROWNIE DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
                             try:
-                                reranker = IntentRerankerService()
-                                results = await asyncio.to_thread(reranker.rerank, intent, docs)
-                                best_doc = results[0]["document"]
-                                best_idx = docs.index(best_doc)
-                                selected_tool = available_tool_names[best_idx]
-                                logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
-                            except Exception as e:
-                                logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
+                                args = json.loads(args_str) if args_str else {}
+                                text_val = ""
+                                for v in args.values():
+                                    if isinstance(v, str) and len(v) > len(text_val):
+                                        text_val = v
+                                if not text_val: text_val = str(args)
                                 
-                            tool_schema = available_tools_dict[selected_tool]
-                            props = tool_schema.get("parameters", {}).get("properties", {})
-                            reqs = tool_schema.get("parameters", {}).get("required", [])
-                            
-                            args = {}
-                            for req in reqs:
-                                req_lower = req.lower()
-                                if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response"]):
-                                    args[req] = full_content.strip()
+                                tool_schema = available_tools_dict[fallback_name]
+                                fallback_props = tool_schema.get("parameters", {}).get("properties", {})
+                                fallback_required = tool_schema.get("parameters", {}).get("required", [])
+                                
+                                fallback_param_name = "text"
+                                for pref in ["result", "question", "message", "content", "response"]:
+                                    if pref in fallback_props:
+                                        fallback_param_name = pref
+                                        break
                                 else:
-                                    ptype = props.get(req, {}).get("type", "string")
-                                    if ptype == "array": args[req] = []
-                                    elif ptype == "object": args[req] = {}
-                                    elif ptype == "boolean": args[req] = False
-                                    elif ptype in ["number", "integer"]: args[req] = 0
-                                    else: args[req] = full_content.strip()
+                                    if fallback_props: fallback_param_name = list(fallback_props.keys())[0]
+
+                                new_args = {fallback_param_name: text_val}
+                                for req in fallback_required:
+                                    if req != fallback_param_name:
+                                        ptype = fallback_props.get(req, {}).get("type", "string")
+                                        if ptype == "array": new_args[req] = []
+                                        elif ptype == "object": new_args[req] = {}
+                                        elif ptype == "boolean": new_args[req] = False
+                                        elif ptype in ["number", "integer"]: new_args[req] = 0
+                                        else: new_args[req] = ""
+                                
+                                yield SystemToolCallEvent(index=tc.index, id=tc_id, tool_name=fallback_name, arguments=new_args)
+                                continue
+                            except Exception:
+                                pass
+                                
+                        if func_name:
+                            yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
+                        if args_str:
+                            yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
                             
-                            tc_id = f"call_ref_{int(time.time())}"
-                            yield SystemToolCallEvent(
-                                index=0, 
-                                id=tc_id, 
-                                tool_name=selected_tool,
-                                arguments=args
-                            )
-                            final_finish_reason = "tool_calls"
-                            
-                        yield WorkflowFinishEvent(finish_reason=final_finish_reason)
+                if chunk.finish_reason:
+                    final_finish_reason = chunk.finish_reason
+
+            # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Rerankerを使用)
+            if full_content and not has_tool_calls and available_tools_dict:
+                logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
+                
+                intent = await self._extract_intent(full_content[-1000:])
+                docs = []
+                for tn in available_tool_names:
+                    desc = available_tools_dict[tn].get("description", "No description provided")
+                    docs.append(desc)
+                
+                selected_tool = available_tool_names[0]
+                try:
+                    reranker = IntentRerankerService()
+                    results = await asyncio.to_thread(reranker.rerank, intent, docs)
+                    best_doc = results[0]["document"]
+                    best_idx = docs.index(best_doc)
+                    selected_tool = available_tool_names[best_idx]
+                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
+                except Exception as e:
+                    logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
+                    
+                tool_schema = available_tools_dict[selected_tool]
+                props = tool_schema.get("parameters", {}).get("properties", {})
+                reqs = tool_schema.get("parameters", {}).get("required", [])
+                
+                args = {}
+                for req in reqs:
+                    req_lower = req.lower()
+                    if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response"]):
+                        args[req] = full_content.strip()
+                    else:
+                        ptype = props.get(req, {}).get("type", "string")
+                        if ptype == "array": args[req] = []
+                        elif ptype == "object": args[req] = {}
+                        elif ptype == "boolean": args[req] = False
+                        elif ptype in ["number", "integer"]: args[req] = 0
+                        else: args[req] = full_content.strip()
+                
+                tc_id = f"call_ref_{int(time.time())}"
+                yield SystemToolCallEvent(
+                    index=0, 
+                    id=tc_id, 
+                    tool_name=selected_tool,
+                    arguments=args
+                )
+                final_finish_reason = "tool_calls"
+                
+            yield WorkflowFinishEvent(finish_reason=final_finish_reason)
                             
         except Exception as e:
             logger.error(f"[BROWNIE DEBUG] Streaming Exception: {e}")
