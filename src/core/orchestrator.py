@@ -162,7 +162,74 @@ class Router:
 
 
 # ==========================================
-# 4. Gateway Client
+# 4. Reflection Node
+# ==========================================
+class ReflectionNode:
+    """エージェントの自律性（Self-Correction）を担う評価・反芻パイプライン"""
+    def __init__(self, orchestrator: "Orchestrator"):
+        self.orchestrator = orchestrator
+
+    async def evaluate(self, full_content: str, available_tools: List[InternalTool]) -> Optional[SystemToolCallEvent]:
+        if not available_tools or not full_content:
+            return None
+
+        available_tools_dict = {
+            t.function.get("name"): t.function
+            for t in available_tools
+            if t.function and t.function.get("name")
+        }
+        if not available_tools_dict:
+            return None
+
+        available_tool_names = list(available_tools_dict.keys())
+
+        logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
+        
+        intent = await self.orchestrator._extract_intent(full_content[-1000:])
+        docs = []
+        for tn in available_tool_names:
+            desc = available_tools_dict[tn].get("description", "No description provided")
+            docs.append(desc)
+        
+        selected_tool = available_tool_names[0]
+        try:
+            reranker = IntentRerankerService()
+            results = await asyncio.to_thread(reranker.rerank, intent, docs)
+            best_doc = results[0]["document"]
+            best_idx = docs.index(best_doc)
+            selected_tool = available_tool_names[best_idx]
+            logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
+        except Exception as e:
+            logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
+            
+        tool_schema = available_tools_dict[selected_tool]
+        props = tool_schema.get("parameters", {}).get("properties", {})
+        reqs = tool_schema.get("parameters", {}).get("required", [])
+        
+        args = {}
+        for req in reqs:
+            req_lower = req.lower()
+            if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response"]):
+                args[req] = full_content.strip()
+            else:
+                ptype = props.get(req, {}).get("type", "string")
+                if ptype == "array": args[req] = []
+                elif ptype == "object": args[req] = {}
+                elif ptype == "boolean": args[req] = False
+                elif ptype in ["number", "integer"]: args[req] = 0
+                else: args[req] = full_content.strip()
+        
+        tc_id = f"call_ref_{int(time.time())}"
+        return SystemToolCallEvent(
+            index=0, 
+            id=tc_id, 
+            tool_name=selected_tool,
+            arguments=args
+        )
+
+
+# ==========================================
+# 5. Gateway Client
 # ==========================================
 class GatewayClient:
     def __init__(self, command: str = "mcp-gateway", args: Optional[List[str]] = None):
@@ -213,7 +280,7 @@ class GatewayClient:
 
 
 # ==========================================
-# 5. Core Orchestrator
+# 6. Core Orchestrator
 # ==========================================
 class MCPVirtualTool(Tool):
     def __init__(self, mcp_tool_def, mcp_client, loop):
@@ -344,11 +411,28 @@ class Orchestrator:
             endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
             
             if step.get("type") == "llm_chat":
+                full_content = ""
+                has_tool_calls = False
+
                 async for event in self._call_llm(model_key, endpoint, request):
-                    if isinstance(event, WorkflowFinishEvent):
+                    if isinstance(event, TextDeltaEvent):
+                        full_content += event.content
+                        yield event
+                    elif isinstance(event, (ToolCallStartEvent, SystemToolCallEvent)):
+                        has_tool_calls = True
+                        yield event
+                    elif isinstance(event, WorkflowFinishEvent):
                         final_reason = event.finish_reason
                     else:
                         yield event
+                
+                # パイプライン化された Reflection
+                if full_content and not has_tool_calls and request.tools:
+                    reflection_node = ReflectionNode(self)
+                    ref_event = await reflection_node.evaluate(full_content, request.tools)
+                    if ref_event:
+                        yield ref_event
+                        final_reason = "tool_calls"
             
             elif step.get("type") == "agent_task":
                 yield TextDeltaEvent(content=f"\n[Step {i+1} Start]\n")
@@ -380,18 +464,14 @@ class Orchestrator:
         try:
             json_payload = payload.model_dump(exclude_none=True)
             
-            has_tool_calls = False
-            full_content = ""
             final_finish_reason = "stop"
             
             # OpenAILLMClientを使って標準化チャンクを処理する
             async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
                 if chunk.content:
-                    full_content += chunk.content
                     yield TextDeltaEvent(content=chunk.content)
                 
                 if chunk.tool_calls:
-                    has_tool_calls = True
                     for tc in chunk.tool_calls:
                         func_name = tc.name
                         args_str = tc.arguments or ""
@@ -444,53 +524,6 @@ class Orchestrator:
                 if chunk.finish_reason:
                     final_finish_reason = chunk.finish_reason
 
-            # 【反芻ステップ】テキストのみが返却され、ツール呼び出しがなかった場合のフォールバック (Rerankerを使用)
-            if full_content and not has_tool_calls and available_tools_dict:
-                logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
-                
-                intent = await self._extract_intent(full_content[-1000:])
-                docs = []
-                for tn in available_tool_names:
-                    desc = available_tools_dict[tn].get("description", "No description provided")
-                    docs.append(desc)
-                
-                selected_tool = available_tool_names[0]
-                try:
-                    reranker = IntentRerankerService()
-                    results = await asyncio.to_thread(reranker.rerank, intent, docs)
-                    best_doc = results[0]["document"]
-                    best_idx = docs.index(best_doc)
-                    selected_tool = available_tool_names[best_idx]
-                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
-                except Exception as e:
-                    logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
-                    
-                tool_schema = available_tools_dict[selected_tool]
-                props = tool_schema.get("parameters", {}).get("properties", {})
-                reqs = tool_schema.get("parameters", {}).get("required", [])
-                
-                args = {}
-                for req in reqs:
-                    req_lower = req.lower()
-                    if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response"]):
-                        args[req] = full_content.strip()
-                    else:
-                        ptype = props.get(req, {}).get("type", "string")
-                        if ptype == "array": args[req] = []
-                        elif ptype == "object": args[req] = {}
-                        elif ptype == "boolean": args[req] = False
-                        elif ptype in ["number", "integer"]: args[req] = 0
-                        else: args[req] = full_content.strip()
-                
-                tc_id = f"call_ref_{int(time.time())}"
-                yield SystemToolCallEvent(
-                    index=0, 
-                    id=tc_id, 
-                    tool_name=selected_tool,
-                    arguments=args
-                )
-                final_finish_reason = "tool_calls"
-                
             yield WorkflowFinishEvent(finish_reason=final_finish_reason)
                             
         except Exception as e:

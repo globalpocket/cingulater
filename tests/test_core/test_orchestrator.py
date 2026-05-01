@@ -118,7 +118,6 @@ async def test_extract_intent_error(orchestrator):
 
 @pytest.mark.asyncio
 async def test_run_workflow_interlocutor(orchestrator):
-    # httpxのモックではなく、LLMClientProtocolのモックを使用する
     async def mock_stream_chat(*args, **kwargs):
         yield StandardLLMChunk(content="Hello")
         yield StandardLLMChunk(finish_reason="stop")
@@ -184,7 +183,7 @@ async def test_workflow_file_not_found(orchestrator):
         assert isinstance(events[0], ErrorEvent)
 
 @pytest.mark.asyncio
-async def test_call_llm_stream_reflection_dynamic(orchestrator):
+async def test_run_workflow_with_reflection(orchestrator):
     """ツール呼び出しがなく、テキストのみが返された場合のリフレクション(Reranker)のテスト"""
     
     async def mock_stream_chat(*args, **kwargs):
@@ -193,8 +192,15 @@ async def test_call_llm_stream_reflection_dynamic(orchestrator):
         yield StandardLLMChunk(finish_reason="stop")
         
     orchestrator.llm_client.stream_chat = mock_stream_chat
+    orchestrator.router.route = AsyncMock(return_value="interlocutor")
 
-    with patch("core.orchestrator.IntentRerankerService") as mock_reranker_cls:
+    yaml_data = {"name": "interlocutor", "steps": [{"type": "llm_chat", "model_key": "interlocutor"}]}
+    
+    with patch("builtins.open", MagicMock()), \
+         patch("pathlib.Path.exists", return_value=True), \
+         patch("yaml.safe_load", return_value=yaml_data), \
+         patch("core.orchestrator.IntentRerankerService") as mock_reranker_cls:
+         
         mock_reranker = MagicMock()
         mock_reranker.rerank.return_value = [
             {"document": "Concludes the interaction", "score": 0.99}
@@ -218,7 +224,7 @@ async def test_call_llm_stream_reflection_dynamic(orchestrator):
             )]
         )
 
-        events = [e async for e in orchestrator._call_llm("interlocutor", "http://dummy", req)]
+        events = [e async for e in orchestrator.process_workflow(req)]
         
         assert len(events) == 4
         assert isinstance(events[0], TextDeltaEvent) and events[0].content == "Hello"
