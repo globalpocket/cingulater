@@ -283,7 +283,7 @@ class GatewayClient:
 # 6. Core Orchestrator
 # ==========================================
 class MCPVirtualTool(Tool):
-    def __init__(self, mcp_tool_def, mcp_client, loop):
+    def __init__(self, mcp_tool_def, mcp_client: GatewayClient, loop):
         self.name = mcp_tool_def["name"]
         self.description = mcp_tool_def["description"]
         props = mcp_tool_def.get("inputSchema", {}).get("properties", {})
@@ -296,6 +296,7 @@ class MCPVirtualTool(Tool):
         super().__init__()
 
     def forward(self, **kwargs):
+        # 割り当てられた特定のmcp_client経由でツールを実行する
         future = asyncio.run_coroutine_threadsafe(self.mcp_client.call_tool(self.name, kwargs), self._loop)
         return future.result()
 
@@ -313,28 +314,47 @@ class Orchestrator:
         self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir, orchestrator=self)
         self.llm_client = OpenAILLMClient()
         
-        gateway_cmd = "mcp-routing-gateway"
-        gateway_args = []
+        self.mcp_clients: Dict[str, GatewayClient] = {}
+        
         if self.mcp_config_path.exists():
             try:
                 with open(self.mcp_config_path, "r", encoding="utf-8") as f:
                     servers = json.load(f).get("mcpServers", {})
-                    if "mcp-routing-gateway" in servers:
-                        gateway_cmd = servers["mcp-routing-gateway"].get("command", gateway_cmd)
-                        gateway_args = servers["mcp-routing-gateway"].get("args", gateway_args)
+                    for name, config in servers.items():
+                        cmd = config.get("command")
+                        args = config.get("args", [])
+                        
+                        # 環境変数による上書き (mcp-routing-gateway のみ互換性維持のため適用)
+                        if name == "mcp-routing-gateway":
+                            cmd = os.getenv("BROWNIE_GATEWAY_CMD", cmd)
+                            
+                        if cmd:
+                            self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
             except Exception as e:
-                logger.error(f"Failed to load mcp_config.json: {e}")
+                logger.error(f"Failed to load brownie_core_mcp_config.json: {e}")
 
-        self.mcp_client = GatewayClient(command=os.getenv("BROWNIE_GATEWAY_CMD", gateway_cmd), args=gateway_args)
+        # どの設定も読み込めなかった場合のフォールバック
+        if not self.mcp_clients:
+            cmd = os.getenv("BROWNIE_GATEWAY_CMD", "mcp-routing-gateway")
+            self.mcp_clients["mcp-routing-gateway"] = GatewayClient(command=cmd, args=[])
 
     async def start(self):
-        await self.mcp_client.start()
+        # 登録されている全クライアントを一括起動
+        for name, client in self.mcp_clients.items():
+            logger.info(f"Starting MCP Client: {name}")
+            await client.start()
+            
         try:
             for key in ["interlocutor", "coder"]:
                 model = self.settings.llm.models.get(key)
                 if model:
                     port = urlparse(getattr(self.settings.llm, f"{key}_endpoint")).port or 8080
-                    await self.mcp_client.call_tool("launch_llm_server", {"model_name": model, "port": port})
+                    # mlx-launcher クライアントが存在する場合のみ起動処理を実行
+                    mlx_client = self.mcp_clients.get("mlx-launcher")
+                    if mlx_client:
+                        await mlx_client.call_tool("launch_llm_server", {"model_name": model, "port": port})
+                    else:
+                        logger.debug(f"mlx-launcher client not found. Skipping auto-launch for {model}.")
         except Exception as e:
             logger.error(f"Auto-launch failed: {e}")
         logger.info("✅ Orchestrator: Hybrid-Workflow engine ready.")
@@ -396,8 +416,16 @@ class Orchestrator:
             yield ErrorEvent(message=f"Workflow parse error: {e}")
             return
 
-        mcp_tools = await self.mcp_client.fetch_tools()
+        # 全MCPクライアントからツールを取得し、実行担当クライアントごとラッピングして統合
+        mcp_tools = []
         loop = asyncio.get_running_loop()
+        for name, client in self.mcp_clients.items():
+            try:
+                tools = await client.fetch_tools()
+                for t in tools:
+                    mcp_tools.append(MCPVirtualTool(t, client, loop))
+            except Exception as e:
+                logger.warning(f"Failed to fetch tools from {name}: {e}")
 
         final_reason = "stop"
 
@@ -437,7 +465,7 @@ class Orchestrator:
             elif step.get("type") == "agent_task":
                 yield TextDeltaEvent(content=f"\n[Step {i+1} Start]\n")
                 agent_model = OpenAIServerModel(model_id=self.settings.llm.models.get(model_key), api_base=endpoint, api_key="none")
-                agent = ToolCallingAgent(tools=[MCPVirtualTool(t, self.mcp_client, loop) for t in mcp_tools], model=agent_model)
+                agent = ToolCallingAgent(tools=mcp_tools, model=agent_model)
                 result = await asyncio.to_thread(agent.run, step.get("description", ""))
                 yield TextDeltaEvent(content=f"[Result]\n{result}\n")
                 final_reason = "stop"
@@ -531,5 +559,6 @@ class Orchestrator:
             yield ErrorEvent(message=f"Connection Error: {e}")
 
     async def shutdown(self):
-        await self.mcp_client.stop()
+        for client in self.mcp_clients.values():
+            await client.stop()
         await self.http_client.aclose()
