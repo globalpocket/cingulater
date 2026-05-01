@@ -3,32 +3,11 @@ import pytest
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
-from core.orchestrator import Orchestrator, Settings, Router, GatewayClient, IntentRerankerService
+from core.orchestrator import Orchestrator, Settings, Router, GatewayClient
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
 from core.schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.llm_client import StandardLLMChunk, ToolCallChunk
 import mcp.types as types
-
-def test_intent_reranker_service():
-    with patch("core.orchestrator.CrossEncoder") as mock_cross_encoder:
-        mock_model = MagicMock()
-        mock_model.predict.return_value = [0.95, 0.12]
-        mock_cross_encoder.return_value = mock_model
-        
-        IntentRerankerService._instance = None
-        
-        reranker = IntentRerankerService()
-        result = reranker.rerank("test query", ["doc 1", "doc 2"])
-        
-        mock_cross_encoder.assert_called_once_with("BAAI/bge-reranker-v2-m3")
-        assert result[0]["document"] == "doc 1"
-        assert result[0]["score"] == 0.95
-        assert result[1]["document"] == "doc 2"
-        assert result[1]["score"] == 0.12
-        
-        reranker2 = IntentRerankerService()
-        assert reranker is reranker2
-        assert mock_cross_encoder.call_count == 1
 
 @pytest.mark.asyncio
 async def test_router_route():
@@ -36,8 +15,7 @@ async def test_router_route():
     
     with patch("pathlib.Path.glob") as mock_glob, \
          patch("builtins.open", MagicMock()), \
-         patch("yaml.safe_load") as mock_yaml_load, \
-         patch("core.orchestrator.IntentRerankerService") as mock_reranker_cls:
+         patch("yaml.safe_load") as mock_yaml_load:
          
         mock_path1 = MagicMock()
         mock_path1.stem = "coder"
@@ -50,15 +28,16 @@ async def test_router_route():
             {"name": "interlocutor", "description": "Chat with user"}
         ]
         
-        mock_reranker = MagicMock()
-        mock_reranker.rerank.return_value = [
-            {"document": "Chat with user", "score": 0.9},
-            {"document": "Write code", "score": 0.1}
-        ]
-        mock_reranker_cls.return_value = mock_reranker
-        
         mock_orch = MagicMock()
         mock_orch._extract_intent = AsyncMock(return_value="Chat with user")
+        
+        # mcp-reranker のクライアントをモック
+        mock_reranker_client = AsyncMock()
+        mock_reranker_client.call_tool.return_value = json.dumps([
+            {"document": "Chat with user", "score": 0.9},
+            {"document": "Write code", "score": 0.1}
+        ])
+        mock_orch.mcp_clients = {"mcp-reranker": mock_reranker_client}
         
         router = Router(settings, Path("dummy"), orchestrator=mock_orch)
         
@@ -67,9 +46,12 @@ async def test_router_route():
         
         assert selected == "interlocutor"
         mock_orch._extract_intent.assert_called_once()
-        mock_reranker.rerank.assert_called_once()
-        args, _ = mock_reranker.rerank.call_args
-        assert args[0] == "Chat with user"
+        
+        # rerank_documents ツールが正しく呼ばれたか検証
+        mock_reranker_client.call_tool.assert_called_once_with(
+            "rerank_documents",
+            {"query": "Chat with user", "documents": ["Write code", "Chat with user"]}
+        )
 
 @pytest.fixture
 def mock_gateway():
@@ -209,16 +191,16 @@ async def test_run_workflow_with_reflection(orchestrator):
     
     with patch("builtins.open", MagicMock()), \
          patch("pathlib.Path.exists", return_value=True), \
-         patch("yaml.safe_load", return_value=yaml_data), \
-         patch("core.orchestrator.IntentRerankerService") as mock_reranker_cls:
+         patch("yaml.safe_load", return_value=yaml_data):
          
-        mock_reranker = MagicMock()
-        mock_reranker.rerank.return_value = [
-            {"document": "Concludes the interaction", "score": 0.99}
-        ]
-        mock_reranker_cls.return_value = mock_reranker
-        
         orchestrator._extract_intent = AsyncMock(return_value="Conclude interaction")
+        
+        # mcp-reranker のクライアントをモック
+        mock_reranker_client = AsyncMock()
+        mock_reranker_client.call_tool.return_value = json.dumps([
+            {"document": "Concludes the interaction", "score": 0.99}
+        ])
+        orchestrator.mcp_clients["mcp-reranker"] = mock_reranker_client
 
         req = InternalAgentRequest(
             messages=[InternalMessage(role="user", content="Hi")],
@@ -247,8 +229,11 @@ async def test_run_workflow_with_reflection(orchestrator):
         assert events[2].arguments.get("is_done") is False
         assert isinstance(events[3], WorkflowFinishEvent) and events[3].finish_reason == "tool_calls"
         
-        args_call, _ = mock_reranker.rerank.call_args
-        assert args_call[0] == "Conclude interaction"
+        # MCPツール呼び出しを検証
+        mock_reranker_client.call_tool.assert_called_once_with(
+            "rerank_documents",
+            {"query": "Conclude interaction", "documents": ["Concludes the interaction"]}
+        )
 
 @pytest.mark.asyncio
 async def test_call_llm_stream_fallback_rewrite(orchestrator):

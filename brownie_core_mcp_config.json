@@ -8,6 +8,17 @@
         "mcp-mlx-launcher"
       ]
     },
+    "mcp-reranker": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/globalpocket/mcp-reranker.git",
+        "mcp-reranker"
+      ],
+      "env": {
+        "RERANKER_MODEL_NAME": "BAAI/bge-reranker-v2-m3"
+      }
+    },
     "mcp-routing-gateway": {
       "command": "mcp-routing-gateway",
       "args": [

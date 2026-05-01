@@ -5,7 +5,6 @@ import yaml
 import json
 import asyncio
 import logging
-import threading
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, AsyncGenerator
@@ -16,7 +15,6 @@ from loguru import logger
 from smolagents import Tool, ToolCallingAgent, OpenAIServerModel
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
-from sentence_transformers import CrossEncoder
 
 import mcp.types as types
 from mcp.client.session import ClientSession
@@ -74,40 +72,7 @@ def get_settings(config_path: str = "config.yaml") -> Settings:
 
 
 # ==========================================
-# 2. Intent Reranker Service
-# ==========================================
-class IntentRerankerService:
-    """Rerankerを利用してIntentとドキュメント(説明文)の関連度をスコアリングするシングルトンサービス"""
-    _instance = None
-    _lock = threading.Lock()
-
-    def __new__(cls, model_name: str = "BAAI/bge-reranker-v2-m3"):
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance._initialize(model_name)
-        return cls._instance
-
-    def _initialize(self, model_name: str):
-        logger.info(f"Initializing IntentRerankerService with model: {model_name}")
-        self.reranker = CrossEncoder(model_name)
-
-    def rerank(self, query: str, documents: List[str]) -> List[Dict[str, Any]]:
-        """クエリ(query)と複数の候補(documents)の関連度をスコアリングして降順で返す"""
-        if not documents:
-            return []
-        
-        pairs = [[query, doc] for doc in documents]
-        scores = self.reranker.predict(pairs)
-        
-        results = [{"document": doc, "score": float(score)} for doc, score in zip(documents, scores)]
-        results.sort(key=lambda x: x["score"], reverse=True)
-        
-        return results
-
-
-# ==========================================
-# 3. Router
+# 2. Router
 # ==========================================
 class Router:
     def __init__(self, settings: Settings, workflows_dir: Path, orchestrator: "Orchestrator"):
@@ -148,16 +113,28 @@ class Router:
         intent = await self.orchestrator._extract_intent(history_text)
         
         try:
-            reranker = IntentRerankerService()
-            # 抽出したIntentをそのままクエリとして使用する
-            results = await asyncio.to_thread(reranker.rerank, intent, documents)
-            
-            best_doc = results[0]["document"]
-            best_idx = documents.index(best_doc)
-            selected_actor = actors[best_idx]
-            
-            logger.info(f"Router selected '{selected_actor}' with score {results[0]['score']:.4f} (Intent: {intent})")
-            return selected_actor
+            # mcp-reranker クライアントを取得してツールを実行
+            reranker_client = self.orchestrator.mcp_clients.get("mcp-reranker")
+            if reranker_client:
+                result_str = await reranker_client.call_tool(
+                    "rerank_documents", 
+                    {"query": intent, "documents": documents}
+                )
+                results = json.loads(result_str)
+                
+                if results:
+                    best_doc = results[0]["document"]
+                    best_idx = documents.index(best_doc)
+                    selected_actor = actors[best_idx]
+                    
+                    logger.info(f"Router selected '{selected_actor}' with score {results[0]['score']:.4f} (Intent: {intent})")
+                    return selected_actor
+                else:
+                    logger.warning("mcp-reranker returned empty results. Defaulting to interlocutor.")
+                    return "interlocutor"
+            else:
+                logger.warning("mcp-reranker client not connected. Defaulting to interlocutor.")
+                return "interlocutor"
             
         except Exception as e:
             logger.error(f"Router Reranker Error: {e}. Defaulting to interlocutor.")
@@ -165,7 +142,7 @@ class Router:
 
 
 # ==========================================
-# 4. Reflection Node
+# 3. Reflection Node
 # ==========================================
 class ReflectionNode:
     """エージェントの自律性（Self-Correction）を担う評価・反芻パイプライン"""
@@ -196,12 +173,20 @@ class ReflectionNode:
         
         selected_tool = available_tool_names[0]
         try:
-            reranker = IntentRerankerService()
-            results = await asyncio.to_thread(reranker.rerank, intent, docs)
-            best_doc = results[0]["document"]
-            best_idx = docs.index(best_doc)
-            selected_tool = available_tool_names[best_idx]
-            logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
+            reranker_client = self.orchestrator.mcp_clients.get("mcp-reranker")
+            if reranker_client:
+                result_str = await reranker_client.call_tool(
+                    "rerank_documents", 
+                    {"query": intent, "documents": docs}
+                )
+                results = json.loads(result_str)
+                if results:
+                    best_doc = results[0]["document"]
+                    best_idx = docs.index(best_doc)
+                    selected_tool = available_tool_names[best_idx]
+                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
+            else:
+                logger.warning("[BROWNIE DEBUG] mcp-reranker client not connected. Using default first tool.")
         except Exception as e:
             logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
             
@@ -232,7 +217,7 @@ class ReflectionNode:
 
 
 # ==========================================
-# 5. Gateway Client
+# 4. Gateway Client
 # ==========================================
 class GatewayClient:
     def __init__(self, command: str = "mcp-routing-gateway", args: Optional[List[str]] = None):
@@ -283,7 +268,7 @@ class GatewayClient:
 
 
 # ==========================================
-# 6. Core Orchestrator
+# 5. Core Orchestrator
 # ==========================================
 class MCPVirtualTool(Tool):
     def __init__(self, mcp_tool_def, mcp_client: GatewayClient, loop):
