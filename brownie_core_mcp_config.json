@@ -1,18 +1,27 @@
 {
   "mcpServers": {
+    "mlx-launcher": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/globalpocket/mcp-mlx-launcher.git",
+        "mcp-mlx-launcher"
+      ]
+    },
     "mcp-routing-gateway": {
       "command": "mcp-routing-gateway",
       "args": [
-        "--work-dir", ".",
-        "--config", "gateway_config.json",
-        "--mcp-config", "gateway_mcp_config.json"
+        "--work-dir",
+        ".",
+        "--config",
+        "gateway_config.json",
+        "--mcp-config",
+        "mcp_config.json"
       ]
     },
     "docker": {
       "command": "uvx",
-      "args": [
-        "mcp-server-docker"
-      ]
+      "args": ["mcp-server-docker"]
     }
   }
 }
