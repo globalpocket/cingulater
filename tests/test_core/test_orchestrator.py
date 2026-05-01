@@ -92,8 +92,17 @@ def orchestrator(mock_gateway):
 
 @pytest.mark.asyncio
 async def test_start_shutdown(orchestrator, mock_gateway):
+    # Auto-launch の動的抽象化テストのために設定を注入
+    orchestrator.settings.llm.models = {"interlocutor": "dummy-model"}
+    orchestrator.settings.llm.launcher_client = "mlx-launcher"
+    orchestrator.settings.llm.launcher_tool = "launch_llm_server"
+
     await orchestrator.start()
+    
     assert mock_gateway.start.call_count >= 1
+    # 指定したツール名とパラメータで呼び出されているか確認
+    mock_gateway.call_tool.assert_called_with("launch_llm_server", {"model_name": "dummy-model", "port": 8080})
+    
     await orchestrator.shutdown()
     assert mock_gateway.stop.call_count >= 1
 

@@ -15,6 +15,12 @@ llm:
   coder_endpoint: "http://localhost:8081/v1"
   timeout_sec: 120
 
+  # 動的なランチャー設定 (Strategy パターン)
+  # mcp-mlx-launcher以外のランチャー(例: Ollama等)に変更する場合は、
+  # 以下に接続先のクライアント名とツール名を指定してください。
+  launcher_client: "mlx-launcher"
+  launcher_tool: "launch_llm_server"
+
 workspace:
   sandbox_user: "brownie_sandbox"
   base_path: "./workspace"

@@ -46,6 +46,9 @@ class LLMSettings(BaseModel):
     interlocutor_endpoint: str = Field(default="http://localhost:8080/v1")
     coder_endpoint: str = Field(default="http://localhost:8081/v1")
     timeout_sec: int = Field(default=120)
+    # 動的なランチャー設定（Strategy パターンのための注入ポイント）
+    launcher_client: Optional[str] = Field(default="mlx-launcher")
+    launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
 class WorkspaceSettings(BaseModel):
     sandbox_user: str = Field(default="brownie_sandbox")
@@ -345,16 +348,20 @@ class Orchestrator:
             await client.start()
             
         try:
-            for key in ["interlocutor", "coder"]:
-                model = self.settings.llm.models.get(key)
-                if model:
-                    port = urlparse(getattr(self.settings.llm, f"{key}_endpoint")).port or 8080
-                    # mlx-launcher クライアントが存在する場合のみ起動処理を実行
-                    mlx_client = self.mcp_clients.get("mlx-launcher")
-                    if mlx_client:
-                        await mlx_client.call_tool("launch_llm_server", {"model_name": model, "port": port})
-                    else:
-                        logger.debug(f"mlx-launcher client not found. Skipping auto-launch for {model}.")
+            # ランチャーの抽象化：設定から対象クライアントとツール名を取得
+            launcher_client_name = self.settings.llm.launcher_client
+            launcher_tool_name = self.settings.llm.launcher_tool
+            
+            if launcher_client_name and launcher_tool_name:
+                launcher_client = self.mcp_clients.get(launcher_client_name)
+                if launcher_client:
+                    for key in ["interlocutor", "coder"]:
+                        model = self.settings.llm.models.get(key)
+                        if model:
+                            port = urlparse(getattr(self.settings.llm, f"{key}_endpoint")).port or 8080
+                            await launcher_client.call_tool(launcher_tool_name, {"model_name": model, "port": port})
+                else:
+                    logger.debug(f"Launcher client '{launcher_client_name}' not found. Skipping auto-launch.")
         except Exception as e:
             logger.error(f"Auto-launch failed: {e}")
         logger.info("✅ Orchestrator: Hybrid-Workflow engine ready.")
