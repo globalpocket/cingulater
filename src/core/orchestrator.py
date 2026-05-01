@@ -306,7 +306,7 @@ class Orchestrator:
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
         self.system_prompt_path = self.project_root / ".brwn" / "system_prompt.md"
-        self.mcp_config_path = self.project_root / "mcp_config.json"
+        self.mcp_config_path = self.project_root / "brownie_core_mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
