@@ -232,7 +232,7 @@ class ReflectionNode:
 # 5. Gateway Client
 # ==========================================
 class GatewayClient:
-    def __init__(self, command: str = "mcp-gateway", args: Optional[List[str]] = None):
+    def __init__(self, command: str = "mcp-routing-gateway", args: Optional[List[str]] = None):
         self.command = command
         self.args = args or []
         self.session: Optional[ClientSession] = None
@@ -313,7 +313,7 @@ class Orchestrator:
         self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir, orchestrator=self)
         self.llm_client = OpenAILLMClient()
         
-        gateway_cmd = "mcp-gateway"
+        gateway_cmd = "mcp-routing-gateway"
         gateway_args = []
         if self.mcp_config_path.exists():
             try:

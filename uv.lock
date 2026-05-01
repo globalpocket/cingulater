@@ -862,8 +862,8 @@ wheels = [
 
 [[package]]
 name = "mcp-routing-gateway"
-version = "0.2.2"
-source = { git = "https://github.com/globalpocket/mcp-routing-gateway.git#8120160011ccba1d10e26ef5ba0205d7ddf0cfa4" }
+version = "0.2.4"
+source = { git = "https://github.com/globalpocket/mcp-routing-gateway.git#4fad4d862a6f3487b98718084a91e7bedb3d9f41" }
 dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
