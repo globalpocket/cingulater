@@ -62,7 +62,7 @@ def test_chat_completions_list_content(test_client):
     
     assert response.status_code == 200
     call_args = mock_orch.process_workflow.call_args[0][0]
-    assert call_args["messages"][0]["content"] == "Part 1\nPart 2"
+    assert call_args.messages[0].content == "Part 1\nPart 2"
 
 def test_chat_completions_tool_calls(test_client):
     client, mock_orch = test_client
@@ -224,6 +224,6 @@ def test_chat_completions_proxies_full_request(test_client):
     })
     
     assert response.status_code == 200
-    sent_data = mock_orch.process_workflow.call_args[0][0]
-    assert "tools" in sent_data
-    assert sent_data["tools"][0]["function"]["name"] == "test"
+    call_args = mock_orch.process_workflow.call_args[0][0]
+    assert call_args.tools is not None
+    assert call_args.tools[0].function["name"] == "test"

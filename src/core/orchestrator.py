@@ -22,6 +22,7 @@ import mcp.types as types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
+from core.schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.events import (
     AgentEvent,
     TextDeltaEvent,
@@ -111,7 +112,7 @@ class Router:
         self.orchestrator = orchestrator
         logger.info("Intent Reranker Router initialized.")
 
-    async def route(self, messages: List[Dict[str, Any]]) -> str:
+    async def route(self, messages: List[InternalMessage]) -> str:
         actors = []
         documents = []
         
@@ -133,10 +134,8 @@ class Router:
         recent_msgs = messages[-5:]
         history_text = ""
         for m in recent_msgs:
-            role = m.get("role", "unknown")
-            content = m.get("content", "")
-            if isinstance(content, list):
-                content = " ".join([part.get("text", "") for part in content if isinstance(part, dict)])
+            role = m.role
+            content = m.content or ""
             if content and len(content) > 500:
                 content = content[:500] + " ...[truncated]"
             history_text += f"[{role}]: {content}\n"
@@ -307,15 +306,14 @@ class Orchestrator:
             
         return "Unknown intent"
 
-    async def process_workflow(self, request_data: Dict[str, Any]) -> AsyncGenerator[AgentEvent, None]:
-        messages = request_data.get("messages", [])
-        actor = await self.router.route(messages)
+    async def process_workflow(self, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
+        actor = await self.router.route(request.messages)
         logger.info(f"Selected Actor: {actor}")
         
-        async for event in self._run_workflow(actor, request_data):
+        async for event in self._run_workflow(actor, request):
             yield event
 
-    async def _run_workflow(self, actor: str, request_data: Dict[str, Any]) -> AsyncGenerator[AgentEvent, None]:
+    async def _run_workflow(self, actor: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
         workflow_path = self.workflows_dir / f"{actor}.yaml"
         
         if not workflow_path.exists():
@@ -344,7 +342,7 @@ class Orchestrator:
             endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
             
             if step.get("type") == "llm_chat":
-                async for event in self._call_llm(model_key, endpoint, request_data):
+                async for event in self._call_llm(model_key, endpoint, request):
                     if isinstance(event, WorkflowFinishEvent):
                         final_reason = event.finish_reason
                     else:
@@ -360,34 +358,27 @@ class Orchestrator:
         
         yield WorkflowFinishEvent(finish_reason=final_reason)
 
-    async def _call_llm(self, model_key: str, endpoint: str, request_data: Dict[str, Any]) -> AsyncGenerator[AgentEvent, None]:
-        payload = request_data.copy()
-        payload["model"] = self.settings.llm.models.get(model_key, "default")
-        
-        if not payload.get("max_tokens"):
-            payload["max_tokens"] = 8192
-            
-        payload["stream"] = True
+    async def _call_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
+        payload = request.model_copy(deep=True)
+        payload.model = self.settings.llm.models.get(model_key, "default")
+        payload.stream = True
             
         available_tools_dict = {
-            t.get("function", {}).get("name"): t.get("function", {})
-            for t in request_data.get("tools", []) 
-            if isinstance(t, dict) and t.get("function")
+            t.function.get("name"): t.function
+            for t in (request.tools or []) 
+            if t.function and t.function.get("name")
         }
         available_tool_names = list(available_tools_dict.keys())
         
-        messages = list(payload.get("messages", []))
-        if messages and messages[0]["role"] == "system":
-            new_sys = dict(messages[0])
-            new_sys["content"] = self.system_prompt + "\n\n" + new_sys.get("content", "")
-            messages[0] = new_sys
+        if payload.messages and payload.messages[0].role == "system":
+            payload.messages[0].content = self.system_prompt + "\n\n" + (payload.messages[0].content or "")
         else:
-            messages.insert(0, {"role": "system", "content": self.system_prompt})
-        payload["messages"] = messages
+            payload.messages.insert(0, InternalMessage(role="system", content=self.system_prompt))
 
         try:
             async with httpx.AsyncClient(timeout=self.settings.llm.timeout_sec) as client:
-                async with client.stream("POST", f"{endpoint}/chat/completions", json=payload) as resp:
+                json_payload = payload.model_dump(exclude_none=True)
+                async with client.stream("POST", f"{endpoint}/chat/completions", json=json_payload) as resp:
                     if resp.status_code != 200:
                         error_text = await resp.aread()
                         yield ErrorEvent(message=f"LLM Error {resp.status_code}: {error_text.decode('utf-8', errors='ignore')}")

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from core.orchestrator import Orchestrator, Settings, Router, GatewayClient, IntentRerankerService
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
+from core.schema import InternalAgentRequest, InternalMessage, InternalTool
 import mcp.types as types
 
 def test_intent_reranker_service():
@@ -60,7 +61,10 @@ async def test_router_route():
         mock_orch._extract_intent = AsyncMock(return_value="Chat with user")
         
         router = Router(settings, Path("dummy"), orchestrator=mock_orch)
-        selected = await router.route([{"role": "user", "content": "Hello"}])
+        
+        # InternalMessageを使用して引数を構築
+        messages = [InternalMessage(role="user", content="Hello")]
+        selected = await router.route(messages)
         
         assert selected == "interlocutor"
         mock_orch._extract_intent.assert_called_once()
@@ -138,7 +142,10 @@ async def test_run_workflow_interlocutor(orchestrator):
         with patch("pathlib.Path.exists", return_value=True):
             with patch("yaml.safe_load", return_value=yaml_data):
                 with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
-                    events = [e async for e in orchestrator.process_workflow({"messages": [{"role": "user", "content": "Hi"}]})]
+                    
+                    req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Hi")])
+                    events = [e async for e in orchestrator.process_workflow(req)]
+                    
                     assert len(events) == 2
                     assert isinstance(events[0], TextDeltaEvent)
                     assert events[0].content == "Hello"
@@ -156,7 +163,9 @@ async def test_run_workflow_agent_task(orchestrator, mock_gateway):
                 with patch("core.orchestrator.OpenAIServerModel"):
                     with patch("core.orchestrator.ToolCallingAgent") as mock_agent:
                         mock_agent.return_value.run.return_value = "Task Finished"
-                        events = [e async for e in orchestrator.process_workflow({"messages": [{"role": "user", "content": "Fix bug"}]})]
+                        
+                        req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Fix bug")])
+                        events = [e async for e in orchestrator.process_workflow(req)]
                         
                         assert len(events) == 3
                         assert isinstance(events[0], TextDeltaEvent) and "[Step 1 Start]" in events[0].content
@@ -171,14 +180,16 @@ async def test_workflow_missing_model_key(orchestrator):
     with patch("pathlib.Path.exists", return_value=True):
         with patch("builtins.open", MagicMock()):
             with patch("yaml.safe_load", return_value=yaml_data):
-                events = [e async for e in orchestrator.process_workflow({"messages": [{"role": "user", "content": "Fix bug"}]})]
+                req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Fix bug")])
+                events = [e async for e in orchestrator.process_workflow(req)]
                 assert len(events) == 1
                 assert isinstance(events[0], ErrorEvent)
 
 @pytest.mark.asyncio
 async def test_workflow_file_not_found(orchestrator):
     with patch("pathlib.Path.exists", return_value=False):
-        events = [e async for e in orchestrator.process_workflow({"messages": [{"role": "user", "content": "Hi"}]})]
+        req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Hi")])
+        events = [e async for e in orchestrator.process_workflow(req)]
         assert len(events) == 1
         assert isinstance(events[0], ErrorEvent)
 
@@ -212,11 +223,11 @@ async def test_call_llm_stream_reflection_dynamic(orchestrator):
         # モックを追加して、ネットワーク呼び出しをスキップさせる
         orchestrator._extract_intent = AsyncMock(return_value="Conclude interaction")
 
-        events = [e async for e in orchestrator._call_llm("interlocutor", "http://dummy", {
-            "messages": [{"role": "user", "content": "Hi"}],
-            "tools": [{
-                "type": "function", 
-                "function": {
+        req = InternalAgentRequest(
+            messages=[InternalMessage(role="user", content="Hi")],
+            tools=[InternalTool(
+                type="function",
+                function={
                     "name": "custom_finish_tool",
                     "description": "Concludes the interaction",
                     "parameters": {
@@ -224,8 +235,10 @@ async def test_call_llm_stream_reflection_dynamic(orchestrator):
                         "required": ["summary", "is_done"]
                     }
                 }
-            }]
-        })]
+            )]
+        )
+
+        events = [e async for e in orchestrator._call_llm("interlocutor", "http://dummy", req)]
         
         assert len(events) == 4
         assert isinstance(events[0], TextDeltaEvent) and events[0].content == "Hello"
@@ -264,16 +277,18 @@ async def test_call_llm_stream_fallback_rewrite(orchestrator):
     mock_stream_ctx.__aenter__.return_value = mock_resp
     
     with patch("httpx.AsyncClient.stream", return_value=mock_stream_ctx):
-        events = [e async for e in orchestrator._call_llm("interlocutor", "http://dummy", {
-            "messages": [{"role": "user", "content": "Hi"}],
-            "tools": [{
-                "type": "function", 
-                "function": {
+        req = InternalAgentRequest(
+            messages=[InternalMessage(role="user", content="Hi")],
+            tools=[InternalTool(
+                type="function",
+                function={
                     "name": "valid_client_tool",
                     "parameters": {"properties": {"msg": {"type": "string"}}, "required": ["msg"]}
                 }
-            }]
-        })]
+            )]
+        )
+
+        events = [e async for e in orchestrator._call_llm("interlocutor", "http://dummy", req)]
         
         assert len(events) == 2
         assert isinstance(events[0], SystemToolCallEvent) and events[0].tool_name == "valid_client_tool"

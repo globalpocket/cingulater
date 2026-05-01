@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.orchestrator import Orchestrator
+from core.schema import InternalAgentRequest, InternalMessage, InternalToolCall, InternalFunctionCall, InternalTool
 from core.events import (
     TextDeltaEvent,
     ToolCallStartEvent,
@@ -47,7 +48,9 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "brownie-v2"
     messages: List[ChatMessage]
+    tools: Optional[List[Dict[str, Any]]] = None
     stream: bool = False
+    max_tokens: Optional[int] = None
 
     model_config = {
         "extra": "allow"
@@ -111,15 +114,46 @@ async def chat_completions(request: ChatCompletionRequest):
     if not orchestrator:
         raise HTTPException(status_code=503, detail="Brownie Engine is not initialized")
 
-    request_data = request.model_dump(exclude_none=True)
-    
-    for m in request_data.get("messages", []):
-        if isinstance(m.get("content"), list):
+    internal_messages = []
+    for m in request.messages:
+        content = m.content
+        if isinstance(content, list):
             text_parts = []
-            for part in m["content"]:
+            for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
                     text_parts.append(part.get("text", ""))
-            m["content"] = "\n".join(text_parts)
+            content = "\n".join(text_parts)
+        
+        tool_calls = None
+        if m.tool_calls:
+            tool_calls = [
+                InternalToolCall(
+                    id=tc.id,
+                    type=tc.type,
+                    function=InternalFunctionCall(name=tc.function.name, arguments=tc.function.arguments)
+                ) for tc in m.tool_calls
+            ]
+
+        internal_messages.append(InternalMessage(
+            role=m.role,
+            content=content,
+            tool_calls=tool_calls,
+            name=m.name,
+            tool_call_id=m.tool_call_id
+        ))
+
+    internal_tools = None
+    if request.tools:
+        internal_tools = [InternalTool(**t) for t in request.tools]
+
+    internal_req = InternalAgentRequest(
+        model=request.model,
+        messages=internal_messages,
+        tools=internal_tools,
+        stream=request.stream,
+        max_tokens=request.max_tokens if request.max_tokens is not None else 8192,
+        **(request.model_extra or {})
+    )
     
     model_name = request.model
 
@@ -135,7 +169,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 
                 is_first_chunk = True
                 
-                async for event in orchestrator.process_workflow(request_data):
+                async for event in orchestrator.process_workflow(internal_req):
                     chunk = base_chunk.copy()
                     
                     if isinstance(event, TextDeltaEvent):
@@ -172,7 +206,6 @@ async def chat_completions(request: ChatCompletionRequest):
                         yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, SystemToolCallEvent):
-                        # API仕様（OpenAI互換）に合わせて、システム発行イベントをStart(名前)とDelta(引数)の2チャンクに分割し、IDフォーマットを保証する
                         client_id = _ensure_openai_id(event.id)
                         start_delta = {
                             "tool_calls": [{
@@ -235,7 +268,7 @@ async def chat_completions(request: ChatCompletionRequest):
         error_message = ""
         
         try:
-            async for event in orchestrator.process_workflow(request_data):
+            async for event in orchestrator.process_workflow(internal_req):
                 if isinstance(event, TextDeltaEvent):
                     full_content += event.content
                 elif isinstance(event, ToolCallStartEvent):
