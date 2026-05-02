@@ -31,6 +31,12 @@ from core.events import (
     ErrorEvent
 )
 from core.llm_client import OpenAILLMClient
+from core.interceptors import (
+    InterceptorPipeline,
+    SystemPromptInterceptor,
+    ToolHallucinationInterceptor,
+    ReflectionInterceptor
+)
 
 
 # ==========================================
@@ -44,7 +50,6 @@ class LLMSettings(BaseModel):
     interlocutor_endpoint: str = Field(default="http://localhost:8080/v1")
     coder_endpoint: str = Field(default="http://localhost:8081/v1")
     timeout_sec: int = Field(default=120)
-    # 動的なランチャー設定（Strategy パターンのための注入ポイント）
     launcher_client: Optional[str] = Field(default="mlx-launcher")
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
@@ -92,7 +97,6 @@ class Router:
                     name = wf_data.get("name", p.stem)
                     desc = wf_data.get("description", f"Expert named {name}")
                     actors.append(name)
-                    # 余計な接頭辞を入れず、純粋なDescriptionを比較対象にする
                     documents.append(desc)
             except Exception as e:
                 logger.error(f"Failed to load workflow {p}: {e}")
@@ -109,11 +113,9 @@ class Router:
                 content = content[:500] + " ...[truncated]"
             history_text += f"[{role}]: {content}\n"
 
-        # LLMを用いて会話履歴からIntentを抽出
         intent = await self.orchestrator._extract_intent(history_text)
         
         try:
-            # mcp-reranker クライアントを取得してツールを実行
             reranker_client = self.orchestrator.mcp_clients.get("mcp-reranker")
             if reranker_client:
                 result_str = await reranker_client.call_tool(
@@ -142,82 +144,7 @@ class Router:
 
 
 # ==========================================
-# 3. Reflection Node
-# ==========================================
-class ReflectionNode:
-    """エージェントの自律性（Self-Correction）を担う評価・反芻パイプライン"""
-    def __init__(self, orchestrator: "Orchestrator"):
-        self.orchestrator = orchestrator
-
-    async def evaluate(self, full_content: str, available_tools: List[InternalTool]) -> Optional[SystemToolCallEvent]:
-        if not available_tools or not full_content:
-            return None
-
-        available_tools_dict = {
-            t.function.get("name"): t.function
-            for t in available_tools
-            if t.function and t.function.get("name")
-        }
-        if not available_tools_dict:
-            return None
-
-        available_tool_names = list(available_tools_dict.keys())
-
-        logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
-        
-        intent = await self.orchestrator._extract_intent(full_content[-1000:])
-        docs = []
-        for tn in available_tool_names:
-            desc = available_tools_dict[tn].get("description", "No description provided")
-            docs.append(desc)
-        
-        selected_tool = available_tool_names[0]
-        try:
-            reranker_client = self.orchestrator.mcp_clients.get("mcp-reranker")
-            if reranker_client:
-                result_str = await reranker_client.call_tool(
-                    "rerank_documents", 
-                    {"query": intent, "documents": docs}
-                )
-                results = json.loads(result_str)
-                if results:
-                    best_doc = results[0]["document"]
-                    best_idx = docs.index(best_doc)
-                    selected_tool = available_tool_names[best_idx]
-                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
-            else:
-                logger.warning("[BROWNIE DEBUG] mcp-reranker client not connected. Using default first tool.")
-        except Exception as e:
-            logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
-            
-        tool_schema = available_tools_dict[selected_tool]
-        props = tool_schema.get("parameters", {}).get("properties", {})
-        reqs = tool_schema.get("parameters", {}).get("required", [])
-        
-        args = {}
-        for req in reqs:
-            req_lower = req.lower()
-            if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response"]):
-                args[req] = full_content.strip()
-            else:
-                ptype = props.get(req, {}).get("type", "string")
-                if ptype == "array": args[req] = []
-                elif ptype == "object": args[req] = {}
-                elif ptype == "boolean": args[req] = False
-                elif ptype in ["number", "integer"]: args[req] = 0
-                else: args[req] = full_content.strip()
-        
-        tc_id = f"call_ref_{int(time.time())}"
-        return SystemToolCallEvent(
-            index=0, 
-            id=tc_id, 
-            tool_name=selected_tool,
-            arguments=args
-        )
-
-
-# ==========================================
-# 4. Gateway Client
+# 3. Gateway Client
 # ==========================================
 class GatewayClient:
     def __init__(self, command: str = "mcp-routing-gateway", args: Optional[List[str]] = None):
@@ -268,7 +195,7 @@ class GatewayClient:
 
 
 # ==========================================
-# 5. Core Orchestrator
+# 4. Core Orchestrator
 # ==========================================
 class MCPVirtualTool(Tool):
     def __init__(self, mcp_tool_def, mcp_client: GatewayClient, loop):
@@ -284,7 +211,6 @@ class MCPVirtualTool(Tool):
         super().__init__()
 
     def forward(self, **kwargs):
-        # 割り当てられた特定のmcp_client経由でツールを実行する
         future = asyncio.run_coroutine_threadsafe(self.mcp_client.call_tool(self.name, kwargs), self._loop)
         return future.result()
 
@@ -302,6 +228,13 @@ class Orchestrator:
         self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir, orchestrator=self)
         self.llm_client = OpenAILLMClient()
         
+        # インターセプターパイプラインの登録
+        self.pipeline = InterceptorPipeline([
+            SystemPromptInterceptor(),
+            ToolHallucinationInterceptor(),
+            ReflectionInterceptor()
+        ])
+        
         self.mcp_clients: Dict[str, GatewayClient] = {}
         
         if self.mcp_config_path.exists():
@@ -312,7 +245,6 @@ class Orchestrator:
                         cmd = config.get("command")
                         args = config.get("args", [])
                         
-                        # 環境変数による上書き (mcp-routing-gateway のみ互換性維持のため適用)
                         if name == "mcp-routing-gateway":
                             cmd = os.getenv("BROWNIE_GATEWAY_CMD", cmd)
                             
@@ -321,19 +253,16 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Failed to load brownie_core_mcp_config.json: {e}")
 
-        # どの設定も読み込めなかった場合のフォールバック
         if not self.mcp_clients:
             cmd = os.getenv("BROWNIE_GATEWAY_CMD", "mcp-routing-gateway")
             self.mcp_clients["mcp-routing-gateway"] = GatewayClient(command=cmd, args=[])
 
     async def start(self):
-        # 登録されている全クライアントを一括起動
         for name, client in self.mcp_clients.items():
             logger.info(f"Starting MCP Client: {name}")
             await client.start()
             
         try:
-            # ランチャーの抽象化：設定から対象クライアントとツール名を取得
             launcher_client_name = self.settings.llm.launcher_client
             launcher_tool_name = self.settings.llm.launcher_tool
             
@@ -408,7 +337,6 @@ class Orchestrator:
             yield ErrorEvent(message=f"Workflow parse error: {e}")
             return
 
-        # 全MCPクライアントからツールを取得し、実行担当クライアントごとラッピングして統合
         mcp_tools = []
         loop = asyncio.get_running_loop()
         for name, client in self.mcp_clients.items():
@@ -431,33 +359,15 @@ class Orchestrator:
             endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
             
             if step.get("type") == "llm_chat":
-                full_content = ""
-                has_tool_calls = False
-
                 async for event in self._call_llm(model_key, endpoint, request):
-                    if isinstance(event, TextDeltaEvent):
-                        full_content += event.content
-                        yield event
-                    elif isinstance(event, (ToolCallStartEvent, SystemToolCallEvent)):
-                        has_tool_calls = True
-                        yield event
-                    elif isinstance(event, WorkflowFinishEvent):
+                    if isinstance(event, WorkflowFinishEvent):
                         final_reason = event.finish_reason
                     else:
                         yield event
-                
-                # パイプライン化された Reflection
-                if full_content and not has_tool_calls and request.tools:
-                    reflection_node = ReflectionNode(self)
-                    ref_event = await reflection_node.evaluate(full_content, request.tools)
-                    if ref_event:
-                        yield ref_event
-                        final_reason = "tool_calls"
             
             elif step.get("type") == "agent_task":
                 yield TextDeltaEvent(content=f"\n[Step {i+1} Start]\n")
                 agent_model = OpenAIServerModel(model_id=self.settings.llm.models.get(model_key), api_base=endpoint, api_key="none")
-                # ✅ 設定から max_retries を取得し、エージェントの試行上限として渡す
                 max_steps = self.settings.agent.max_retries
                 agent = ToolCallingAgent(tools=mcp_tools, model=agent_model, max_steps=max_steps)
                 result = await asyncio.to_thread(agent.run, step.get("description", ""))
@@ -467,28 +377,20 @@ class Orchestrator:
         yield WorkflowFinishEvent(finish_reason=final_reason)
 
     async def _call_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        payload = request.model_copy(deep=True)
+        processed_request = await self.pipeline.pre_process(request.model_copy(deep=True), self)
+        raw_stream = self._raw_stream_llm(model_key, endpoint, processed_request)
+        async for event in self.pipeline.post_process_stream(raw_stream, processed_request, self):
+            yield event
+
+    async def _raw_stream_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
+        payload = request
         payload.model = self.settings.llm.models.get(model_key, "default")
         payload.stream = True
-            
-        available_tools_dict = {
-            t.function.get("name"): t.function
-            for t in (request.tools or []) 
-            if t.function and t.function.get("name")
-        }
-        available_tool_names = list(available_tools_dict.keys())
-        
-        if payload.messages and payload.messages[0].role == "system":
-            payload.messages[0].content = self.system_prompt + "\n\n" + (payload.messages[0].content or "")
-        else:
-            payload.messages.insert(0, InternalMessage(role="system", content=self.system_prompt))
 
         try:
             json_payload = payload.model_dump(exclude_none=True)
-            
             final_finish_reason = "stop"
             
-            # OpenAILLMClientを使って標準化チャンクを処理する
             async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
                 if chunk.content:
                     yield TextDeltaEvent(content=chunk.content)
@@ -499,45 +401,6 @@ class Orchestrator:
                         args_str = tc.arguments or ""
                         tc_id = tc.id or f"call_{tc.index}"
                         
-                        # ハルシネーション対策（存在しないツール名を有効なものに強制書き換え）
-                        if func_name and func_name not in available_tool_names and available_tool_names:
-                            fallback_name = available_tool_names[0]
-                            logger.warning(f"[BROWNIE DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
-                            try:
-                                args = json.loads(args_str) if args_str else {}
-                                text_val = ""
-                                for v in args.values():
-                                    if isinstance(v, str) and len(v) > len(text_val):
-                                        text_val = v
-                                if not text_val: text_val = str(args)
-                                
-                                tool_schema = available_tools_dict[fallback_name]
-                                fallback_props = tool_schema.get("parameters", {}).get("properties", {})
-                                fallback_required = tool_schema.get("parameters", {}).get("required", [])
-                                
-                                fallback_param_name = "text"
-                                for pref in ["result", "question", "message", "content", "response"]:
-                                    if pref in fallback_props:
-                                        fallback_param_name = pref
-                                        break
-                                else:
-                                    if fallback_props: fallback_param_name = list(fallback_props.keys())[0]
-
-                                new_args = {fallback_param_name: text_val}
-                                for req in fallback_required:
-                                    if req != fallback_param_name:
-                                        ptype = fallback_props.get(req, {}).get("type", "string")
-                                        if ptype == "array": new_args[req] = []
-                                        elif ptype == "object": new_args[req] = {}
-                                        elif ptype == "boolean": new_args[req] = False
-                                        elif ptype in ["number", "integer"]: new_args[req] = 0
-                                        else: new_args[req] = ""
-                                
-                                yield SystemToolCallEvent(index=tc.index, id=tc_id, tool_name=fallback_name, arguments=new_args)
-                                continue
-                            except Exception:
-                                pass
-                                
                         if func_name:
                             yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
                         if args_str:
