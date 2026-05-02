@@ -94,9 +94,10 @@ class Router:
         self.orchestrator = orchestrator
         logger.info("Intent Reranker Router initialized.")
 
-    async def route(self, messages: List[InternalMessage]) -> str:
+    async def route(self, messages: List[InternalMessage]) -> tuple[str, list]:
         actors = []
         documents = []
+        workflows = {}
         
         # コアワークフローとユーザーワークフローのパスを結合
         workflow_paths = [self.orchestrator.project_root / "src" / "core" / "interlocutor.yaml"]
@@ -110,16 +111,21 @@ class Router:
                     wf_data = yaml.safe_load(f) or {}
                     name = wf_data.get("name", p.stem)
                     desc = wf_data.get("description", f"Expert named {name}")
+                    steps = wf_data.get("steps", [])
                     
                     # 重複登録を防止（ユーザー側とコア側で重複した場合コア優先）
                     if name not in actors:
                         actors.append(name)
                         documents.append(desc)
+                        workflows[name] = steps
             except Exception as e:
                 logger.error(f"Failed to load workflow {p}: {e}")
                 
+        default_actor = "interlocutor"
+        default_steps = workflows.get(default_actor, [])
+
         if not actors:
-            return "interlocutor"
+            return default_actor, default_steps
             
         recent_msgs = messages[-5:]
         history_text = ""
@@ -147,17 +153,17 @@ class Router:
                     selected_actor = actors[best_idx]
                     
                     logger.info(f"Router selected '{selected_actor}' with score {results[0]['score']:.4f} (Intent: {intent})")
-                    return selected_actor
+                    return selected_actor, workflows.get(selected_actor, [])
                 else:
                     logger.warning("mcp-reranker returned empty results. Defaulting to interlocutor.")
-                    return "interlocutor"
+                    return default_actor, default_steps
             else:
                 logger.warning("mcp-reranker client not connected. Defaulting to interlocutor.")
-                return "interlocutor"
+                return default_actor, default_steps
             
         except Exception as e:
             logger.error(f"Router Reranker Error: {e}. Defaulting to interlocutor.")
-            return "interlocutor"
+            return default_actor, default_steps
 
 
 # ==========================================
@@ -343,10 +349,10 @@ class Orchestrator:
         return "Unknown intent"
 
     async def process_workflow(self, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        actor = await self.router.route(request.messages)
+        actor, workflow_steps = await self.router.route(request.messages)
         logger.info(f"Selected Actor: {actor}")
         
-        async for event in self.workflow_pipeline.process(actor, request, self, self._raw_run_workflow):
+        async for event in self.workflow_pipeline.process(actor, request, self, self._raw_run_workflow, workflow_steps=workflow_steps):
             yield event
 
     async def _raw_run_workflow(self, actor: str, request: InternalAgentRequest, **kwargs) -> AsyncGenerator[AgentEvent, None]:

@@ -23,8 +23,8 @@ async def test_router_route():
         mock_glob.return_value = [mock_path1]
         
         mock_yaml_load.side_effect = [
-            {"name": "interlocutor", "description": "Chat with user"},
-            {"name": "coder", "description": "Write code"}
+            {"name": "interlocutor", "description": "Chat with user", "steps": [{"type": "llm_chat"}]},
+            {"name": "coder", "description": "Write code", "steps": [{"type": "agent_task"}]}
         ]
         
         mock_orch = MagicMock()
@@ -42,9 +42,10 @@ async def test_router_route():
         router = Router(settings, Path("dummy"), orchestrator=mock_orch)
         
         messages = [InternalMessage(role="user", content="Hello")]
-        selected = await router.route(messages)
+        selected_actor, steps = await router.route(messages)
         
-        assert selected == "interlocutor"
+        assert selected_actor == "interlocutor"
+        assert steps == [{"type": "llm_chat"}]
         mock_orch._extract_intent.assert_called_once()
         
         # rerank_documents ツールが正しく呼ばれたか検証 (要素の順序は担保)
@@ -67,7 +68,8 @@ def mock_gateway():
 def orchestrator(mock_gateway):
     with patch("pathlib.Path.exists", return_value=False):
         o = Orchestrator("dummy.yaml")
-        o.router.route = AsyncMock(return_value="interlocutor")
+        # 戻り値をタプル (actor, steps) に変更
+        o.router.route = AsyncMock(return_value=("interlocutor", []))
         # テストのためにダミーの mlx-launcher クライアントを注入する
         o.mcp_clients["mlx-launcher"] = mock_gateway
         return o
@@ -117,30 +119,27 @@ async def test_run_workflow_interlocutor(orchestrator):
         
     orchestrator.llm_client.stream_chat = mock_stream_chat
 
-    yaml_data = {"name": "interlocutor", "steps": [{"type": "llm_chat", "model_key": "interlocutor"}]}
+    # Routerからの戻り値をモック化
+    orchestrator.router.route = AsyncMock(return_value=(
+        "interlocutor", [{"type": "llm_chat", "model_key": "interlocutor"}]
+    ))
     
-    with patch("builtins.open", MagicMock()), \
-         patch("pathlib.Path.exists", return_value=True), \
-         patch("yaml.safe_load", return_value=yaml_data):
-        
-        req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Hi")])
-        events = [e async for e in orchestrator.process_workflow(req)]
-        
-        assert len(events) == 2
-        assert isinstance(events[0], TextDeltaEvent)
-        assert events[0].content == "Hello"
-        assert isinstance(events[1], WorkflowFinishEvent)
-        assert events[1].finish_reason == "stop"
+    req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Hi")])
+    events = [e async for e in orchestrator.process_workflow(req)]
+    
+    assert len(events) == 2
+    assert isinstance(events[0], TextDeltaEvent)
+    assert events[0].content == "Hello"
+    assert isinstance(events[1], WorkflowFinishEvent)
+    assert events[1].finish_reason == "stop"
 
 @pytest.mark.asyncio
 async def test_run_workflow_agent_task(orchestrator, mock_gateway):
-    orchestrator.router.route = AsyncMock(return_value="coder")
-    yaml_data = {"name": "coder", "steps": [{"type": "agent_task", "description": "fix it", "model_key": "coder"}]}
+    orchestrator.router.route = AsyncMock(return_value=(
+        "coder", [{"type": "agent_task", "description": "fix it", "model_key": "coder"}]
+    ))
 
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("builtins.open", MagicMock()), \
-         patch("yaml.safe_load", return_value=yaml_data), \
-         patch("core.orchestrator.OpenAIServerModel"), \
+    with patch("core.orchestrator.OpenAIServerModel"), \
          patch("core.orchestrator.ToolCallingAgent") as mock_agent:
         
         mock_agent.return_value.run.return_value = "Task Finished"
@@ -155,25 +154,25 @@ async def test_run_workflow_agent_task(orchestrator, mock_gateway):
 
 @pytest.mark.asyncio
 async def test_workflow_missing_model_key(orchestrator):
-    orchestrator.router.route = AsyncMock(return_value="coder")
-    yaml_data = {"name": "coder", "steps": [{"type": "agent_task", "description": "fix it"}]}
+    orchestrator.router.route = AsyncMock(return_value=(
+        "coder", [{"type": "agent_task", "description": "fix it"}]
+    ))
 
-    with patch("pathlib.Path.exists", return_value=True), \
-         patch("builtins.open", MagicMock()), \
-         patch("yaml.safe_load", return_value=yaml_data):
-        
-        req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Fix bug")])
-        events = [e async for e in orchestrator.process_workflow(req)]
-        assert len(events) == 1
-        assert isinstance(events[0], ErrorEvent)
+    req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Fix bug")])
+    events = [e async for e in orchestrator.process_workflow(req)]
+    
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
 
 @pytest.mark.asyncio
 async def test_workflow_file_not_found(orchestrator):
-    with patch("pathlib.Path.exists", return_value=False):
-        req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Hi")])
-        events = [e async for e in orchestrator.process_workflow(req)]
-        assert len(events) == 1
-        assert isinstance(events[0], ErrorEvent)
+    # fixture で empty な steps ("interlocutor", []) が返る設定になっているためエラーになる
+    req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Hi")])
+    events = [e async for e in orchestrator.process_workflow(req)]
+    
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert "empty or missing" in events[0].message
 
 @pytest.mark.asyncio
 async def test_run_workflow_with_reflection(orchestrator):
@@ -185,55 +184,51 @@ async def test_run_workflow_with_reflection(orchestrator):
         yield StandardLLMChunk(finish_reason="stop")
         
     orchestrator.llm_client.stream_chat = mock_stream_chat
-    orchestrator.router.route = AsyncMock(return_value="interlocutor")
-
-    yaml_data = {"name": "interlocutor", "steps": [{"type": "llm_chat", "model_key": "interlocutor"}]}
     
-    with patch("builtins.open", MagicMock()), \
-         patch("pathlib.Path.exists", return_value=True), \
-         patch("yaml.safe_load", return_value=yaml_data):
-         
-        orchestrator._extract_intent = AsyncMock(return_value="Conclude interaction")
-        
-        # mcp-reranker のクライアントをモック
-        mock_reranker_client = AsyncMock()
-        mock_reranker_client.call_tool.return_value = json.dumps([
-            {"document": "Concludes the interaction", "score": 0.99}
-        ])
-        orchestrator.mcp_clients["mcp-reranker"] = mock_reranker_client
+    orchestrator.router.route = AsyncMock(return_value=(
+        "interlocutor", [{"type": "llm_chat", "model_key": "interlocutor"}]
+    ))
+    orchestrator._extract_intent = AsyncMock(return_value="Conclude interaction")
+    
+    # mcp-reranker のクライアントをモック
+    mock_reranker_client = AsyncMock()
+    mock_reranker_client.call_tool.return_value = json.dumps([
+        {"document": "Concludes the interaction", "score": 0.99}
+    ])
+    orchestrator.mcp_clients["mcp-reranker"] = mock_reranker_client
 
-        req = InternalAgentRequest(
-            messages=[InternalMessage(role="user", content="Hi")],
-            tools=[InternalTool(
-                type="function",
-                function={
-                    "name": "custom_finish_tool",
-                    "description": "Concludes the interaction",
-                    "parameters": {
-                        "properties": {"summary": {"type": "string"}, "is_done": {"type": "boolean"}},
-                        "required": ["summary", "is_done"]
-                    }
+    req = InternalAgentRequest(
+        messages=[InternalMessage(role="user", content="Hi")],
+        tools=[InternalTool(
+            type="function",
+            function={
+                "name": "custom_finish_tool",
+                "description": "Concludes the interaction",
+                "parameters": {
+                    "properties": {"summary": {"type": "string"}, "is_done": {"type": "boolean"}},
+                    "required": ["summary", "is_done"]
                 }
-            )]
-        )
+            }
+        )]
+    )
 
-        events = [e async for e in orchestrator.process_workflow(req)]
-        
-        assert len(events) == 4
-        assert isinstance(events[0], TextDeltaEvent) and events[0].content == "Hello"
-        assert isinstance(events[1], TextDeltaEvent) and events[1].content == " World"
-        # リフレクションによってツール呼び出しが自動生成される
-        assert isinstance(events[2], SystemToolCallEvent) and events[2].tool_name == "custom_finish_tool"
-        
-        assert events[2].arguments.get("summary") == "Hello World"
-        assert events[2].arguments.get("is_done") is False
-        assert isinstance(events[3], WorkflowFinishEvent) and events[3].finish_reason == "tool_calls"
-        
-        # MCPツール呼び出しを検証
-        mock_reranker_client.call_tool.assert_called_once_with(
-            "rerank_documents",
-            {"query": "Conclude interaction", "documents": ["Concludes the interaction"]}
-        )
+    events = [e async for e in orchestrator.process_workflow(req)]
+    
+    assert len(events) == 4
+    assert isinstance(events[0], TextDeltaEvent) and events[0].content == "Hello"
+    assert isinstance(events[1], TextDeltaEvent) and events[1].content == " World"
+    # リフレクションによってツール呼び出しが自動生成される
+    assert isinstance(events[2], SystemToolCallEvent) and events[2].tool_name == "custom_finish_tool"
+    
+    assert events[2].arguments.get("summary") == "Hello World"
+    assert events[2].arguments.get("is_done") is False
+    assert isinstance(events[3], WorkflowFinishEvent) and events[3].finish_reason == "tool_calls"
+    
+    # MCPツール呼び出しを検証
+    mock_reranker_client.call_tool.assert_called_once_with(
+        "rerank_documents",
+        {"query": "Conclude interaction", "documents": ["Concludes the interaction"]}
+    )
 
 @pytest.mark.asyncio
 async def test_call_llm_stream_fallback_rewrite(orchestrator):

@@ -335,21 +335,8 @@ class BaseWorkflowInterceptor:
 
 class WorkflowLoadInterceptor(BaseWorkflowInterceptor):
     async def pre_process(self, actor: str, request: InternalAgentRequest, orchestrator, **kwargs) -> dict:
-        core_workflow_path = orchestrator.project_root / "src" / "core" / f"{actor}.yaml"
-        user_workflow_path = orchestrator.workflows_dir / f"{actor}.yaml"
-        
-        if core_workflow_path.exists():
-            workflow_path = core_workflow_path
-        elif user_workflow_path.exists():
-            workflow_path = user_workflow_path
-        else:
-            raise FileNotFoundError(f"Workflow '{actor}' not found")
-        
-        try:
-            with open(workflow_path, "r", encoding="utf-8") as f:
-                kwargs["workflow_steps"] = yaml.safe_load(f).get("steps", [])
-        except Exception as e:
-            raise ValueError(f"Workflow parse error: {e}")
+        if "workflow_steps" not in kwargs or not kwargs["workflow_steps"]:
+            raise ValueError(f"Workflow steps for '{actor}' are empty or missing.")
         
         return kwargs
 
@@ -379,8 +366,7 @@ class WorkflowInterceptorPipeline:
     def __init__(self, interceptors: List[WorkflowInterceptor]):
         self.interceptors = interceptors
 
-    async def process(self, actor: str, request: InternalAgentRequest, orchestrator, core_func) -> AsyncGenerator[AgentEvent, None]:
-        kwargs = {}
+    async def process(self, actor: str, request: InternalAgentRequest, orchestrator, core_func, **kwargs) -> AsyncGenerator[AgentEvent, None]:
         try:
             for interceptor in self.interceptors:
                 kwargs = await interceptor.pre_process(actor, request, orchestrator, **kwargs)
