@@ -39,7 +39,11 @@ from core.interceptors import (
     ModelConfigurationInterceptor,
     ErrorHandlingInterceptor,
     LoggingInterceptor,
-    ContextLimitInterceptor
+    ContextLimitInterceptor,
+    WorkflowInterceptorPipeline,
+    WorkflowLoadInterceptor,
+    ToolFetchInterceptor,
+    WorkflowExecutionInterceptor
 )
 
 
@@ -232,8 +236,7 @@ class Orchestrator:
         self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir, orchestrator=self)
         self.llm_client = OpenAILLMClient()
         
-        # 拡張されたインターセプターパイプラインの登録
-        self.pipeline = InterceptorPipeline([
+        self.llm_pipeline = InterceptorPipeline([
             LoggingInterceptor(),
             ContextLimitInterceptor(max_messages=20),
             SystemPromptInterceptor(),
@@ -241,6 +244,12 @@ class Orchestrator:
             ToolHallucinationInterceptor(),
             ReflectionInterceptor(),
             ErrorHandlingInterceptor()
+        ])
+
+        self.workflow_pipeline = WorkflowInterceptorPipeline([
+            WorkflowLoadInterceptor(),
+            ToolFetchInterceptor(),
+            WorkflowExecutionInterceptor()
         ])
         
         self.mcp_clients: Dict[str, GatewayClient] = {}
@@ -328,32 +337,16 @@ class Orchestrator:
         actor = await self.router.route(request.messages)
         logger.info(f"Selected Actor: {actor}")
         
-        async for event in self._run_workflow(actor, request):
+        async for event in self.workflow_pipeline.process(actor, request, self, self._raw_run_workflow):
             yield event
 
-    async def _run_workflow(self, actor: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        workflow_path = self.workflows_dir / f"{actor}.yaml"
+    async def _raw_run_workflow(self, actor: str, request: InternalAgentRequest, **kwargs) -> AsyncGenerator[AgentEvent, None]:
+        steps = kwargs.get("workflow_steps", [])
         
-        if not workflow_path.exists():
-            yield ErrorEvent(message="Workflow not found")
-            return
-
-        try:
-            with open(workflow_path, "r", encoding="utf-8") as f:
-                steps = yaml.safe_load(f).get("steps", [])
-        except Exception as e:
-            yield ErrorEvent(message=f"Workflow parse error: {e}")
-            return
-
         mcp_tools = []
         loop = asyncio.get_running_loop()
-        for name, client in self.mcp_clients.items():
-            try:
-                tools = await client.fetch_tools()
-                for t in tools:
-                    mcp_tools.append(MCPVirtualTool(t, client, loop))
-            except Exception as e:
-                logger.warning(f"Failed to fetch tools from {name}: {e}")
+        for client, t_def in kwargs.get("fetched_mcp_tools", []):
+            mcp_tools.append(MCPVirtualTool(t_def, client, loop))
 
         final_reason = "stop"
 
@@ -385,11 +378,11 @@ class Orchestrator:
         yield WorkflowFinishEvent(finish_reason=final_reason)
 
     async def _call_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        processed_request = await self.pipeline.pre_process(
+        processed_request = await self.llm_pipeline.pre_process(
             request.model_copy(deep=True), self, model_key=model_key, endpoint=endpoint
         )
         raw_stream = self._raw_stream_llm(model_key, endpoint, processed_request)
-        async for event in self.pipeline.post_process_stream(
+        async for event in self.llm_pipeline.post_process_stream(
             raw_stream, processed_request, self, model_key=model_key, endpoint=endpoint
         ):
             yield event

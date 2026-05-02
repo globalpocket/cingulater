@@ -1,6 +1,7 @@
 # src/core/interceptors.py
 import json
 import time
+import yaml
 from typing import AsyncGenerator, Protocol, List, Optional
 from loguru import logger
 
@@ -15,6 +16,9 @@ from core.events import (
     ErrorEvent
 )
 
+# ==========================================
+# LLM Layer Interceptors
+# ==========================================
 class Interceptor(Protocol):
     async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
         ...
@@ -59,7 +63,6 @@ class LoggingInterceptor(BaseInterceptor):
             yield event
         logger.debug(f"[Interceptor] LLM Stream Finished. Approx Tokens: {token_count}, Tool Calls: {tool_calls}")
 
-
 class ContextLimitInterceptor(BaseInterceptor):
     def __init__(self, max_messages: int = 20):
         self.max_messages = max_messages
@@ -75,7 +78,6 @@ class ContextLimitInterceptor(BaseInterceptor):
             logger.warning(f"[Interceptor] Context limit exceeded. Truncated to {len(request.messages)} messages.")
         return request
 
-
 class SystemPromptInterceptor(BaseInterceptor):
     async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
         system_prompt = orchestrator.system_prompt
@@ -85,14 +87,12 @@ class SystemPromptInterceptor(BaseInterceptor):
             request.messages.insert(0, InternalMessage(role="system", content=system_prompt))
         return request
 
-
 class ModelConfigurationInterceptor(BaseInterceptor):
     async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
         model_key = kwargs.get("model_key", "default")
         request.model = orchestrator.settings.llm.models.get(model_key, "default")
         request.stream = True
         return request
-
 
 class ToolHallucinationInterceptor(BaseInterceptor):
     async def post_process_stream(
@@ -280,9 +280,8 @@ class ErrorHandlingInterceptor(BaseInterceptor):
             async for event in stream:
                 yield event
         except Exception as e:
-            logger.error(f"[Interceptor] Streaming Exception caught: {e}")
+            logger.error(f"[Interceptor] LLM Streaming Exception caught: {e}")
             yield ErrorEvent(message=f"Connection Error: {e}")
-
 
 class InterceptorPipeline:
     def __init__(self, interceptors: List[Interceptor]):
@@ -306,4 +305,87 @@ class InterceptorPipeline:
             current_stream = interceptor.post_process_stream(current_stream, request, orchestrator, **kwargs)
         
         async for event in current_stream:
+            yield event
+
+
+# ==========================================
+# Workflow Layer Interceptors
+# ==========================================
+class WorkflowInterceptor(Protocol):
+    async def pre_process(self, actor: str, request: InternalAgentRequest, orchestrator, **kwargs) -> dict:
+        ...
+
+    def post_process_stream(
+        self,
+        stream: AsyncGenerator[AgentEvent, None],
+        actor: str,
+        request: InternalAgentRequest,
+        orchestrator,
+        **kwargs
+    ) -> AsyncGenerator[AgentEvent, None]:
+        ...
+
+class BaseWorkflowInterceptor:
+    async def pre_process(self, actor: str, request: InternalAgentRequest, orchestrator, **kwargs) -> dict:
+        return kwargs
+
+    async def post_process_stream(self, stream, actor, request, orchestrator, **kwargs):
+        async for event in stream:
+            yield event
+
+class WorkflowLoadInterceptor(BaseWorkflowInterceptor):
+    async def pre_process(self, actor: str, request: InternalAgentRequest, orchestrator, **kwargs) -> dict:
+        workflow_path = orchestrator.workflows_dir / f"{actor}.yaml"
+        if not workflow_path.exists():
+            raise FileNotFoundError("Workflow not found")
+        
+        try:
+            with open(workflow_path, "r", encoding="utf-8") as f:
+                kwargs["workflow_steps"] = yaml.safe_load(f).get("steps", [])
+        except Exception as e:
+            raise ValueError(f"Workflow parse error: {e}")
+        
+        return kwargs
+
+class ToolFetchInterceptor(BaseWorkflowInterceptor):
+    async def pre_process(self, actor: str, request: InternalAgentRequest, orchestrator, **kwargs) -> dict:
+        fetched_tools = []
+        for name, client in orchestrator.mcp_clients.items():
+            try:
+                tools = await client.fetch_tools()
+                for t in tools:
+                    fetched_tools.append((client, t))
+            except Exception as e:
+                logger.warning(f"Failed to fetch tools from {name}: {e}")
+        kwargs["fetched_mcp_tools"] = fetched_tools
+        return kwargs
+
+class WorkflowExecutionInterceptor(BaseWorkflowInterceptor):
+    async def post_process_stream(self, stream, actor, request, orchestrator, **kwargs):
+        try:
+            async for event in stream:
+                yield event
+        except Exception as e:
+            logger.error(f"[Workflow Execution Error] {e}")
+            yield ErrorEvent(message=f"Workflow execution failed: {e}")
+
+class WorkflowInterceptorPipeline:
+    def __init__(self, interceptors: List[WorkflowInterceptor]):
+        self.interceptors = interceptors
+
+    async def process(self, actor: str, request: InternalAgentRequest, orchestrator, core_func) -> AsyncGenerator[AgentEvent, None]:
+        kwargs = {}
+        try:
+            for interceptor in self.interceptors:
+                kwargs = await interceptor.pre_process(actor, request, orchestrator, **kwargs)
+        except Exception as e:
+            yield ErrorEvent(message=str(e))
+            return
+
+        stream = core_func(actor, request, **kwargs)
+
+        for interceptor in reversed(self.interceptors):
+            stream = interceptor.post_process_stream(stream, actor, request, orchestrator, **kwargs)
+
+        async for event in stream:
             yield event
