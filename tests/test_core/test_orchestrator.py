@@ -241,7 +241,10 @@ async def test_call_llm_stream_fallback_rewrite(orchestrator):
     
     async def mock_stream_chat(*args, **kwargs):
         yield StandardLLMChunk(
-            tool_calls=[ToolCallChunk(index=0, id="call_1", name="hallucinated_tool", arguments='{"text": "Sure!"}')],
+            tool_calls=[ToolCallChunk(index=0, id="call_1", name="hallucinated_tool")]
+        )
+        yield StandardLLMChunk(
+            tool_calls=[ToolCallChunk(index=0, arguments='{"text": "Sure!"}')],
             finish_reason="tool_calls"
         )
         

@@ -11,36 +11,73 @@ from core.events import (
     ToolCallStartEvent,
     ToolCallDeltaEvent,
     SystemToolCallEvent,
-    WorkflowFinishEvent
+    WorkflowFinishEvent,
+    ErrorEvent
 )
 
 class Interceptor(Protocol):
-    async def pre_process(self, request: InternalAgentRequest, orchestrator) -> InternalAgentRequest:
+    async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
         ...
 
     async def post_process_stream(
         self, 
         stream: AsyncGenerator[AgentEvent, None], 
         request: InternalAgentRequest, 
-        orchestrator
+        orchestrator,
+        **kwargs
     ) -> AsyncGenerator[AgentEvent, None]:
         ...
 
 class BaseInterceptor:
-    async def pre_process(self, request: InternalAgentRequest, orchestrator) -> InternalAgentRequest:
+    async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
         return request
 
     async def post_process_stream(
         self, 
         stream: AsyncGenerator[AgentEvent, None], 
         request: InternalAgentRequest, 
-        orchestrator
+        orchestrator,
+        **kwargs
     ) -> AsyncGenerator[AgentEvent, None]:
         async for event in stream:
             yield event
 
+class LoggingInterceptor(BaseInterceptor):
+    async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
+        model_key = kwargs.get("model_key", "unknown")
+        logger.debug(f"[Interceptor] Preparing LLM Request for actor '{model_key}'. Messages: {len(request.messages)}")
+        return request
+
+    async def post_process_stream(self, stream, request, orchestrator, **kwargs):
+        token_count = 0
+        tool_calls = 0
+        async for event in stream:
+            if isinstance(event, TextDeltaEvent):
+                token_count += 1
+            elif isinstance(event, (ToolCallStartEvent, SystemToolCallEvent)):
+                tool_calls += 1
+            yield event
+        logger.debug(f"[Interceptor] LLM Stream Finished. Approx Tokens: {token_count}, Tool Calls: {tool_calls}")
+
+
+class ContextLimitInterceptor(BaseInterceptor):
+    def __init__(self, max_messages: int = 20):
+        self.max_messages = max_messages
+
+    async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
+        if len(request.messages) > self.max_messages:
+            sys_msg = request.messages[0] if request.messages and request.messages[0].role == "system" else None
+            kept = request.messages[-(self.max_messages - 1):]
+            if sys_msg and (not kept or kept[0] != sys_msg):
+                request.messages = [sys_msg] + kept
+            else:
+                request.messages = kept
+            logger.warning(f"[Interceptor] Context limit exceeded. Truncated to {len(request.messages)} messages.")
+        return request
+
+
 class SystemPromptInterceptor(BaseInterceptor):
-    async def pre_process(self, request: InternalAgentRequest, orchestrator) -> InternalAgentRequest:
+    async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
         system_prompt = orchestrator.system_prompt
         if request.messages and request.messages[0].role == "system":
             request.messages[0].content = system_prompt + "\n\n" + (request.messages[0].content or "")
@@ -48,12 +85,22 @@ class SystemPromptInterceptor(BaseInterceptor):
             request.messages.insert(0, InternalMessage(role="system", content=system_prompt))
         return request
 
+
+class ModelConfigurationInterceptor(BaseInterceptor):
+    async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
+        model_key = kwargs.get("model_key", "default")
+        request.model = orchestrator.settings.llm.models.get(model_key, "default")
+        request.stream = True
+        return request
+
+
 class ToolHallucinationInterceptor(BaseInterceptor):
     async def post_process_stream(
         self, 
         stream: AsyncGenerator[AgentEvent, None], 
         request: InternalAgentRequest, 
-        orchestrator
+        orchestrator,
+        **kwargs
     ) -> AsyncGenerator[AgentEvent, None]:
         
         available_tools_dict = {
@@ -85,7 +132,6 @@ class ToolHallucinationInterceptor(BaseInterceptor):
                 yield event
             
             elif isinstance(event, WorkflowFinishEvent):
-                # 終了イベントの直前で、保留していたハルシネーション呼び出しを補正して放出
                 for idx, data in hallucinated_indexes.items():
                     args_str = data["args_buffer"]
                     fallback_name = data["fallback_name"]
@@ -134,7 +180,8 @@ class ReflectionInterceptor(BaseInterceptor):
         self, 
         stream: AsyncGenerator[AgentEvent, None], 
         request: InternalAgentRequest, 
-        orchestrator
+        orchestrator,
+        **kwargs
     ) -> AsyncGenerator[AgentEvent, None]:
         
         full_content = ""
@@ -221,25 +268,42 @@ class ReflectionInterceptor(BaseInterceptor):
             arguments=args
         )
 
+class ErrorHandlingInterceptor(BaseInterceptor):
+    async def post_process_stream(
+        self, 
+        stream: AsyncGenerator[AgentEvent, None], 
+        request: InternalAgentRequest, 
+        orchestrator,
+        **kwargs
+    ) -> AsyncGenerator[AgentEvent, None]:
+        try:
+            async for event in stream:
+                yield event
+        except Exception as e:
+            logger.error(f"[Interceptor] Streaming Exception caught: {e}")
+            yield ErrorEvent(message=f"Connection Error: {e}")
+
+
 class InterceptorPipeline:
     def __init__(self, interceptors: List[Interceptor]):
         self.interceptors = interceptors
 
-    async def pre_process(self, request: InternalAgentRequest, orchestrator) -> InternalAgentRequest:
+    async def pre_process(self, request: InternalAgentRequest, orchestrator, **kwargs) -> InternalAgentRequest:
         req = request
         for interceptor in self.interceptors:
-            req = await interceptor.pre_process(req, orchestrator)
+            req = await interceptor.pre_process(req, orchestrator, **kwargs)
         return req
 
     async def post_process_stream(
         self, 
         stream: AsyncGenerator[AgentEvent, None], 
         request: InternalAgentRequest, 
-        orchestrator
+        orchestrator,
+        **kwargs
     ) -> AsyncGenerator[AgentEvent, None]:
         current_stream = stream
         for interceptor in self.interceptors:
-            current_stream = interceptor.post_process_stream(current_stream, request, orchestrator)
+            current_stream = interceptor.post_process_stream(current_stream, request, orchestrator, **kwargs)
         
         async for event in current_stream:
             yield event

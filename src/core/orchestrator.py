@@ -35,7 +35,11 @@ from core.interceptors import (
     InterceptorPipeline,
     SystemPromptInterceptor,
     ToolHallucinationInterceptor,
-    ReflectionInterceptor
+    ReflectionInterceptor,
+    ModelConfigurationInterceptor,
+    ErrorHandlingInterceptor,
+    LoggingInterceptor,
+    ContextLimitInterceptor
 )
 
 
@@ -228,11 +232,15 @@ class Orchestrator:
         self.router = Router(settings=self.settings, workflows_dir=self.workflows_dir, orchestrator=self)
         self.llm_client = OpenAILLMClient()
         
-        # インターセプターパイプラインの登録
+        # 拡張されたインターセプターパイプラインの登録
         self.pipeline = InterceptorPipeline([
+            LoggingInterceptor(),
+            ContextLimitInterceptor(max_messages=20),
             SystemPromptInterceptor(),
+            ModelConfigurationInterceptor(),
             ToolHallucinationInterceptor(),
-            ReflectionInterceptor()
+            ReflectionInterceptor(),
+            ErrorHandlingInterceptor()
         ])
         
         self.mcp_clients: Dict[str, GatewayClient] = {}
@@ -377,43 +385,38 @@ class Orchestrator:
         yield WorkflowFinishEvent(finish_reason=final_reason)
 
     async def _call_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        processed_request = await self.pipeline.pre_process(request.model_copy(deep=True), self)
+        processed_request = await self.pipeline.pre_process(
+            request.model_copy(deep=True), self, model_key=model_key, endpoint=endpoint
+        )
         raw_stream = self._raw_stream_llm(model_key, endpoint, processed_request)
-        async for event in self.pipeline.post_process_stream(raw_stream, processed_request, self):
+        async for event in self.pipeline.post_process_stream(
+            raw_stream, processed_request, self, model_key=model_key, endpoint=endpoint
+        ):
             yield event
 
     async def _raw_stream_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        payload = request
-        payload.model = self.settings.llm.models.get(model_key, "default")
-        payload.stream = True
-
-        try:
-            json_payload = payload.model_dump(exclude_none=True)
-            final_finish_reason = "stop"
+        json_payload = request.model_dump(exclude_none=True)
+        final_finish_reason = "stop"
+        
+        async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
+            if chunk.content:
+                yield TextDeltaEvent(content=chunk.content)
             
-            async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
-                if chunk.content:
-                    yield TextDeltaEvent(content=chunk.content)
-                
-                if chunk.tool_calls:
-                    for tc in chunk.tool_calls:
-                        func_name = tc.name
-                        args_str = tc.arguments or ""
-                        tc_id = tc.id or f"call_{tc.index}"
+            if chunk.tool_calls:
+                for tc in chunk.tool_calls:
+                    func_name = tc.name
+                    args_str = tc.arguments or ""
+                    tc_id = tc.id or f"call_{tc.index}"
+                    
+                    if func_name:
+                        yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
+                    if args_str:
+                        yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
                         
-                        if func_name:
-                            yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
-                        if args_str:
-                            yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
-                            
-                if chunk.finish_reason:
-                    final_finish_reason = chunk.finish_reason
+            if chunk.finish_reason:
+                final_finish_reason = chunk.finish_reason
 
-            yield WorkflowFinishEvent(finish_reason=final_finish_reason)
-                            
-        except Exception as e:
-            logger.error(f"[BROWNIE DEBUG] Streaming Exception: {e}")
-            yield ErrorEvent(message=f"Connection Error: {e}")
+        yield WorkflowFinishEvent(finish_reason=final_finish_reason)
 
     async def shutdown(self):
         for client in self.mcp_clients.values():
