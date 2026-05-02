@@ -457,7 +457,9 @@ class Orchestrator:
             elif step.get("type") == "agent_task":
                 yield TextDeltaEvent(content=f"\n[Step {i+1} Start]\n")
                 agent_model = OpenAIServerModel(model_id=self.settings.llm.models.get(model_key), api_base=endpoint, api_key="none")
-                agent = ToolCallingAgent(tools=mcp_tools, model=agent_model)
+                # ✅ 設定から max_retries を取得し、エージェントの試行上限として渡す
+                max_steps = self.settings.agent.max_retries
+                agent = ToolCallingAgent(tools=mcp_tools, model=agent_model, max_steps=max_steps)
                 result = await asyncio.to_thread(agent.run, step.get("description", ""))
                 yield TextDeltaEvent(content=f"[Result]\n{result}\n")
                 final_reason = "stop"
