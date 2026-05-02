@@ -14,21 +14,21 @@ async def test_router_route():
     settings = Settings()
     
     with patch("pathlib.Path.glob") as mock_glob, \
+         patch("pathlib.Path.exists", return_value=True), \
          patch("builtins.open", MagicMock()), \
          patch("yaml.safe_load") as mock_yaml_load:
          
         mock_path1 = MagicMock()
         mock_path1.stem = "coder"
-        mock_path2 = MagicMock()
-        mock_path2.stem = "interlocutor"
-        mock_glob.return_value = [mock_path1, mock_path2]
+        mock_glob.return_value = [mock_path1]
         
         mock_yaml_load.side_effect = [
-            {"name": "coder", "description": "Write code"},
-            {"name": "interlocutor", "description": "Chat with user"}
+            {"name": "interlocutor", "description": "Chat with user"},
+            {"name": "coder", "description": "Write code"}
         ]
         
         mock_orch = MagicMock()
+        mock_orch.project_root = Path("dummy_root")
         mock_orch._extract_intent = AsyncMock(return_value="Chat with user")
         
         # mcp-reranker のクライアントをモック
@@ -47,10 +47,10 @@ async def test_router_route():
         assert selected == "interlocutor"
         mock_orch._extract_intent.assert_called_once()
         
-        # rerank_documents ツールが正しく呼ばれたか検証
+        # rerank_documents ツールが正しく呼ばれたか検証 (要素の順序は担保)
         mock_reranker_client.call_tool.assert_called_once_with(
             "rerank_documents",
-            {"query": "Chat with user", "documents": ["Write code", "Chat with user"]}
+            {"query": "Chat with user", "documents": ["Chat with user", "Write code"]}
         )
 
 @pytest.fixture

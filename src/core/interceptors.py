@@ -335,9 +335,15 @@ class BaseWorkflowInterceptor:
 
 class WorkflowLoadInterceptor(BaseWorkflowInterceptor):
     async def pre_process(self, actor: str, request: InternalAgentRequest, orchestrator, **kwargs) -> dict:
-        workflow_path = orchestrator.workflows_dir / f"{actor}.yaml"
-        if not workflow_path.exists():
-            raise FileNotFoundError("Workflow not found")
+        core_workflow_path = orchestrator.project_root / "src" / "core" / f"{actor}.yaml"
+        user_workflow_path = orchestrator.workflows_dir / f"{actor}.yaml"
+        
+        if core_workflow_path.exists():
+            workflow_path = core_workflow_path
+        elif user_workflow_path.exists():
+            workflow_path = user_workflow_path
+        else:
+            raise FileNotFoundError(f"Workflow '{actor}' not found")
         
         try:
             with open(workflow_path, "r", encoding="utf-8") as f:

@@ -98,14 +98,23 @@ class Router:
         actors = []
         documents = []
         
-        for p in self.workflows_dir.glob("*.yaml"):
+        # コアワークフローとユーザーワークフローのパスを結合
+        workflow_paths = [self.orchestrator.project_root / "src" / "core" / "interlocutor.yaml"]
+        workflow_paths.extend(self.workflows_dir.glob("*.yaml"))
+        
+        for p in workflow_paths:
+            if not p.exists():
+                continue
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     wf_data = yaml.safe_load(f) or {}
                     name = wf_data.get("name", p.stem)
                     desc = wf_data.get("description", f"Expert named {name}")
-                    actors.append(name)
-                    documents.append(desc)
+                    
+                    # 重複登録を防止（ユーザー側とコア側で重複した場合コア優先）
+                    if name not in actors:
+                        actors.append(name)
+                        documents.append(desc)
             except Exception as e:
                 logger.error(f"Failed to load workflow {p}: {e}")
                 
