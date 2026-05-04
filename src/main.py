@@ -14,7 +14,7 @@ load_dotenv()
 sys.path.append(os.path.dirname(__file__))
 
 def setup_logging():
-    log_level = "DEBUG" if os.environ.get("BROWNIE_DEBUG") == "1" else "INFO"
+    log_level = "DEBUG" if os.environ.get("CINGULATER_DEBUG") == "1" else "INFO"
     logger.remove()
     log_format = (
         "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
@@ -29,13 +29,13 @@ def main(
     port: Annotated[int, typer.Option("--port", "-p", help="Port to bind")] = 8137,
     config: Annotated[Optional[str], typer.Option("--config", "-c", help="Path to config yaml file")] = None,
 ):
-    """BROWNIE: Autonomous AI Coding Agent 🚀"""
+    """Cingulater: AI Backend Core 🚀"""
     setup_logging()
     
     if config:
-        os.environ["BROWNIE_CONFIG"] = config
+        os.environ["CINGULATER_CONFIG"] = config
         
-    logger.info(f"Starting Brownie API server on http://{host}:{port}")
+    logger.info(f"Starting Cingulater API server on http://{host}:{port}")
     
     # API サーバーを起動
     uvicorn.run("api.server:app", host=host, port=port, log_level="info")

@@ -1,7 +1,7 @@
 [project]
-name = "brownie"
-version = "0.2.1"
-description = "Autonomous AI Coding Agent core"
+name = "cingulater"
+version = "0.3.0"
+description = "Cingulater: AI Backend Core"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -18,15 +18,13 @@ dependencies = [
     "prompt-toolkit>=3.0.52",
     "rich>=13.0.0",
     "typer>=0.12.3",
-    # MCP
+    # Core AI integrations
     "mcp>=1.1.0",
-    "mcp-routing-gateway",
-    "smolagents>=1.24.0",
     "openai>=2.33.0",
 ]
 
 [project.scripts]
-brwn = "main:main"
+cingulater = "main:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
@@ -34,9 +32,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv]
 managed = true
-
-[tool.uv.sources]
-mcp-routing-gateway = { git = "https://github.com/globalpocket/mcp-routing-gateway.git" }
 
 [dependency-groups]
 dev = [
