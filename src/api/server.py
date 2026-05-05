@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
 from core.orchestrator import Orchestrator
-from core.schema import InternalAgentRequest, InternalMessage, InternalToolCall, InternalFunctionCall, InternalTool
+from core.internal_schema import InternalAgentRequest, InternalMessage, InternalToolCall, InternalFunctionCall, InternalTool
 from core.events import (
     TextDeltaEvent,
     ToolCallStartEvent,
@@ -20,7 +20,7 @@ from core.events import (
     WorkflowFinishEvent,
     ErrorEvent
 )
-from api.schema import (
+from api.openai_schema import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionResponseChoice,

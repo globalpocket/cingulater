@@ -18,7 +18,7 @@ import mcp.types as types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
-from core.schema import InternalAgentRequest, InternalMessage, InternalTool
+from core.internal_schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.events import (
     AgentEvent,
     TextDeltaEvent,

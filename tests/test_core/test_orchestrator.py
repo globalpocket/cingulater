@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from core.orchestrator import Orchestrator, Settings, Router, MCPClient
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
-from core.schema import InternalAgentRequest, InternalMessage, InternalTool
+from core.internal_schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.llm_client import StandardLLMChunk, ToolCallChunk
 import mcp.types as types
 

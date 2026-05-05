@@ -5,7 +5,7 @@ import yaml
 from typing import AsyncGenerator, Protocol, List, Optional
 from loguru import logger
 
-from core.schema import InternalAgentRequest, InternalTool, InternalMessage
+from core.internal_schema import InternalAgentRequest, InternalTool, InternalMessage
 from core.events import (
     AgentEvent,
     TextDeltaEvent,
