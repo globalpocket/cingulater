@@ -46,7 +46,7 @@ class ChatMessage(BaseModel):
     }
 
 class ChatCompletionRequest(BaseModel):
-    model: str = "brownie-v2"
+    model: str = "cingulater-v2"
     messages: List[ChatMessage]
     tools: Optional[List[Dict[str, Any]]] = None
     stream: bool = False
@@ -65,7 +65,7 @@ class ChatCompletionResponse(BaseModel):
     id: str = Field(default_factory=lambda: f"chatcmpl-{int(time.time())}")
     object: str = "chat.completion"
     created: int = Field(default_factory=lambda: int(time.time()))
-    model: str = "brownie-v2"
+    model: str = "cingulater-v2"
     choices: List[ChatCompletionResponseChoice]
 
 
@@ -73,19 +73,19 @@ class ChatCompletionResponse(BaseModel):
 async def lifespan(app: FastAPI):
     global orchestrator
     config_path = os.getenv("BROWNIE_CONFIG", "config.yaml")
-    logger.info(f"Initializing Brownie Core (Config: {config_path})")
+    logger.info(f"Initializing Cingulater Core (Config: {config_path})")
     orchestrator = Orchestrator(config_path)
     
     await orchestrator.start()
-    logger.info("Brownie Engine is online and connected to MCP Gateway.")
+    logger.info("Cingulater Engine is online and connected to MCP Gateway.")
     
     yield
     
     if orchestrator:
-        logger.info("Shutting down Brownie Core...")
+        logger.info("Shutting down Cingulater Core...")
         await orchestrator.shutdown()
 
-app = FastAPI(title="Brownie OpenAI-Compatible API", lifespan=lifespan)
+app = FastAPI(title="Cingulater OpenAI-Compatible API", lifespan=lifespan)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -112,7 +112,7 @@ def _ensure_openai_id(internal_id: str) -> str:
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
     if not orchestrator:
-        raise HTTPException(status_code=503, detail="Brownie Engine is not initialized")
+        raise HTTPException(status_code=503, detail="Cingulater Engine is not initialized")
 
     internal_messages = []
     for m in request.messages:
@@ -238,7 +238,7 @@ async def chat_completions(request: ChatCompletionRequest):
                         yield f"data: {json.dumps(delta_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, ErrorEvent):
-                        chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Brownie Error: {event.message}]\n\n"}, "finish_reason": "error"}]
+                        chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Cingulater Error: {event.message}]\n\n"}, "finish_reason": "error"}]
                         yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, WorkflowFinishEvent):

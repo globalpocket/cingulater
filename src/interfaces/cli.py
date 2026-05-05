@@ -11,7 +11,7 @@ console = Console()
 
 
 def chat_loop(api_url: str = "http://localhost:8137/v1"):
-    """Brownie エンジンと直接壁打ちする対話ループ"""
+    """Cingulater エンジンと直接壁打ちする対話ループ"""
     # 1. 環境変数の最適化 (wcwidth の文字幅計算を正確にするため)
     lang = os.environ.get("LANG", "")
     if not lang or "UTF-8" not in lang.upper():
@@ -19,7 +19,7 @@ def chat_loop(api_url: str = "http://localhost:8137/v1"):
     if not os.environ.get("LC_ALL"):
         os.environ["LC_ALL"] = "ja_JP.UTF-8"
 
-    console.print("[bold cyan]🤖 Brownie Interaction Mode[/bold cyan]")
+    console.print("[bold cyan]🤖 Cingulater Interaction Mode[/bold cyan]")
 
     # 2. VSCode環境の検知と警告メッセージの表示
     if os.environ.get("TERM_PROGRAM") == "vscode":
@@ -67,11 +67,11 @@ def chat_loop(api_url: str = "http://localhost:8137/v1"):
             history.append({"role": "user", "content": user_input})
 
             with console.status(
-                "[bold yellow]Brownie is processing your request...[/bold yellow]"
+                "[bold yellow]Cingulater is processing your request...[/bold yellow]"
             ):
                 response = requests.post(
                     f"{api_url}/chat/completions",
-                    json={"model": "brownie-v2", "messages": history, "stream": False},
+                    json={"model": "cingulater-v2", "messages": history, "stream": False},
                     timeout=300,
                 )
 
@@ -79,7 +79,7 @@ def chat_loop(api_url: str = "http://localhost:8137/v1"):
                 result = response.json()
                 assistant_message = result["choices"][0]["message"]["content"]
 
-                console.print("\n[bold cyan]Brownie >[/bold cyan]")
+                console.print("\n[bold cyan]Cingulater >[/bold cyan]")
                 console.print(Markdown(assistant_message))
                 console.print("-" * 40)
 

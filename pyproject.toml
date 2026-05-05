@@ -1,5 +1,5 @@
 [project]
-name = "brownie"
+name = "cingulater"
 version = "0.2.1"
 description = "Autonomous AI Coding Agent core"
 readme = "README.md"
@@ -23,10 +23,11 @@ dependencies = [
     "mcp-routing-gateway",
     "smolagents>=1.24.0",
     "openai>=2.33.0",
+    "sentence-transformers>=5.4.1",
 ]
 
 [project.scripts]
-brwn = "main:main"
+cingulater = "main:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

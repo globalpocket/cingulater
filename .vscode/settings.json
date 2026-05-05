@@ -10,7 +10,7 @@
         "."
     ],
     "python.analysis.ignore": [
-        "src/brownie_chat/proto/*",
+        "src/cingulater_chat/proto/*",
         ".analyze"
     ],
     "sarif-viewer.connectToGithubCodeScanning": "on"
