@@ -54,7 +54,6 @@ class AgentSettings(BaseModel):
 class LLMSettings(BaseModel):
     models: dict[str, str] = Field(default_factory=dict)
     interlocutor_endpoint: str = Field(default="http://localhost:8080/v1")
-    coder_endpoint: str = Field(default="http://localhost:8081/v1")
     timeout_sec: int = Field(default=120)
     launcher_client: Optional[str] = Field(default="mlx-launcher")
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
@@ -175,7 +174,7 @@ class Orchestrator:
         
         self.llm_pipeline = InterceptorPipeline([
             LoggingInterceptor(),
-            ContextLimitInterceptor(max_messages=20),
+            ContextLimitInterceptor(max_messages=2000),
             SystemPromptInterceptor(),
             ModelConfigurationInterceptor(),
             ToolHallucinationInterceptor(),
@@ -221,7 +220,7 @@ class Orchestrator:
             if launcher_client_name and launcher_tool_name:
                 launcher_client = self.mcp_clients.get(launcher_client_name)
                 if launcher_client and launcher_client.session:
-                    for key in ["interlocutor", "coder"]:
+                    for key in ["interlocutor"]:
                         model = self.settings.llm.models.get(key)
                         if model:
                             port = urlparse(getattr(self.settings.llm, f"{key}_endpoint")).port or 8080
