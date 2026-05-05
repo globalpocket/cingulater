@@ -1,5 +1,0 @@
-name: interlocutor
-description: "ユーザーとの自然な会話、質問への回答、一般的なアシスタントタスク。"
-steps:
-  - type: llm_chat
-    model_key: interlocutor
