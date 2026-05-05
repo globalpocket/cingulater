@@ -27,10 +27,10 @@ if os.path.exists(venv_python) and sys.executable != venv_python:
 # === Venv内でのみ実行される処理 ===
 import yaml
 
-DATA_DIR = Path.home() / ".local" / "share" / "brownie"
+DATA_DIR = Path.home() / ".local" / "share" / "cingulater"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-PID_FILE = DATA_DIR / "brownie.pid"
-LOCK_FILE = DATA_DIR / "brownie.lock"
+PID_FILE = DATA_DIR / "cingulater.pid"
+LOCK_FILE = DATA_DIR / "cingulater.lock"
 
 ENGINE_PORT = 8137
 
@@ -45,8 +45,8 @@ def get_running_pid():
             pass
     return None
 
-def kill_all_brownie():
-    print("🧹 Cleaning up all Brownie-related processes...")
+def kill_all_cingulater():
+    print("🧹 Cleaning up all Cingulater-related processes...")
     try:
         ps_cmd = f"ps -eo pid,args | grep '{base_dir}' | grep 'python' | grep -E 'watchdog\\.py|main\\.py|api/server\\.py' | grep -v 'grep'"
         output = subprocess.check_output(ps_cmd, shell=True).decode().strip()
@@ -94,10 +94,10 @@ def wait_for_port(port, timeout=120, proc=None):
 def start_engine_server():
     if is_port_open(ENGINE_PORT):
         pid = get_running_pid()
-        print(f"✅ Brownie Engine is already running on port {ENGINE_PORT} (PID: {pid or 'Unknown'}).")
+        print(f"✅ Cingulater Engine is already running on port {ENGINE_PORT} (PID: {pid or 'Unknown'}).")
         return True
 
-    print(f"🚀 Starting Brownie Engine API (Port {ENGINE_PORT})...")
+    print(f"🚀 Starting Cingulater Engine API (Port {ENGINE_PORT})...")
     os.makedirs(os.path.join(base_dir, "logs"), exist_ok=True)
     engine_log = open(os.path.join(base_dir, "logs", "engine.log"), "a")
     
@@ -117,10 +117,10 @@ def start_engine_server():
         f.write(str(process.pid))
         
     if wait_for_port(ENGINE_PORT, timeout=60, proc=process):
-        print(f"✅ Brownie system fully started (Engine PID: {process.pid}).")
+        print(f"✅ Cingulater system fully started (Engine PID: {process.pid}).")
         return True
     else:
-        print("❌ Failed to start Brownie Engine. Check logs/engine.log for details.")
+        print("❌ Failed to start Cingulater Engine. Check logs/engine.log for details.")
         return False
 
 def ensure_servers_running():
@@ -139,7 +139,7 @@ def run_command(args):
     if action in ["start", "debug"]:
         pid = get_running_pid()
         if pid is not None and is_port_open(ENGINE_PORT):
-            print(f"Error: Brownie is already running (PID: {pid}).")
+            print(f"Error: Cingulater is already running (PID: {pid}).")
             sys.exit(1)
 
     if action == "default":
@@ -151,7 +151,7 @@ def run_command(args):
 
     elif action == "chat":
         if not is_port_open(ENGINE_PORT):
-            print("❌ Brownie Engine is not running. Starting servers now...")
+            print("❌ Cingulater Engine is not running. Starting servers now...")
             if not ensure_servers_running():
                 sys.exit(1)
         run_chat_interface()
@@ -159,13 +159,13 @@ def run_command(args):
     elif action == "stop" or action == "restart":
         pid = get_running_pid()
         if pid:
-            print(f"Stopping Brownie system (PID: {pid})...")
+            print(f"Stopping Cingulater system (PID: {pid})...")
             try:
                 os.killpg(os.getpgid(pid), signal.SIGTERM)
                 time.sleep(2)
             except: pass
         
-        kill_all_brownie()
+        kill_all_cingulater()
         
         if action == "restart":
             time.sleep(1)
@@ -175,7 +175,7 @@ def run_command(args):
         pid = get_running_pid()
         engine_status = "ONLINE" if is_port_open(ENGINE_PORT) else "OFFLINE"
         
-        print(f"Brownie Engine : {engine_status} (PID: {pid or 'Unknown'})")
+        print(f"Cingulater Engine : {engine_status} (PID: {pid or 'Unknown'})")
 
     elif action in ["logs", "log"]:
         log_file = os.path.join(base_dir, "logs", "engine.log")
@@ -186,7 +186,7 @@ def run_command(args):
             print("No log file found.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Brownie CLI")
+    parser = argparse.ArgumentParser(description="Cingulater CLI")
     parser.add_argument("action", nargs="?", default="default", choices=["start", "stop", "restart", "status", "logs", "log", "chat", "debug", "reset", "logout", "default"])
     args = parser.parse_args()
     run_command(args)

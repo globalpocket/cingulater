@@ -206,16 +206,16 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Brownie specific
+# Cingulater specific
 logs/
 *.signal
 *.db
 *.db-wal
 *.db-shm
-/tmp/brownie_workspace/
+/tmp/cingulater_workspace/
 
-# Brownie Context Data
-.brwn/
+# Cingulater Context Data
+.cingulater/
 
 # Temporary files (standard)
 .tmp/

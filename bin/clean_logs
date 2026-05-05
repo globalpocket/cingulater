@@ -1,7 +1,7 @@
 #!/bin/bash
 # Remove all rotated log files and temporary workspace files to free up disk space.
-echo "🧹 Cleaning up Brownie logs and temporary files..."
-rm -f logs/brownie.log.*
-rm -rf /tmp/brownie_workspace/*
+echo "🧹 Cleaning up Cingulater logs and temporary files..."
+rm -f logs/cingulater.log.*
+rm -rf /tmp/cingulater_workspace/*
 echo "Done."
 df -h .

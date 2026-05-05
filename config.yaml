@@ -22,5 +22,5 @@ llm:
   launcher_tool: "launch_llm_server"
 
 workspace:
-  sandbox_user: "brownie_sandbox"
+  sandbox_user: "cingulater_sandbox"
   base_path: "./workspace"

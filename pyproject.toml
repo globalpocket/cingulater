@@ -1,5 +1,5 @@
 [project]
-name = "brownie"
+name = "cingulater"
 version = "0.2.1"
 description = "Autonomous AI Coding Agent core"
 readme = "README.md"
@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.scripts]
-brwn = "main:main"
+cingulater = "main:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]

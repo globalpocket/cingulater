@@ -35,7 +35,7 @@ def main(
     if config:
         os.environ["BROWNIE_CONFIG"] = config
         
-    logger.info(f"Starting Brownie API server on http://{host}:{port}")
+    logger.info(f"Starting Cingulater API server on http://{host}:{port}")
     
     # API サーバーを起動
     uvicorn.run("api.server:app", host=host, port=port, log_level="info")

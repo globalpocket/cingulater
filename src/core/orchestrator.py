@@ -62,7 +62,7 @@ class LLMSettings(BaseModel):
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
 class WorkspaceSettings(BaseModel):
-    sandbox_user: str = Field(default="brownie_sandbox")
+    sandbox_user: str = Field(default="cingulater_sandbox")
     base_path: str = Field(default="./workspace")
 
 class Settings(BaseSettings):
@@ -243,8 +243,8 @@ class Orchestrator:
         self.settings = get_settings(config_path)
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
-        self.system_prompt_path = self.project_root / ".brwn" / "system_prompt.md"
-        self.mcp_config_path = self.project_root / "brownie_core_mcp_config.json"
+        self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
+        self.mcp_config_path = self.project_root / "cingulater_core_mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
@@ -283,7 +283,7 @@ class Orchestrator:
                         if cmd:
                             self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
             except Exception as e:
-                logger.error(f"Failed to load brownie_core_mcp_config.json: {e}")
+                logger.error(f"Failed to load cingulater_core_mcp_config.json: {e}")
 
         if not self.mcp_clients:
             cmd = os.getenv("BROWNIE_GATEWAY_CMD", "mcp-routing-gateway")
