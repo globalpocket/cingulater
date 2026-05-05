@@ -87,8 +87,8 @@ else:
 if [ ! -f ".env" ]; then
     echo "Creating .env file from template..."
     cat << EOF > .env
-BROWNIE_LANGUAGE=ja
-BROWNIE_DEBUG=true
+CINGULATER_LANGUAGE=ja
+CINGULATER_DEBUG=true
 EOF
 fi
 

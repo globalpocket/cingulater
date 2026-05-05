@@ -11,9 +11,9 @@ Cingulater は、信頼性と透明性を最優先した最小限の対話エン
 
 ## 💻 Tech Stack
 
--   **Logic**: Python 3.12 / Pydantic
--   **API**: FastAPI (OpenAI 互換)
--   **LLM Interface**: OpenAI API 互換クライアント
+- **Logic**: Python 3.12 / Pydantic
+- **API**: FastAPI (OpenAI 互換)
+- **LLM Interface**: OpenAI API 互換クライアント
 
 ## 📂 Project Structure
 

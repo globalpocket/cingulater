@@ -1,26 +1,14 @@
-# config/config.yaml
 agent:
-  # RAG（長期記憶）やポーリングは外部ツール/トリガーに任せるため、
-  # ここには最低限のエラーハンドリング設定のみ残します。
   max_retries: 3
-
 llm:
-  # 軽量化されたモデル設定。ルーターはLLM（interlocutorと同じ）を利用します。
   models:
-    router: "mlx-community/gemma-4-26b-a4b-it-4bit"
-    interlocutor: "mlx-community/gemma-4-26b-a4b-it-4bit"
-    coder: "mlx-community/Qwen2.5-Coder-32B-Instruct-4bit"
-
+    interlocutor: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
+    coder: "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit"
   interlocutor_endpoint: "http://localhost:8080/v1"
   coder_endpoint: "http://localhost:8081/v1"
   timeout_sec: 120
-
-  # 動的なランチャー設定 (Strategy パターン)
-  # mcp-mlx-launcher以外のランチャー(例: Ollama等)に変更する場合は、
-  # 以下に接続先のクライアント名とツール名を指定してください。
   launcher_client: "mlx-launcher"
   launcher_tool: "launch_llm_server"
-
 workspace:
   sandbox_user: "cingulater_sandbox"
   base_path: "./workspace"

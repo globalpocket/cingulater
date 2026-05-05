@@ -39,7 +39,7 @@ if [ -d ".venv" ]; then
     rm -rf .venv
 fi
 
-# 2. ローカルデータの削除 (データベース, ベクトルDB 等)
+# 2. ローカルデータの削除 (ワークスペース 等)
 echo "Resolving data paths from config.yaml for cleanup..."
 # 仮想環境が削除された後でも実行できるよう --with pyyaml を指定
 $UV_CMD run --with pyyaml python3 -c "
@@ -52,9 +52,10 @@ if not os.path.exists('config.yaml'):
     exit(0)
 
 with open('config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
+    config = yaml.safe_load(f) or {}
 
-# 削除対象: DB本体, ベクトルDB/Memory, ワークスペース, 管理ファイル(PID/Lock)
+# 削除対象: ワークスペース (以前存在した database セクションの参照は削除)
+workspace = config.get('workspace', {})
 to_delete = [
     config['database'].get('db_path'),
     config['database'].get('memory_path'),

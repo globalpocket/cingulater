@@ -3,9 +3,9 @@ import pytest
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
-from core.orchestrator import Orchestrator, Settings, Router, GatewayClient
+from core.orchestrator import Orchestrator, Settings, Router, MCPClient
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
-from core.schema import InternalAgentRequest, InternalMessage, InternalTool
+from core.internal_schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.llm_client import StandardLLMChunk, ToolCallChunk
 import mcp.types as types
 
@@ -24,7 +24,7 @@ async def test_router_route():
         
         mock_yaml_load.side_effect = [
             {"name": "interlocutor", "description": "Chat with user", "steps": [{"type": "llm_chat"}]},
-            {"name": "coder", "description": "Write code", "steps": [{"type": "agent_task"}]}
+            {"name": "coder", "description": "Write code", "steps": [{"type": "llm_chat"}]}
         ]
         
         mock_orch = MagicMock()
@@ -48,15 +48,15 @@ async def test_router_route():
         assert steps == [{"type": "llm_chat"}]
         mock_orch._extract_intent.assert_called_once()
         
-        # rerank_documents ツールが正しく呼ばれたか検証 (要素の順序は担保)
+        # rerank_documents ツールが正しく呼ばれたか検証
         mock_reranker_client.call_tool.assert_called_once_with(
             "rerank_documents",
             {"query": "Chat with user", "documents": ["Chat with user", "Write code"]}
         )
 
 @pytest.fixture
-def mock_gateway():
-    with patch("core.orchestrator.GatewayClient") as mock:
+def mock_mcp_client():
+    with patch("core.orchestrator.MCPClient") as mock:
         inst = mock.return_value
         inst.start = AsyncMock()
         inst.stop = AsyncMock()
@@ -65,17 +65,17 @@ def mock_gateway():
         yield inst
 
 @pytest.fixture
-def orchestrator(mock_gateway):
+def orchestrator(mock_mcp_client):
     with patch("pathlib.Path.exists", return_value=False):
         o = Orchestrator("dummy.yaml")
         # 戻り値をタプル (actor, steps) に変更
         o.router.route = AsyncMock(return_value=("interlocutor", []))
         # テストのためにダミーの mlx-launcher クライアントを注入する
-        o.mcp_clients["mlx-launcher"] = mock_gateway
+        o.mcp_clients["mlx-launcher"] = mock_mcp_client
         return o
 
 @pytest.mark.asyncio
-async def test_start_shutdown(orchestrator, mock_gateway):
+async def test_start_shutdown(orchestrator, mock_mcp_client):
     # Auto-launch の動的抽象化テストのために設定を注入
     orchestrator.settings.llm.models = {"interlocutor": "dummy-model"}
     orchestrator.settings.llm.launcher_client = "mlx-launcher"
@@ -83,12 +83,12 @@ async def test_start_shutdown(orchestrator, mock_gateway):
 
     await orchestrator.start()
     
-    assert mock_gateway.start.call_count >= 1
+    assert mock_mcp_client.start.call_count >= 1
     # 指定したツール名とパラメータで呼び出されているか確認
-    mock_gateway.call_tool.assert_called_with("launch_llm_server", {"model_name": "dummy-model", "port": 8080})
+    mock_mcp_client.call_tool.assert_called_with("launch_llm_server", {"model_name": "dummy-model", "port": 8080})
     
     await orchestrator.shutdown()
-    assert mock_gateway.stop.call_count >= 1
+    assert mock_mcp_client.stop.call_count >= 1
 
 @pytest.mark.asyncio
 async def test_extract_intent(orchestrator):
@@ -134,28 +134,9 @@ async def test_run_workflow_interlocutor(orchestrator):
     assert events[1].finish_reason == "stop"
 
 @pytest.mark.asyncio
-async def test_run_workflow_agent_task(orchestrator, mock_gateway):
-    orchestrator.router.route = AsyncMock(return_value=(
-        "coder", [{"type": "agent_task", "description": "fix it", "model_key": "coder"}]
-    ))
-
-    with patch("core.orchestrator.OpenAIServerModel"), \
-         patch("core.orchestrator.ToolCallingAgent") as mock_agent:
-        
-        mock_agent.return_value.run.return_value = "Task Finished"
-        
-        req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Fix bug")])
-        events = [e async for e in orchestrator.process_workflow(req)]
-        
-        assert len(events) == 3
-        assert isinstance(events[0], TextDeltaEvent) and "[Step 1 Start]" in events[0].content
-        assert isinstance(events[1], TextDeltaEvent) and "Task Finished" in events[1].content
-        assert isinstance(events[2], WorkflowFinishEvent)
-
-@pytest.mark.asyncio
 async def test_workflow_missing_model_key(orchestrator):
     orchestrator.router.route = AsyncMock(return_value=(
-        "coder", [{"type": "agent_task", "description": "fix it"}]
+        "coder", [{"type": "llm_chat", "description": "fix it"}]
     ))
 
     req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Fix bug")])

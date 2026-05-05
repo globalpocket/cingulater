@@ -3,7 +3,17 @@ import pytest
 import json
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock, MagicMock
-from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
+
+# mock.patch による ImportError の隠蔽を防ぐため明示的にインポート
+import api.server
+from core.events import (
+    TextDeltaEvent, 
+    ToolCallStartEvent, 
+    ToolCallDeltaEvent, 
+    SystemToolCallEvent, 
+    WorkflowFinishEvent, 
+    ErrorEvent
+)
 
 @pytest.fixture
 def test_client():
@@ -104,7 +114,6 @@ def test_chat_completions_system_tool_calls(test_client):
     resp_json = response.json()
     assert resp_json["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "sys_tool"
     assert "val" in resp_json["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
-    # サーバー側でIDが補完されていることを確認
     assert len(resp_json["choices"][0]["message"]["tool_calls"][0]["id"]) >= 20
 
 def test_chat_completions_stream(test_client):
@@ -157,7 +166,6 @@ def test_chat_completions_system_tool_calls_stream(test_client):
     
     content = response.text
     lines = content.strip().split("\n\n")
-    # Start chunk, Delta chunk, Finish chunk, DONE
     assert len(lines) == 4
     
     data_chunk1 = json.loads(lines[0].replace("data: ", ""))
@@ -165,15 +173,13 @@ def test_chat_completions_system_tool_calls_stream(test_client):
     data_chunk3 = json.loads(lines[2].replace("data: ", ""))
     data_done = lines[3]
     
-    # 最初のチャンクは role: assistant と name を含む
     assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
     tc1 = data_chunk1["choices"][0]["delta"]["tool_calls"][0]
     assert tc1["id"].startswith("call_")
-    assert len(tc1["id"]) >= 20  # サーバー側でID補完されているか
+    assert len(tc1["id"]) >= 20
     assert tc1["function"]["name"] == "sys_tool"
     assert tc1["function"]["arguments"] == ""
     
-    # 2つ目のチャンクは arguments を含む
     tc2 = data_chunk2["choices"][0]["delta"]["tool_calls"][0]
     assert json.loads(tc2["function"]["arguments"]) == {"key": "val"}
     
@@ -195,7 +201,7 @@ def test_chat_completions_error_response(test_client):
     })
     
     assert response.status_code == 200
-    assert "ERROR: something went wrong" in response.json()["choices"][0]["message"]["content"]
+    assert "ERROR: An unexpected error occurred." in response.json()["choices"][0]["message"]["content"]
     assert response.json()["choices"][0]["finish_reason"] == "error"
 
 def test_chat_completions_validation_error(test_client):
