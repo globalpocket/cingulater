@@ -244,7 +244,7 @@ class Orchestrator:
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
         self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
-        self.mcp_config_path = self.project_root / "cingulater_core_mcp_config.json"
+        self.mcp_config_path = self.project_root / "core_mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
@@ -283,7 +283,7 @@ class Orchestrator:
                         if cmd:
                             self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
             except Exception as e:
-                logger.error(f"Failed to load cingulater_core_mcp_config.json: {e}")
+                logger.error(f"Failed to load core_mcp_config.json: {e}")
 
         if not self.mcp_clients:
             cmd = os.getenv("CINGULATER_GATEWAY_CMD", "mcp-routing-gateway")
