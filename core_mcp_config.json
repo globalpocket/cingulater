@@ -18,21 +18,6 @@
       "env": {
         "RERANKER_MODEL_NAME": "BAAI/bge-reranker-v2-m3"
       }
-    },
-    "mcp-routing-gateway": {
-      "command": "mcp-routing-gateway",
-      "args": [
-        "--work-dir",
-        ".",
-        "--config",
-        "gateway_config.json",
-        "--mcp-config",
-        "mcp_config.json"
-      ]
-    },
-    "docker": {
-      "command": "uvx",
-      "args": ["mcp-server-docker"]
     }
   }
 }

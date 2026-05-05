@@ -8,7 +8,6 @@ import logging
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, AsyncGenerator
-from contextlib import AsyncExitStack
 
 import httpx
 from loguru import logger
@@ -17,6 +16,8 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 import mcp.types as types
+from mcp.client.session import ClientSession
+from mcp.client.stdio import stdio_client, StdioServerParameters
 
 from core.schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.events import (
@@ -81,7 +82,85 @@ def get_settings(config_path: str = "config.yaml") -> Settings:
 
 
 # ==========================================
-# 2. Core Orchestrator
+# 2. Gateway Client (Task-based Lifecycle Management)
+# ==========================================
+class GatewayClient:
+    def __init__(self, command: str, args: Optional[List[str]] = None):
+        self.command = command
+        self.args = args or []
+        self.session: Optional[ClientSession] = None
+        self._task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
+        self._init_event = asyncio.Event()
+
+    async def start(self):
+        """Starts the MCP server in a background task to maintain the context."""
+        self._stop_event.clear()
+        self._init_event.clear()
+        self._task = asyncio.create_task(self._run())
+        
+        # Wait for initialization or error
+        await self._init_event.wait()
+        if not self.session:
+            # RuntimeErrorではなくエラーログを出力し、全体のクラッシュを防ぐ
+            logger.error(f"Failed to initialize MCP session for {self.command}. Continuing without it.")
+
+    async def _run(self):
+        try:
+            server_params = StdioServerParameters(
+                command=self.command, 
+                args=self.args, 
+                env=os.environ.copy()
+            )
+            async with stdio_client(server_params) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    self.session = session
+                    await session.initialize()
+                    logger.info(f"✅ Successfully connected to MCP via {self.command}.")
+                    self._init_event.set()
+                    
+                    # Wait until stop() is called
+                    await self._stop_event.wait()
+        except Exception as e:
+            logger.error(f"❌ MCP session error ({self.command}): {e}")
+            # Ensure initialization wait is released even on error
+            self._init_event.set()
+        finally:
+            self.session = None
+
+    async def stop(self):
+        """Signals the background task to exit gracefully."""
+        self._stop_event.set()
+        if self._task:
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def fetch_tools(self) -> List[Dict[str, Any]]:
+        if not self.session:
+            return []
+        try:
+            tools_result = await self.session.list_tools()
+            return [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools_result.tools]
+        except Exception as e:
+            logger.error(f"Failed to fetch tools: {e}")
+            return []
+
+    async def call_tool(self, tool_name: str, arguments: dict) -> str:
+        if not self.session:
+            raise ValueError(f"Gateway ({self.command}) is not connected.")
+        result = await self.session.call_tool(tool_name, arguments)
+        output = ""
+        for content in result.content:
+            if isinstance(content, types.TextContent):
+                output += content.text + "\n"
+        return output.strip()
+
+
+# ==========================================
+# 3. Core Orchestrator
 # ==========================================
 class Orchestrator:
     def __init__(self, config_path: str):
@@ -89,6 +168,7 @@ class Orchestrator:
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
         self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
+        self.mcp_config_path = self.project_root / "core_mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
@@ -108,7 +188,49 @@ class Orchestrator:
             WorkflowExecutionInterceptor()
         ])
 
+        self.mcp_clients: Dict[str, GatewayClient] = {}
+        
+        if self.mcp_config_path.exists():
+            try:
+                with open(self.mcp_config_path, "r", encoding="utf-8") as f:
+                    servers = json.load(f).get("mcpServers", {})
+                    for name, config in servers.items():
+                        # 廃止されたゲートウェイが設定ファイルに残っていても無視する
+                        if name == "mcp-routing-gateway":
+                            continue
+                            
+                        cmd = config.get("command")
+                        args = config.get("args", [])
+                        
+                        if cmd:
+                            self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
+            except Exception as e:
+                logger.error(f"Failed to load core_mcp_config.json: {e}")
+
     async def start(self):
+        # Start all MCP clients
+        for name, client in self.mcp_clients.items():
+            logger.info(f"Starting MCP Client: {name}")
+            await client.start()
+            
+        # Auto-Launch LLM Server
+        try:
+            launcher_client_name = self.settings.llm.launcher_client
+            launcher_tool_name = self.settings.llm.launcher_tool
+            
+            if launcher_client_name and launcher_tool_name:
+                launcher_client = self.mcp_clients.get(launcher_client_name)
+                if launcher_client and launcher_client.session:
+                    for key in ["interlocutor", "coder"]:
+                        model = self.settings.llm.models.get(key)
+                        if model:
+                            port = urlparse(getattr(self.settings.llm, f"{key}_endpoint")).port or 8080
+                            await launcher_client.call_tool(launcher_tool_name, {"model_name": model, "port": port})
+                else:
+                    logger.debug(f"Launcher client '{launcher_client_name}' is missing or offline. Skipping auto-launch.")
+        except Exception as e:
+            logger.error(f"Auto-launch failed: {e}")
+            
         logger.info("✅ Orchestrator: Hybrid-Workflow engine ready.")
 
     def _load_system_prompt(self) -> str:
@@ -180,4 +302,6 @@ class Orchestrator:
         yield WorkflowFinishEvent(finish_reason=final_finish_reason)
 
     async def shutdown(self):
+        for client in self.mcp_clients.values():
+            await client.stop()
         await self.http_client.aclose()

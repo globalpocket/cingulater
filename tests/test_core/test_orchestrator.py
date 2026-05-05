@@ -3,22 +3,45 @@ import pytest
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
-from core.orchestrator import Orchestrator, Settings
+from core.orchestrator import Orchestrator, Settings, GatewayClient
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
 from core.schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.llm_client import StandardLLMChunk, ToolCallChunk
 import mcp.types as types
 
 @pytest.fixture
-def orchestrator():
+def mock_gateway():
+    with patch("core.orchestrator.GatewayClient") as mock:
+        inst = mock.return_value
+        inst.start = AsyncMock()
+        inst.stop = AsyncMock()
+        inst.fetch_tools = AsyncMock(return_value=[{"name": "test_tool", "description": "desc", "inputSchema": {}}])
+        inst.call_tool = AsyncMock(return_value="Success")
+        yield inst
+
+@pytest.fixture
+def orchestrator(mock_gateway):
     with patch("pathlib.Path.exists", return_value=False):
         o = Orchestrator("dummy.yaml")
+        # テストのためにダミーの mlx-launcher クライアントを注入する
+        o.mcp_clients["mlx-launcher"] = mock_gateway
         return o
 
 @pytest.mark.asyncio
-async def test_start_shutdown(orchestrator):
+async def test_start_shutdown(orchestrator, mock_gateway):
+    # Auto-launch のテストのために設定を注入
+    orchestrator.settings.llm.models = {"interlocutor": "dummy-model"}
+    orchestrator.settings.llm.launcher_client = "mlx-launcher"
+    orchestrator.settings.llm.launcher_tool = "launch_llm_server"
+
     await orchestrator.start()
+    
+    assert mock_gateway.start.call_count >= 1
+    # 指定したツール名とパラメータで呼び出されているか確認
+    mock_gateway.call_tool.assert_called_with("launch_llm_server", {"model_name": "dummy-model", "port": 8080})
+    
     await orchestrator.shutdown()
+    assert mock_gateway.stop.call_count >= 1
 
 @pytest.mark.asyncio
 async def test_run_workflow_interlocutor(orchestrator):
