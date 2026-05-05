@@ -116,7 +116,7 @@ class ToolHallucinationInterceptor(BaseInterceptor):
                 func_name = event.tool_name
                 if func_name and func_name not in available_tool_names and available_tool_names:
                     fallback_name = available_tool_names[0]
-                    logger.warning(f"[BROWNIE DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
+                    logger.warning(f"[CINGULATER DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
                     hallucinated_indexes[event.index] = {
                         "id": event.id,
                         "fallback_name": fallback_name,
@@ -216,7 +216,7 @@ class ReflectionInterceptor(BaseInterceptor):
 
         available_tool_names = list(available_tools_dict.keys())
 
-        logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
+        logger.info("[CINGULATER DEBUG] --- Reflection Phase Started (Using Reranker) ---")
         
         intent = await orchestrator._extract_intent(full_content[-1000:])
         docs = []
@@ -237,11 +237,11 @@ class ReflectionInterceptor(BaseInterceptor):
                     best_doc = results[0]["document"]
                     best_idx = docs.index(best_doc)
                     selected_tool = available_tool_names[best_idx]
-                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
+                    logger.info(f"[CINGULATER DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
             else:
-                logger.warning("[BROWNIE DEBUG] mcp-reranker client not connected. Using default first tool.")
+                logger.warning("[CINGULATER DEBUG] mcp-reranker client not connected. Using default first tool.")
         except Exception as e:
-            logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
+            logger.error(f"[CINGULATER DEBUG] Reflection Reranker Error: {e}")
             
         tool_schema = available_tools_dict[selected_tool]
         props = tool_schema.get("parameters", {}).get("properties", {})

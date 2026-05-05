@@ -278,7 +278,7 @@ class Orchestrator:
                         args = config.get("args", [])
                         
                         if name == "mcp-routing-gateway":
-                            cmd = os.getenv("BROWNIE_GATEWAY_CMD", cmd)
+                            cmd = os.getenv("CINGULATER_GATEWAY_CMD", cmd)
                             
                         if cmd:
                             self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
@@ -286,7 +286,7 @@ class Orchestrator:
                 logger.error(f"Failed to load cingulater_core_mcp_config.json: {e}")
 
         if not self.mcp_clients:
-            cmd = os.getenv("BROWNIE_GATEWAY_CMD", "mcp-routing-gateway")
+            cmd = os.getenv("CINGULATER_GATEWAY_CMD", "mcp-routing-gateway")
             self.mcp_clients["mcp-routing-gateway"] = GatewayClient(command=cmd, args=[])
 
     async def start(self):
@@ -315,7 +315,7 @@ class Orchestrator:
     def _load_system_prompt(self) -> str:
         if self.system_prompt_path.exists():
             return self.system_prompt_path.read_text(encoding="utf-8")
-        return "You are BROWNIE."
+        return "You are CINGULATER."
 
     async def _extract_intent(self, text: str) -> str:
         prompt = (

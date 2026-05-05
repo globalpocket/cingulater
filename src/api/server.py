@@ -72,7 +72,7 @@ class ChatCompletionResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global orchestrator
-    config_path = os.getenv("BROWNIE_CONFIG", "config.yaml")
+    config_path = os.getenv("CINGULATER_CONFIG", "config.yaml")
     logger.info(f"Initializing Cingulater Core (Config: {config_path})")
     orchestrator = Orchestrator(config_path)
     
