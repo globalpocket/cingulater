@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional, AsyncGenerator
 
 import httpx
 from loguru import logger
-from smolagents import Tool, ToolCallingAgent, OpenAIServerModel
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
@@ -167,9 +166,8 @@ class Orchestrator:
     def __init__(self, config_path: str):
         self.settings = get_settings(config_path)
         self.project_root = Path(__file__).parent.parent.parent
-        self.workflows_dir = self.project_root / "workflows"
         self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
-        self.mcp_config_path = self.project_root / "core_mcp_config.json"
+        self.mcp_config_path = self.project_root / "mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
@@ -207,7 +205,7 @@ class Orchestrator:
                         if cmd:
                             self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
             except Exception as e:
-                logger.error(f"Failed to load core_mcp_config.json: {e}")
+                logger.error(f"Failed to load mcp_config.json: {e}")
 
     async def start(self):
         # Start all MCP clients
