@@ -4,6 +4,7 @@ import time
 import yaml
 import json
 import asyncio
+import logging
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, AsyncGenerator
@@ -11,6 +12,7 @@ from contextlib import AsyncExitStack
 
 import httpx
 from loguru import logger
+from smolagents import Tool, ToolCallingAgent, OpenAIServerModel
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
@@ -18,7 +20,7 @@ import mcp.types as types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
-from core.internal_schema import InternalAgentRequest, InternalMessage, InternalTool
+from core.schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.events import (
     AgentEvent,
     TextDeltaEvent,
@@ -60,7 +62,7 @@ class LLMSettings(BaseModel):
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
 class WorkspaceSettings(BaseModel):
-    sandbox_user: str = Field(default="cingulater_sandbox")
+    sandbox_user: str = Field(default="brownie_sandbox")
     base_path: str = Field(default="./workspace")
 
 class Settings(BaseSettings):
@@ -97,6 +99,7 @@ class Router:
         documents = []
         workflows = {}
         
+        # コアワークフローとユーザーワークフローのパスを結合
         workflow_paths = [self.orchestrator.project_root / "src" / "core" / "interlocutor.yaml"]
         workflow_paths.extend(self.workflows_dir.glob("*.yaml"))
         
@@ -110,6 +113,7 @@ class Router:
                     desc = wf_data.get("description", f"Expert named {name}")
                     steps = wf_data.get("steps", [])
                     
+                    # 重複登録を防止（ユーザー側とコア側で重複した場合コア優先）
                     if name not in actors:
                         actors.append(name)
                         documents.append(desc)
@@ -163,10 +167,10 @@ class Router:
 
 
 # ==========================================
-# 3. Core MCP Client (For internal backend tools)
+# 3. Gateway Client
 # ==========================================
-class MCPClient:
-    def __init__(self, command: str, args: Optional[List[str]] = None):
+class GatewayClient:
+    def __init__(self, command: str = "mcp-routing-gateway", args: Optional[List[str]] = None):
         self.command = command
         self.args = args or []
         self.session: Optional[ClientSession] = None
@@ -183,9 +187,9 @@ class MCPClient:
             read_stream, write_stream = stdio_transport
             self.session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
             await self.session.initialize()
-            logger.info(f"✅ Successfully connected to MCP Core Tool via {self.command}.")
+            logger.info(f"✅ Successfully connected to MCP Routing Gateway via {self.command}.")
         except Exception as e:
-            logger.error(f"❌ Failed to connect to MCP Core Tool: {e}")
+            logger.error(f"❌ Failed to connect to Gateway: {e}")
             raise
 
     async def stop(self):
@@ -204,7 +208,7 @@ class MCPClient:
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         if not self.session:
-            raise ValueError("MCP Client is not connected.")
+            raise ValueError("Gateway is not connected.")
         result = await self.session.call_tool(tool_name, arguments)
         output = ""
         for content in result.content:
@@ -216,13 +220,31 @@ class MCPClient:
 # ==========================================
 # 4. Core Orchestrator
 # ==========================================
+class MCPVirtualTool(Tool):
+    def __init__(self, mcp_tool_def, mcp_client: GatewayClient, loop):
+        self.name = mcp_tool_def["name"]
+        self.description = mcp_tool_def["description"]
+        props = mcp_tool_def.get("inputSchema", {}).get("properties", {})
+        self.inputs = {k: {"type": v.get("type", "string"), "description": v.get("description", "")} for k, v in props.items()}
+        self.output_type = "string"
+        self.mcp_client = mcp_client
+        self._loop = loop
+        self.is_initialized = True
+        self.skip_forward_signature_validation = True
+        super().__init__()
+
+    def forward(self, **kwargs):
+        future = asyncio.run_coroutine_threadsafe(self.mcp_client.call_tool(self.name, kwargs), self._loop)
+        return future.result()
+
+
 class Orchestrator:
     def __init__(self, config_path: str):
         self.settings = get_settings(config_path)
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
-        self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
-        self.mcp_config_path = self.project_root / "mcp_config.json"
+        self.system_prompt_path = self.project_root / ".brwn" / "system_prompt.md"
+        self.mcp_config_path = self.project_root / "brownie_core_mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
@@ -245,7 +267,7 @@ class Orchestrator:
             WorkflowExecutionInterceptor()
         ])
         
-        self.mcp_clients: Dict[str, MCPClient] = {}
+        self.mcp_clients: Dict[str, GatewayClient] = {}
         
         if self.mcp_config_path.exists():
             try:
@@ -255,13 +277,17 @@ class Orchestrator:
                         cmd = config.get("command")
                         args = config.get("args", [])
                         
+                        if name == "mcp-routing-gateway":
+                            cmd = os.getenv("BROWNIE_GATEWAY_CMD", cmd)
+                            
                         if cmd:
-                            self.mcp_clients[name] = MCPClient(command=cmd, args=args)
+                            self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
             except Exception as e:
-                logger.error(f"Failed to load {self.mcp_config_path.name}: {e}")
+                logger.error(f"Failed to load brownie_core_mcp_config.json: {e}")
 
         if not self.mcp_clients:
-            logger.info("No internal MCP clients configured in cingulater_mcp_config.json.")
+            cmd = os.getenv("BROWNIE_GATEWAY_CMD", "mcp-routing-gateway")
+            self.mcp_clients["mcp-routing-gateway"] = GatewayClient(command=cmd, args=[])
 
     async def start(self):
         for name, client in self.mcp_clients.items():
@@ -284,12 +310,12 @@ class Orchestrator:
                     logger.debug(f"Launcher client '{launcher_client_name}' not found. Skipping auto-launch.")
         except Exception as e:
             logger.error(f"Auto-launch failed: {e}")
-        logger.info("✅ Orchestrator: Cingulater Backend Engine ready.")
+        logger.info("✅ Orchestrator: Hybrid-Workflow engine ready.")
 
     def _load_system_prompt(self) -> str:
         if self.system_prompt_path.exists():
             return self.system_prompt_path.read_text(encoding="utf-8")
-        return "You are CINGULATER, a powerful AI backend."
+        return "You are BROWNIE."
 
     async def _extract_intent(self, text: str) -> str:
         prompt = (
@@ -331,6 +357,12 @@ class Orchestrator:
 
     async def _raw_run_workflow(self, actor: str, request: InternalAgentRequest, **kwargs) -> AsyncGenerator[AgentEvent, None]:
         steps = kwargs.get("workflow_steps", [])
+        
+        mcp_tools = []
+        loop = asyncio.get_running_loop()
+        for client, t_def in kwargs.get("fetched_mcp_tools", []):
+            mcp_tools.append(MCPVirtualTool(t_def, client, loop))
+
         final_reason = "stop"
 
         for i, step in enumerate(steps):
@@ -342,11 +374,21 @@ class Orchestrator:
 
             endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
             
-            async for event in self._call_llm(model_key, endpoint, request):
-                if isinstance(event, WorkflowFinishEvent):
-                    final_reason = event.finish_reason
-                else:
-                    yield event
+            if step.get("type") == "llm_chat":
+                async for event in self._call_llm(model_key, endpoint, request):
+                    if isinstance(event, WorkflowFinishEvent):
+                        final_reason = event.finish_reason
+                    else:
+                        yield event
+            
+            elif step.get("type") == "agent_task":
+                yield TextDeltaEvent(content=f"\n[Step {i+1} Start]\n")
+                agent_model = OpenAIServerModel(model_id=self.settings.llm.models.get(model_key), api_base=endpoint, api_key="none")
+                max_steps = self.settings.agent.max_retries
+                agent = ToolCallingAgent(tools=mcp_tools, model=agent_model, max_steps=max_steps)
+                result = await asyncio.to_thread(agent.run, step.get("description", ""))
+                yield TextDeltaEvent(content=f"[Result]\n{result}\n")
+                final_reason = "stop"
         
         yield WorkflowFinishEvent(finish_reason=final_reason)
 
