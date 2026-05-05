@@ -23,6 +23,7 @@ dependencies = [
     "mcp-routing-gateway",
     "smolagents>=1.24.0",
     "openai>=2.33.0",
+    "sentence-transformers>=5.4.1",
 ]
 
 [project.scripts]
