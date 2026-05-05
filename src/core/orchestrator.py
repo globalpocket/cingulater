@@ -18,7 +18,7 @@ import mcp.types as types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
-from core.schema import InternalAgentRequest, InternalMessage, InternalTool
+from core.internal_schema import InternalAgentRequest, InternalMessage, InternalTool
 from core.events import (
     AgentEvent,
     TextDeltaEvent,
@@ -221,7 +221,7 @@ class Orchestrator:
         self.settings = get_settings(config_path)
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
-        self.system_prompt_path = self.project_root / ".brwn" / "system_prompt.md"
+        self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
         self.mcp_config_path = self.project_root / "mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
@@ -342,12 +342,11 @@ class Orchestrator:
 
             endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
             
-            if step.get("type") == "llm_chat":
-                async for event in self._call_llm(model_key, endpoint, request):
-                    if isinstance(event, WorkflowFinishEvent):
-                        final_reason = event.finish_reason
-                    else:
-                        yield event
+            async for event in self._call_llm(model_key, endpoint, request):
+                if isinstance(event, WorkflowFinishEvent):
+                    final_reason = event.finish_reason
+                else:
+                    yield event
         
         yield WorkflowFinishEvent(finish_reason=final_reason)
 
