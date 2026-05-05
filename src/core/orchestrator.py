@@ -374,21 +374,21 @@ class Orchestrator:
 
             endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
             
-            if step.get("type") == "llm_chat":
-                async for event in self._call_llm(model_key, endpoint, request):
-                    if isinstance(event, WorkflowFinishEvent):
-                        final_reason = event.finish_reason
-                    else:
-                        yield event
+            # if step.get("type") == "llm_chat":
+            async for event in self._call_llm(model_key, endpoint, request):
+                if isinstance(event, WorkflowFinishEvent):
+                    final_reason = event.finish_reason
+                else:
+                    yield event
             
-            elif step.get("type") == "agent_task":
-                yield TextDeltaEvent(content=f"\n[Step {i+1} Start]\n")
-                agent_model = OpenAIServerModel(model_id=self.settings.llm.models.get(model_key), api_base=endpoint, api_key="none")
-                max_steps = self.settings.agent.max_retries
-                agent = ToolCallingAgent(tools=mcp_tools, model=agent_model, max_steps=max_steps)
-                result = await asyncio.to_thread(agent.run, step.get("description", ""))
-                yield TextDeltaEvent(content=f"[Result]\n{result}\n")
-                final_reason = "stop"
+            # elif step.get("type") == "agent_task":
+            #     yield TextDeltaEvent(content=f"\n[Step {i+1} Start]\n")
+            #     agent_model = OpenAIServerModel(model_id=self.settings.llm.models.get(model_key), api_base=endpoint, api_key="none")
+            #     max_steps = self.settings.agent.max_retries
+            #     agent = ToolCallingAgent(tools=mcp_tools, model=agent_model, max_steps=max_steps)
+            #     result = await asyncio.to_thread(agent.run, step.get("description", ""))
+            #     yield TextDeltaEvent(content=f"[Result]\n{result}\n")
+            #     final_reason = "stop"
         
         yield WorkflowFinishEvent(finish_reason=final_reason)
 
