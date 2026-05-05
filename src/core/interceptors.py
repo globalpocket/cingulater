@@ -5,7 +5,7 @@ import yaml
 from typing import AsyncGenerator, Protocol, List, Optional
 from loguru import logger
 
-from core.internal_schema import InternalAgentRequest, InternalTool, InternalMessage
+from core.schema import InternalAgentRequest, InternalTool, InternalMessage
 from core.events import (
     AgentEvent,
     TextDeltaEvent,
@@ -116,7 +116,7 @@ class ToolHallucinationInterceptor(BaseInterceptor):
                 func_name = event.tool_name
                 if func_name and func_name not in available_tool_names and available_tool_names:
                     fallback_name = available_tool_names[0]
-                    logger.warning(f"[CINGULATER DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
+                    logger.warning(f"[BROWNIE DEBUG] Tool '{func_name}' is NOT available! Rewriting to '{fallback_name}'.")
                     hallucinated_indexes[event.index] = {
                         "id": event.id,
                         "fallback_name": fallback_name,
@@ -139,9 +139,7 @@ class ToolHallucinationInterceptor(BaseInterceptor):
                     
                     try:
                         args = json.loads(args_str) if args_str else {}
-                    # 修正: 特定の例外のみをキャッチし、ログを出力
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"[CINGULATER DEBUG] JSON parse error for hallucinated tool arguments: {e}")
+                    except Exception:
                         args = {"raw_args": args_str}
 
                     text_val = ""
@@ -218,7 +216,7 @@ class ReflectionInterceptor(BaseInterceptor):
 
         available_tool_names = list(available_tools_dict.keys())
 
-        logger.info("[CINGULATER DEBUG] --- Reflection Phase Started (Using Reranker) ---")
+        logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
         
         intent = await orchestrator._extract_intent(full_content[-1000:])
         docs = []
@@ -239,12 +237,11 @@ class ReflectionInterceptor(BaseInterceptor):
                     best_doc = results[0]["document"]
                     best_idx = docs.index(best_doc)
                     selected_tool = available_tool_names[best_idx]
-                    logger.info(f"[CINGULATER DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
+                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
             else:
-                logger.warning("[CINGULATER DEBUG] mcp-reranker client not connected. Using default first tool.")
+                logger.warning("[BROWNIE DEBUG] mcp-reranker client not connected. Using default first tool.")
         except Exception as e:
-            # 修正: exc_info=True を追加してスタックトレースを記録
-            logger.error(f"[CINGULATER DEBUG] Reflection Reranker Error: {e}", exc_info=True)
+            logger.error(f"[BROWNIE DEBUG] Reflection Reranker Error: {e}")
             
         tool_schema = available_tools_dict[selected_tool]
         props = tool_schema.get("parameters", {}).get("properties", {})
@@ -283,8 +280,7 @@ class ErrorHandlingInterceptor(BaseInterceptor):
             async for event in stream:
                 yield event
         except Exception as e:
-            # 修正: exc_info=True を追加して原因を追跡可能に
-            logger.error(f"[Interceptor] LLM Streaming Exception caught: {e}", exc_info=True)
+            logger.error(f"[Interceptor] LLM Streaming Exception caught: {e}")
             yield ErrorEvent(message=f"Connection Error: {e}")
 
 class InterceptorPipeline:
@@ -353,8 +349,7 @@ class ToolFetchInterceptor(BaseWorkflowInterceptor):
                 for t in tools:
                     fetched_tools.append((client, t))
             except Exception as e:
-                # 修正: exc_info=True を追加
-                logger.warning(f"Failed to fetch tools from {name}: {e}", exc_info=True)
+                logger.warning(f"Failed to fetch tools from {name}: {e}")
         kwargs["fetched_mcp_tools"] = fetched_tools
         return kwargs
 
@@ -364,8 +359,7 @@ class WorkflowExecutionInterceptor(BaseWorkflowInterceptor):
             async for event in stream:
                 yield event
         except Exception as e:
-            # 修正: exc_info=True を追加
-            logger.error(f"[Workflow Execution Error] {e}", exc_info=True)
+            logger.error(f"[Workflow Execution Error] {e}")
             yield ErrorEvent(message=f"Workflow execution failed: {e}")
 
 class WorkflowInterceptorPipeline:
@@ -377,8 +371,6 @@ class WorkflowInterceptorPipeline:
             for interceptor in self.interceptors:
                 kwargs = await interceptor.pre_process(actor, request, orchestrator, **kwargs)
         except Exception as e:
-            # 修正: ログ出力を追加
-            logger.error(f"Workflow interceptor pipeline error: {e}", exc_info=True)
             yield ErrorEvent(message=str(e))
             return
 
