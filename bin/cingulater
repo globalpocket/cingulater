@@ -6,6 +6,7 @@ import subprocess
 import argparse
 import time
 import socket
+import shlex
 from pathlib import Path
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,7 +26,6 @@ if os.path.exists(venv_python) and sys.executable != venv_python:
     os.execv(venv_python, [venv_python] + sys.argv)
 
 # === Venv内でのみ実行される処理 ===
-import yaml
 
 DATA_DIR = Path.home() / ".local" / "share" / "cingulater"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,8 @@ def get_running_pid():
 def kill_all_cingulater():
     print("🧹 Cleaning up all Cingulater-related processes...")
     try:
-        ps_cmd = f"ps -eo pid,args | grep '{base_dir}' | grep 'python' | grep -E 'watchdog\\.py|main\\.py|api/server\\.py' | grep -v 'grep'"
+        safe_base_dir = shlex.quote(base_dir)
+        ps_cmd = f"ps -eo pid,args | grep {safe_base_dir} | grep 'python' | grep -E 'watchdog\\.py|main\\.py|api/server\\.py' | grep -v 'grep'"
         output = subprocess.check_output(ps_cmd, shell=True).decode().strip()
         if output:
             for line in output.split("\n"):

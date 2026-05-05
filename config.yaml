@@ -1,8 +1,4 @@
 # config/config.yaml
-agent:
-  # RAG（長期記憶）やポーリングは外部ツール/トリガーに任せるため、
-  # ここには最低限のエラーハンドリング設定のみ残します。
-  max_retries: 3
 
 llm:
   # 軽量化されたモデル設定。ルーターはLLM（interlocutorと同じ）を利用します。
@@ -20,7 +16,3 @@ llm:
   # 以下に接続先のクライアント名とツール名を指定してください。
   launcher_client: "mlx-launcher"
   launcher_tool: "launch_llm_server"
-
-workspace:
-  sandbox_user: "brownie_sandbox"
-  base_path: "./workspace"

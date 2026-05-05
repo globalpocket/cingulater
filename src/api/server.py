@@ -3,12 +3,11 @@ import os
 import time
 import json
 import uuid
-from typing import List, Optional, Union, Dict, Any
+from typing import Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
 from loguru import logger
 
 from core.orchestrator import Orchestrator
@@ -21,53 +20,14 @@ from core.events import (
     WorkflowFinishEvent,
     ErrorEvent
 )
+from api.schema import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionResponseChoice,
+    ChatMessage
+)
 
 orchestrator: Optional[Orchestrator] = None
-
-# --- OpenAI Specifications ---
-class FunctionCall(BaseModel):
-    name: str
-    arguments: str
-
-class ToolCall(BaseModel):
-    id: str
-    type: str = "function"
-    function: FunctionCall
-
-class ChatMessage(BaseModel):
-    role: str
-    content: Optional[Union[str, List[Dict[str, Any]]]] = None
-    tool_calls: Optional[List[ToolCall]] = None
-    name: Optional[str] = None
-    tool_call_id: Optional[str] = None
-
-    model_config = {
-        "extra": "allow"
-    }
-
-class ChatCompletionRequest(BaseModel):
-    model: str = "cingulater-v1"
-    messages: List[ChatMessage]
-    tools: Optional[List[Dict[str, Any]]] = None
-    stream: bool = False
-    max_tokens: Optional[int] = None
-
-    model_config = {
-        "extra": "allow"
-    }
-
-class ChatCompletionResponseChoice(BaseModel):
-    index: int
-    message: ChatMessage
-    finish_reason: Optional[str] = "stop"
-
-class ChatCompletionResponse(BaseModel):
-    id: str = Field(default_factory=lambda: f"chatcmpl-{int(time.time())}")
-    object: str = "chat.completion"
-    created: int = Field(default_factory=lambda: int(time.time()))
-    model: str = "cingulater-v1"
-    choices: List[ChatCompletionResponseChoice]
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -89,18 +49,12 @@ app = FastAPI(title="Cingulater OpenAI-Compatible API", lifespan=lifespan)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    try:
-        body = await request.body()
-        body_str = body.decode("utf-8")
-    except Exception:
-        body_str = "Could not decode body"
-        
+    # バリデーションエラー時は機密情報漏洩を防ぐため、ボディ全体は出力せずエラー内容のみ出力する
     logger.error(f"422 Validation Error: {exc.errors()}")
-    logger.error(f"Request Body: {body_str}")
     
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "body": body_str},
+        content={"detail": exc.errors()},
     )
 
 def _ensure_openai_id(internal_id: str) -> str:
@@ -237,7 +191,9 @@ async def chat_completions(request: ChatCompletionRequest):
                         yield f"data: {json.dumps(delta_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, ErrorEvent):
-                        chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Cingulater Error: {event.message}]\n\n"}, "finish_reason": "error"}]
+                        # 内部情報を露出させないよう、汎用メッセージを返す（詳細はログへ）
+                        logger.error(f"Workflow Error in stream: {event.message}")
+                        chunk["choices"] = [{"index": 0, "delta": {"content": "\n\n[Cingulater Error: An unexpected error occurred.]\n\n"}, "finish_reason": "error"}]
                         yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                         
                     elif isinstance(event, WorkflowFinishEvent):
@@ -245,13 +201,14 @@ async def chat_completions(request: ChatCompletionRequest):
                         yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
             except Exception as e:
+                # 内部情報を露出させないよう、汎用メッセージを返す（詳細はログへ）
                 logger.error(f"Streaming error: {e}")
                 err_chunk = {
                     "id": f"chatcmpl-{int(time.time())}",
                     "object": "chat.completion.chunk",
                     "created": int(time.time()),
                     "model": model_name,
-                    "choices": [{"index": 0, "delta": {"content": f"Internal Server Error: {e}"}, "finish_reason": "error"}]
+                    "choices": [{"index": 0, "delta": {"content": "Internal Server Error: An unexpected error occurred."}, "finish_reason": "error"}]
                 }
                 yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
             finally:
@@ -289,11 +246,14 @@ async def chat_completions(request: ChatCompletionRequest):
                     finish_reason = event.finish_reason
                 elif isinstance(event, ErrorEvent):
                     has_error = True
-                    error_message = event.message
+                    # 内部情報を露出させないよう、汎用メッセージを返す（詳細はログへ）
+                    logger.error(f"Workflow Error: {event.message}")
+                    error_message = "An unexpected error occurred."
                     finish_reason = "error"
         except Exception as e:
+            # 内部情報を露出させないよう、汎用メッセージを返す（詳細はログへ）
             logger.error(f"Error processing workflow: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Internal Server Error: An unexpected error occurred.")
             
         if has_error:
             full_content += f"\n\nERROR: {error_message}"
