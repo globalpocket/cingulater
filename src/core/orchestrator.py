@@ -34,12 +34,14 @@ from core.interceptors import (
     InterceptorPipeline,
     SystemPromptInterceptor,
     ToolHallucinationInterceptor,
+    ReflectionInterceptor,
     ModelConfigurationInterceptor,
     ErrorHandlingInterceptor,
     LoggingInterceptor,
     ContextLimitInterceptor,
     WorkflowInterceptorPipeline,
     WorkflowLoadInterceptor,
+    ToolFetchInterceptor,
     WorkflowExecutionInterceptor
 )
 
@@ -102,7 +104,6 @@ class GatewayClient:
         # Wait for initialization or error
         await self._init_event.wait()
         if not self.session:
-            # RuntimeErrorではなくエラーログを出力し、全体のクラッシュを防ぐ
             logger.error(f"Failed to initialize MCP session for {self.command}. Continuing without it.")
 
     async def _run(self):
@@ -180,11 +181,13 @@ class Orchestrator:
             SystemPromptInterceptor(),
             ModelConfigurationInterceptor(),
             ToolHallucinationInterceptor(),
+            ReflectionInterceptor(), # Restored: Evaluates content to trigger finish tools
             ErrorHandlingInterceptor()
         ])
 
         self.workflow_pipeline = WorkflowInterceptorPipeline([
             WorkflowLoadInterceptor(),
+            ToolFetchInterceptor(), # Restored: Fetches tools for reflection/reranking
             WorkflowExecutionInterceptor()
         ])
 
@@ -195,7 +198,6 @@ class Orchestrator:
                 with open(self.mcp_config_path, "r", encoding="utf-8") as f:
                     servers = json.load(f).get("mcpServers", {})
                     for name, config in servers.items():
-                        # 廃止されたゲートウェイが設定ファイルに残っていても無視する
                         if name == "mcp-routing-gateway":
                             continue
                             
@@ -237,6 +239,38 @@ class Orchestrator:
         if self.system_prompt_path.exists():
             return self.system_prompt_path.read_text(encoding="utf-8")
         return "You are CINGULATER."
+
+    async def _extract_intent(self, text: str) -> str:
+        """Restored: Extracted intent for Reranker evaluation."""
+        prompt = (
+            "Translate the following text to English, extract the core user intent, "
+            "and summarize it in a short phrase (e.g., 'Asking a clarifying question', 'Completed the task'). "
+            "Output ONLY the summary phrase.\n\n"
+            f"Text: {text}"
+        )
+        endpoint = self.settings.llm.interlocutor_endpoint
+        model_name = self.settings.llm.models.get("interlocutor", "default")
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1024,
+            "temperature": 0.0,
+            "stream": False
+        }
+        
+        try:
+            resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if content:
+                    logger.debug(f"[Intent Extraction] Original -> Intent: {content}")
+                    return content
+            logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
+        except Exception as e:
+            logger.error(f"Intent extraction error: {e}")
+            
+        return "Unknown intent"
 
     async def process_workflow(self, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
         actor = "interlocutor"
