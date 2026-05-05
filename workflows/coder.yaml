@@ -1,12 +1,12 @@
 name: coder
 description: "コードの解析、バグ修正、テスト実行などを行うエンジニアリングタスク。"
 steps:
-  - type: agent_task
+  - type: llm_chat
     description: "プロジェクト構造を解析し、バグの原因を特定してください。"
     allowed_tools: ["read_file", "list_directory"]
     model_key: coder
 
-  - type: agent_task
+  - type: llm_chat
     description: "特定した原因に基づき、コードを修正してテストしてください。"
     allowed_tools: []
     model_key: coder

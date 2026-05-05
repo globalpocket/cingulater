@@ -42,7 +42,7 @@ def test_chat_completions(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": False
     })
@@ -60,7 +60,7 @@ def test_chat_completions_list_content(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [
             {
                 "role": "user", 
@@ -85,7 +85,7 @@ def test_chat_completions_tool_calls(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [{"role": "user", "content": "Use tool"}],
         "stream": False
     })
@@ -105,7 +105,7 @@ def test_chat_completions_system_tool_calls(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [{"role": "user", "content": "Use system tool"}],
         "stream": False
     })
@@ -126,7 +126,7 @@ def test_chat_completions_stream(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": True
     })
@@ -157,7 +157,7 @@ def test_chat_completions_system_tool_calls_stream(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [{"role": "user", "content": "Use system tool"}],
         "stream": True
     })
@@ -195,7 +195,7 @@ def test_chat_completions_error_response(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": False
     })
@@ -208,7 +208,7 @@ def test_chat_completions_validation_error(test_client):
     client, _ = test_client
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": "invalid_messages_format", 
         "stream": False
     })
@@ -224,7 +224,7 @@ def test_chat_completions_proxies_full_request(test_client):
     mock_orch.process_workflow.side_effect = mock_workflow
     
     response = client.post("/v1/chat/completions", json={
-        "model": "brownie-v2",
+        "model": "cingulater-v2",
         "messages": [{"role": "user", "content": "Hi"}],
         "tools": [{"type": "function", "function": {"name": "test", "description": "test tool"}}]
     })

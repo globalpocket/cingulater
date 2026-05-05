@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-# Brownie 環境削除スクリプト (Unsetup)
+# Cingulater 環境削除スクリプト (Unsetup)
 # 0. Docker サービスの停止とリソース削除 (ChromaDB 等)
-echo "Stopping any running Brownie processes..."
-./bin/brwn stop &> /dev/null || true
+echo "Stopping any running Cingulater processes..."
+./bin/cingulater stop &> /dev/null || true
 
 if command -v docker-compose &> /dev/null || docker compose version &> /dev/null; then
     echo "Stopping Docker services and removing volumes..."
@@ -22,13 +22,13 @@ if command -v uv &> /dev/null; then
 fi
 
 # 1. 設定の読み込み (削除前に実施)
-MODEL_DIR="~/.local/share/brownie/models"
+MODEL_DIR="~/.local/share/cingulater/models"
 if [ -f "config.yaml" ]; then
     # uv が使える場合は優先使用、使えない場合は grep で簡易取得
     if command -v uv &> /dev/null && [ -d ".venv" ]; then
-        MODEL_DIR=$(uv run python -c "import yaml; print(yaml.safe_load(open('config.yaml'))['llm'].get('model_dir', '~/.local/share/brownie/models'))" 2>/dev/null || echo "~/.local/share/brownie/models")
+        MODEL_DIR=$(uv run python -c "import yaml; print(yaml.safe_load(open('config.yaml'))['llm'].get('model_dir', '~/.local/share/cingulater/models'))" 2>/dev/null || echo "~/.local/share/cingulater/models")
     else
-        MODEL_DIR=$(grep 'model_dir:' config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'" || echo "~/.local/share/brownie/models")
+        MODEL_DIR=$(grep 'model_dir:' config.yaml | awk '{print $2}' | tr -d '"' | tr -d "'" || echo "~/.local/share/cingulater/models")
     fi
 fi
 EXPANDED_MODEL_DIR=$(echo $MODEL_DIR | sed "s|^~|$HOME|")
@@ -39,7 +39,7 @@ if [ -d ".venv" ]; then
     rm -rf .venv
 fi
 
-# 2. ローカルデータの削除 (データベース, ベクトルDB 等)
+# 2. ローカルデータの削除 (ワークスペース 等)
 echo "Resolving data paths from config.yaml for cleanup..."
 # 仮想環境が削除された後でも実行できるよう --with pyyaml を指定
 $UV_CMD run --with pyyaml python3 -c "
@@ -52,15 +52,12 @@ if not os.path.exists('config.yaml'):
     exit(0)
 
 with open('config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
+    config = yaml.safe_load(f) or {}
 
-# 削除対象: DB本体, ベクトルDB/Memory, ワークスペース, 管理ファイル(PID/Lock)
+# 削除対象: ワークスペース (以前存在した database セクションの参照は削除)
+workspace = config.get('workspace', {})
 to_delete = [
-    config['database'].get('db_path'),
-    config['database'].get('memory_path'),
-    config['workspace'].get('base_dir'),
-    os.path.join(os.path.dirname(config['database'].get('db_path', '')), 'brownie.pid'),
-    os.path.join(os.path.dirname(config['database'].get('db_path', '')), 'brownie.lock')
+    workspace.get('base_path')
 ]
 
 for p in to_delete:
@@ -75,7 +72,7 @@ for p in to_delete:
 "
 
 # 3. キャッシュの削除 (Tree-sitter 文法ファイル等)
-CACHE_DIR="$HOME/.cache/brownie"
+CACHE_DIR="$HOME/.cache/cingulater"
 if [ -d "$CACHE_DIR" ]; then
     echo "Removing cache directory ($CACHE_DIR)..."
     rm -rf "$CACHE_DIR"
@@ -103,10 +100,10 @@ fi
 
 # 6. シェルエイリアスの削除 (~/.zshrc)
 if [ -f "$HOME/.zshrc" ]; then
-    if grep -q "alias brownie=" "$HOME/.zshrc"; then
-        echo "Removing brownie alias from ~/.zshrc..."
+    if grep -q "alias cingulater=" "$HOME/.zshrc"; then
+        echo "Removing cingulater alias from ~/.zshrc..."
         # 該当行を削除した一時ファイルを作成し、上書き
-        sed -i.bak '/alias brownie=/d' "$HOME/.zshrc"
+        sed -i.bak '/alias cingulater=/d' "$HOME/.zshrc"
         rm "${HOME}/.zshrc.bak"
     fi
 fi
@@ -128,4 +125,4 @@ echo ""
 echo "Note: System-wide tools (Node.js, Docker, Ollama, etc.) were not removed."
 echo "If you want to uninstall them, please use your package manager (brew/apt) manually."
 echo ""
-echo "✅ Brownie environment has been uninstalled successfully."
+echo "✅ Cingulater environment has been uninstalled successfully."

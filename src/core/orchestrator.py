@@ -48,6 +48,9 @@ from core.interceptors import (
 # ==========================================
 # 1. Config & Settings
 # ==========================================
+class AgentSettings(BaseModel):
+    max_retries: int = Field(default=3)
+
 class LLMSettings(BaseModel):
     models: dict[str, str] = Field(default_factory=dict)
     interlocutor_endpoint: str = Field(default="http://localhost:8080/v1")
@@ -56,8 +59,14 @@ class LLMSettings(BaseModel):
     launcher_client: Optional[str] = Field(default="mlx-launcher")
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
+class WorkspaceSettings(BaseModel):
+    sandbox_user: str = Field(default="cingulater_sandbox")
+    base_path: str = Field(default="./workspace")
+
 class Settings(BaseSettings):
+    agent: AgentSettings = Field(default_factory=AgentSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
 
     @classmethod
     def load(cls, config_path: str) -> "Settings":
@@ -212,7 +221,7 @@ class Orchestrator:
         self.settings = get_settings(config_path)
         self.project_root = Path(__file__).parent.parent.parent
         self.workflows_dir = self.project_root / "workflows"
-        self.system_prompt_path = self.project_root / ".brwn" / "system_prompt.md"
+        self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
         self.mcp_config_path = self.project_root / "mcp_config.json"
         
         self.system_prompt = self._load_system_prompt()
@@ -333,12 +342,11 @@ class Orchestrator:
 
             endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
             
-            if step.get("type") == "llm_chat":
-                async for event in self._call_llm(model_key, endpoint, request):
-                    if isinstance(event, WorkflowFinishEvent):
-                        final_reason = event.finish_reason
-                    else:
-                        yield event
+            async for event in self._call_llm(model_key, endpoint, request):
+                if isinstance(event, WorkflowFinishEvent):
+                    final_reason = event.finish_reason
+                else:
+                    yield event
         
         yield WorkflowFinishEvent(finish_reason=final_reason)
 

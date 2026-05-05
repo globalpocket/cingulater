@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-# Brownie 統合セットアップスクリプト
-echo "Starting Brownie Provisioning..."
+# Cingulater 統合セットアップスクリプト
+echo "Starting Cingulater Provisioning..."
 
 # macOS (Apple Silicon) のパスを考慮
 if [[ "$(uname)" == "Darwin" ]]; then
@@ -87,12 +87,12 @@ else:
 if [ ! -f ".env" ]; then
     echo "Creating .env file from template..."
     cat << EOF > .env
-BROWNIE_LANGUAGE=ja
-BROWNIE_DEBUG=true
+CINGULATER_LANGUAGE=ja
+CINGULATER_DEBUG=true
 EOF
 fi
 
-chmod +x bin/brwn
+chmod +x bin/cingulater
 
 if command -v docker-compose &> /dev/null || docker compose version &> /dev/null; then
     echo "Initializing Docker services..."
@@ -104,6 +104,6 @@ if command -v docker-compose &> /dev/null || docker compose version &> /dev/null
 fi
 
 echo "================================================="
-echo "✅ Setup complete! You can now run Brownie."
-echo "Command: ./bin/brwn start"
+echo "✅ Setup complete! You can now run Cingulater."
+echo "Command: ./bin/cingulater start"
 echo "================================================="

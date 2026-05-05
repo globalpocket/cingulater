@@ -6,7 +6,6 @@ import subprocess
 import argparse
 import time
 import socket
-import shlex
 from pathlib import Path
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +25,22 @@ if os.path.exists(venv_python) and sys.executable != venv_python:
     os.execv(venv_python, [venv_python] + sys.argv)
 
 # === Venv内でのみ実行される処理 ===
+import yaml
+
+# 依存関係の確実な解決 (psutil)
+try:
+    import psutil
+except ImportError:
+    print("📦 Installing required package 'psutil'...")
+    # uvのパス解決
+    uv_cmd = "uv"
+    if not subprocess.run(["command", "-v", "uv"], shell=True, stdout=subprocess.DEVNULL).returncode == 0:
+        if os.path.exists(os.path.expanduser("~/.local/bin/uv")):
+            uv_cmd = os.path.expanduser("~/.local/bin/uv")
+    
+    # OSコマンドインジェクションを防ぐためリスト渡し(shell=False)で実行
+    subprocess.run([uv_cmd, "pip", "install", "psutil"], cwd=base_dir)
+    import psutil
 
 DATA_DIR = Path.home() / ".local" / "share" / "cingulater"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,8 +54,9 @@ def get_running_pid():
         try:
             with open(PID_FILE, "r") as f:
                 pid = int(f.read().strip())
-            os.kill(pid, 0)
-            return pid
+            # psutilを使ってプロセスの存在をより安全に確認
+            if psutil.pid_exists(pid):
+                return pid
         except (ValueError, ProcessLookupError, PermissionError):
             pass
     return None
@@ -48,22 +64,29 @@ def get_running_pid():
 def kill_all_cingulater():
     print("🧹 Cleaning up all Cingulater-related processes...")
     try:
-        safe_base_dir = shlex.quote(base_dir)
-        ps_cmd = f"ps -eo pid,args | grep {safe_base_dir} | grep 'python' | grep -E 'watchdog\\.py|main\\.py|api/server\\.py' | grep -v 'grep'"
-        output = subprocess.check_output(ps_cmd, shell=True).decode().strip()
-        if output:
-            for line in output.split("\n"):
-                parts = line.strip().split()
-                if not parts: continue
-                pid = int(parts[0])
-                if pid != os.getpid():
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                        print(f"  - Killed process: {pid}")
-                    except ProcessLookupError:
-                        pass
-    except Exception:
-        pass 
+        current_pid = os.getpid()
+        # プロセスリストを安全に反復処理
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cmdline = proc.info.get('cmdline') or []
+                cmd_str = " ".join(cmdline)
+                
+                # Cingulater関連プロセスの特定条件
+                if base_dir in cmd_str and 'python' in cmd_str:
+                    if any(target in cmd_str for target in ['watchdog.py', 'main.py', 'api/server.py']):
+                        pid = proc.info['pid']
+                        if pid != current_pid:
+                            proc.terminate() # まずSIGTERMを送信
+                            proc.wait(timeout=3) # 終了を待つ
+                            print(f"  - Terminated process: {pid}")
+            except psutil.TimeoutExpired:
+                proc.kill() # タイムアウト時はSIGKILLで強制終了
+                print(f"  - Killed process: {pid} (Force)")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+    except Exception as e:
+        print(f"Warning during process cleanup: {e}")
+
     if os.path.exists(PID_FILE):
         try:
             os.remove(PID_FILE)
@@ -164,7 +187,10 @@ def run_command(args):
             try:
                 os.killpg(os.getpgid(pid), signal.SIGTERM)
                 time.sleep(2)
-            except: pass
+            except ProcessLookupError: 
+                pass
+            except Exception as e:
+                print(f"Warning: Failed to stop process group: {e}")
         
         kill_all_cingulater()
         
