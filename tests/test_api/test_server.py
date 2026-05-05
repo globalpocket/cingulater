@@ -16,23 +16,33 @@ def test_client():
         with TestClient(app) as client:
             yield client, mock_orch
 
+@pytest.fixture
+def mock_workflow_factory():
+    """指定されたイベントのリストを順番にyieldする非同期ジェネレータのファクトリ関数"""
+    def _factory(events):
+        async def _workflow(*args, **kwargs):
+            for event in events:
+                yield event
+        return _workflow
+    return _factory
+
+
 def test_health_check(test_client):
     client, _ = test_client
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "engine_ready": True}
 
-def test_chat_completions(test_client):
+def test_chat_completions(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield TextDeltaEvent(content="Hi there!")
-        yield WorkflowFinishEvent(finish_reason="stop")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        TextDeltaEvent(content="Hi there!"),
+        WorkflowFinishEvent(finish_reason="stop")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": False
     })
@@ -40,17 +50,16 @@ def test_chat_completions(test_client):
     assert response.status_code == 200
     assert response.json()["choices"][0]["message"]["content"] == "Hi there!"
 
-def test_chat_completions_list_content(test_client):
+def test_chat_completions_list_content(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield TextDeltaEvent(content="Parsed fine!")
-        yield WorkflowFinishEvent(finish_reason="stop")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        TextDeltaEvent(content="Parsed fine!"),
+        WorkflowFinishEvent(finish_reason="stop")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [
             {
                 "role": "user", 
@@ -64,18 +73,17 @@ def test_chat_completions_list_content(test_client):
     call_args = mock_orch.process_workflow.call_args[0][0]
     assert call_args.messages[0].content == "Part 1\nPart 2"
 
-def test_chat_completions_tool_calls(test_client):
+def test_chat_completions_tool_calls(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield ToolCallStartEvent(index=0, id="call_123", tool_name="my_tool")
-        yield ToolCallDeltaEvent(index=0, arguments="{}")
-        yield WorkflowFinishEvent(finish_reason="tool_calls")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        ToolCallStartEvent(index=0, id="call_123", tool_name="my_tool"),
+        ToolCallDeltaEvent(index=0, arguments="{}"),
+        WorkflowFinishEvent(finish_reason="tool_calls")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [{"role": "user", "content": "Use tool"}],
         "stream": False
     })
@@ -85,17 +93,16 @@ def test_chat_completions_tool_calls(test_client):
     assert resp_json["choices"][0]["message"]["content"] is None
     assert resp_json["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "my_tool"
 
-def test_chat_completions_system_tool_calls(test_client):
+def test_chat_completions_system_tool_calls(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield SystemToolCallEvent(index=0, id="call_sys_short", tool_name="sys_tool", arguments={"key": "val"})
-        yield WorkflowFinishEvent(finish_reason="tool_calls")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        SystemToolCallEvent(index=0, id="call_sys_short", tool_name="sys_tool", arguments={"key": "val"}),
+        WorkflowFinishEvent(finish_reason="tool_calls")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [{"role": "user", "content": "Use system tool"}],
         "stream": False
     })
@@ -107,17 +114,16 @@ def test_chat_completions_system_tool_calls(test_client):
     # サーバー側でIDが補完されていることを確認
     assert len(resp_json["choices"][0]["message"]["tool_calls"][0]["id"]) >= 20
 
-def test_chat_completions_stream(test_client):
+def test_chat_completions_stream(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield TextDeltaEvent(content="Hi there from stream!")
-        yield WorkflowFinishEvent(finish_reason="stop")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        TextDeltaEvent(content="Hi there from stream!"),
+        WorkflowFinishEvent(finish_reason="stop")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": True
     })
@@ -138,17 +144,16 @@ def test_chat_completions_stream(test_client):
     assert data_chunk2["choices"][0]["finish_reason"] == "stop"
     assert data_done == "data: [DONE]"
 
-def test_chat_completions_system_tool_calls_stream(test_client):
+def test_chat_completions_system_tool_calls_stream(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield SystemToolCallEvent(index=0, id="call_sys", tool_name="sys_tool", arguments={"key": "val"})
-        yield WorkflowFinishEvent(finish_reason="tool_calls")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        SystemToolCallEvent(index=0, id="call_sys", tool_name="sys_tool", arguments={"key": "val"}),
+        WorkflowFinishEvent(finish_reason="tool_calls")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [{"role": "user", "content": "Use system tool"}],
         "stream": True
     })
@@ -180,16 +185,15 @@ def test_chat_completions_system_tool_calls_stream(test_client):
     assert data_chunk3["choices"][0]["finish_reason"] == "tool_calls"
     assert data_done == "data: [DONE]"
 
-def test_chat_completions_error_response(test_client):
+def test_chat_completions_error_response(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield ErrorEvent(message="something went wrong")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        ErrorEvent(message="something went wrong")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": False
     })
@@ -202,23 +206,22 @@ def test_chat_completions_validation_error(test_client):
     client, _ = test_client
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": "invalid_messages_format", 
         "stream": False
     })
     
     assert response.status_code == 422
 
-def test_chat_completions_proxies_full_request(test_client):
+def test_chat_completions_proxies_full_request(test_client, mock_workflow_factory):
     client, mock_orch = test_client
     
-    async def mock_workflow(*args, **kwargs):
-        yield TextDeltaEvent(content="OK")
-        
-    mock_orch.process_workflow.side_effect = mock_workflow
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        TextDeltaEvent(content="OK")
+    ])
     
     response = client.post("/v1/chat/completions", json={
-        "model": "cingulater-v2",
+        "model": "brownie-v2",
         "messages": [{"role": "user", "content": "Hi"}],
         "tools": [{"type": "function", "function": {"name": "test", "description": "test tool"}}]
     })

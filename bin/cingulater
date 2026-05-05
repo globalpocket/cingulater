@@ -25,7 +25,6 @@ if os.path.exists(venv_python) and sys.executable != venv_python:
     os.execv(venv_python, [venv_python] + sys.argv)
 
 # === Venv内でのみ実行される処理 ===
-import yaml
 
 DATA_DIR = Path.home() / ".local" / "share" / "cingulater"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -117,7 +116,7 @@ def start_engine_server():
         f.write(str(process.pid))
         
     if wait_for_port(ENGINE_PORT, timeout=60, proc=process):
-        print(f"✅ Cingulater system fully started (Engine PID: {process.pid}).")
+        print(f"✅ Cingulater fully started (Engine PID: {process.pid}).")
         return True
     else:
         print("❌ Failed to start Cingulater Engine. Check logs/engine.log for details.")
