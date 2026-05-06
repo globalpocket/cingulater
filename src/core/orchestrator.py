@@ -251,8 +251,8 @@ class Orchestrator:
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
-            "stream": False
-            # 変更: max_tokensを削除し、モデル側の最大長まで無制限に許可する
+            "stream": False,
+            "max_tokens": 10240
         }
         
         try:
