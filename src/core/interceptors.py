@@ -279,7 +279,7 @@ class ErrorHandlingInterceptor(BaseInterceptor):
             async for event in stream:
                 yield event
         except Exception as e:
-            logger.error(f"[Interceptor] LLM Streaming Exception caught: {e}")
+            logger.exception("[Interceptor] LLM Streaming Exception caught")
             yield ErrorEvent(message=f"Connection Error: {e}")
 
 class InterceptorPipeline:
