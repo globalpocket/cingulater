@@ -3,6 +3,7 @@ import os
 import time
 import json
 import uuid
+import asyncio
 from typing import List, Optional, Union, Dict, Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
@@ -23,6 +24,7 @@ from core.events import (
 )
 
 orchestrator: Optional[Orchestrator] = None
+KEEP_ALIVE_INTERVAL = 15.0  # 追加: Keep-Aliveの送信間隔
 
 # --- OpenAI Specifications ---
 class FunctionCall(BaseModel):
@@ -159,6 +161,7 @@ async def chat_completions(request: ChatCompletionRequest):
 
     if request.stream:
         async def generate():
+            pending_task = None
             try:
                 base_chunk = {
                     "id": f"chatcmpl-{int(time.time())}",
@@ -169,7 +172,32 @@ async def chat_completions(request: ChatCompletionRequest):
                 
                 is_first_chunk = True
                 
-                async for event in orchestrator.process_workflow(internal_req):
+                workflow_iterator = aiter(orchestrator.process_workflow(internal_req))
+                
+                async def _get_next(it):
+                    return await anext(it)
+
+                while True:
+                    if pending_task is None:
+                        # タスク化してキャンセルを防ぐ
+                        pending_task = asyncio.create_task(_get_next(workflow_iterator))
+                    
+                    # タスクが完了するか、タイムアウトになるまで待つ
+                    done, pending = await asyncio.wait([pending_task], timeout=KEEP_ALIVE_INTERVAL)
+                    
+                    if pending_task in done:
+                        try:
+                            event = pending_task.result()
+                            pending_task = None  # 次のイベント取得に向けてリセット
+                        except StopAsyncIteration:
+                            break
+                        except Exception as e:
+                            raise e
+                    else:
+                        # タイムアウトした場合は Keep-Alive を送って次のループへ
+                        yield ": keep-alive\n\n"
+                        continue
+                    
                     chunk = base_chunk.copy()
                     
                     if isinstance(event, TextDeltaEvent):
@@ -256,6 +284,8 @@ async def chat_completions(request: ChatCompletionRequest):
                 }
                 yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
             finally:
+                if pending_task and not pending_task.done():
+                    pending_task.cancel()
                 yield "data: [DONE]\n\n"
                 
         return StreamingResponse(generate(), media_type="text/event-stream")

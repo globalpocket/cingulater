@@ -1,6 +1,7 @@
 # tests/test_api/test_server.py
 import pytest
 import json
+import asyncio
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock, MagicMock
 from core.events import TextDeltaEvent, ToolCallStartEvent, ToolCallDeltaEvent, SystemToolCallEvent, WorkflowFinishEvent, ErrorEvent
@@ -230,3 +231,30 @@ def test_chat_completions_proxies_full_request(test_client, mock_workflow_factor
     call_args = mock_orch.process_workflow.call_args[0][0]
     assert call_args.tools is not None
     assert call_args.tools[0].function["name"] == "test"
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_keep_alive(test_client):
+    """LLMの応答が遅延した際に keep-alive コメントが出力されるか検証"""
+    client, mock_orch = test_client
+    
+    async def delayed_workflow(*args, **kwargs):
+        yield TextDeltaEvent(content="Start...")
+        await asyncio.sleep(0.05) # Keep-Alive間隔を超えるよう少しだけ待機
+        yield TextDeltaEvent(content="Delayed...")
+        yield WorkflowFinishEvent(finish_reason="stop")
+
+    mock_orch.process_workflow.side_effect = delayed_workflow
+
+    # サーバーの定数 KEEP_ALIVE_INTERVAL を極端に短くしてテスト
+    with patch("api.server.KEEP_ALIVE_INTERVAL", 0.01):
+        response = client.post("/v1/chat/completions", json={
+            "model": "brownie-v2",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": True
+        })
+        
+        assert response.status_code == 200
+        # keep-alive が出力に挟まっているか確認
+        assert ": keep-alive" in response.text
+        assert "Start..." in response.text
+        assert "Delayed..." in response.text
