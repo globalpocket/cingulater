@@ -1,7 +1,7 @@
 [project]
 name = "cingulater"
 version = "0.2.1"
-description = "Autonomous AI Coding Agent core"
+description = "Cingulater is an autonomous agent execution engine equipped with a pipeline that monitors, intervenes in, and modifies the inference stream of LLMs (Large Language Models) in real-time."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
