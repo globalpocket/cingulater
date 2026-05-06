@@ -1,6 +1,6 @@
 [project]
 name = "cingulater"
-version = "0.2.1"
+version = "0.2.2"
 description = "Cingulater is an autonomous agent execution engine equipped with a pipeline that monitors, intervenes in, and modifies the inference stream of LLMs (Large Language Models) in real-time."
 readme = "README.md"
 requires-python = ">=3.12"
