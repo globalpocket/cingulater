@@ -1,6 +1,7 @@
 # tests/test_core/test_orchestrator.py
 import pytest
 import json
+import httpx
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 from core.orchestrator import Orchestrator, Settings, GatewayClient
@@ -131,3 +132,34 @@ async def test_call_llm_stream_fallback_rewrite(orchestrator):
     events = [e async for e in orchestrator._call_llm("interlocutor", "http://dummy", req)]
     
     assert any(isinstance(e, SystemToolCallEvent) and e.tool_name == "valid_client_tool" for e in events)
+
+@pytest.mark.asyncio
+async def test_stream_llm_timeout_user_prompt(orchestrator):
+    """Test that _raw_stream_llm catches TimeoutException and yields a user prompt."""
+    async def mock_stream_chat_timeout(*args, **kwargs):
+        yield StandardLLMChunk(content="Thinking...")
+        raise httpx.TimeoutException("Stream timed out")
+
+    orchestrator.llm_client.stream_chat = mock_stream_chat_timeout
+    req = InternalAgentRequest(messages=[InternalMessage(role="user", content="Hi")])
+    
+    events = [e async for e in orchestrator._raw_stream_llm("interlocutor", "http://dummy", req)]
+    
+    # タイムアウト時にクラッシュせず、テキストメッセージとlengthフィニッシュを出力するか確認
+    assert len(events) == 3
+    assert isinstance(events[0], TextDeltaEvent)
+    assert events[0].content == "Thinking..."
+    assert isinstance(events[1], TextDeltaEvent)
+    assert "システム通知" in events[1].content
+    assert isinstance(events[2], WorkflowFinishEvent)
+    assert events[2].finish_reason == "length"
+
+@pytest.mark.asyncio
+async def test_extract_intent_timeout_fallback(orchestrator):
+    """Test that _extract_intent handles timeouts gracefully and returns 'Unknown intent'."""
+    with patch.object(orchestrator.http_client, "post", new_callable=AsyncMock) as mock_post:
+        mock_post.side_effect = httpx.TimeoutException("Timeout occurred")
+        
+        intent = await orchestrator._extract_intent("Some long text...")
+        assert intent == "Unknown intent"
+        mock_post.assert_called_once()

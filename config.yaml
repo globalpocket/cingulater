@@ -10,7 +10,7 @@ llm:
     interlocutor: "mlx-community/Qwen3.5-9B-MLX-4bit"
 
   interlocutor_endpoint: "http://localhost:8080/v1"
-  timeout_sec: 120
+  timeout_sec: 300 # 変更: タイムアウトを120から300（5分）に延長
 
   # 動的なランチャー設定 (Strategy パターン)
   # mcp-mlx-launcher以外のランチャー(例: Ollama等)に変更する場合は、

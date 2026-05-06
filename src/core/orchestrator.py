@@ -178,13 +178,13 @@ class Orchestrator:
             SystemPromptInterceptor(),
             ModelConfigurationInterceptor(),
             ToolHallucinationInterceptor(),
-            ReflectionInterceptor(), # Restored: Evaluates content to trigger finish tools
+            ReflectionInterceptor(),
             ErrorHandlingInterceptor()
         ])
 
         self.workflow_pipeline = WorkflowInterceptorPipeline([
             WorkflowLoadInterceptor(),
-            ToolFetchInterceptor(), # Restored: Fetches tools for reflection/reranking
+            ToolFetchInterceptor(),
             WorkflowExecutionInterceptor()
         ])
 
@@ -238,11 +238,11 @@ class Orchestrator:
         return "You are CINGULATER."
 
     async def _extract_intent(self, text: str) -> str:
-        """Restored: Extracted intent for Reranker evaluation."""
+        # 変更: 思考プロセスを出力しないようにプロンプトに制約を追加
         prompt = (
             "Translate the following text to English, extract the core user intent, "
             "and summarize it in a short phrase (e.g., 'Asking a clarifying question', 'Completed the task'). "
-            "Output ONLY the summary phrase.\n\n"
+            "DO NOT output any reasoning or thought process. Output ONLY the summary phrase.\n\n"
             f"Text: {text}"
         )
         endpoint = self.settings.llm.interlocutor_endpoint
@@ -250,9 +250,9 @@ class Orchestrator:
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 1024,
             "temperature": 0.0,
             "stream": False
+            # 変更: max_tokensを削除し、モデル側の最大長まで無制限に許可する
         }
         
         try:
@@ -264,8 +264,12 @@ class Orchestrator:
                     logger.debug(f"[Intent Extraction] Original -> Intent: {content}")
                     return content
             logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
+        except httpx.TimeoutException as e:
+            # 変更: タイムアウトを補足
+            logger.warning(f"Intent extraction timed out: {e}")
         except Exception as e:
-            logger.error(f"Intent extraction error: {e}")
+            # 変更: その他例外のスタックトレース出力
+            logger.exception("Intent extraction error:")
             
         return "Unknown intent"
 
@@ -312,25 +316,32 @@ class Orchestrator:
         json_payload = request.model_dump(exclude_none=True)
         final_finish_reason = "stop"
         
-        async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
-            if chunk.content:
-                yield TextDeltaEvent(content=chunk.content)
-            
-            if chunk.tool_calls:
-                for tc in chunk.tool_calls:
-                    func_name = tc.name
-                    args_str = tc.arguments or ""
-                    tc_id = tc.id or f"call_{tc.index}"
-                    
-                    if func_name:
-                        yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
-                    if args_str:
-                        yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
+        try:
+            async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
+                if chunk.content:
+                    yield TextDeltaEvent(content=chunk.content)
+                
+                if chunk.tool_calls:
+                    for tc in chunk.tool_calls:
+                        func_name = tc.name
+                        args_str = tc.arguments or ""
+                        tc_id = tc.id or f"call_{tc.index}"
                         
-            if chunk.finish_reason:
-                final_finish_reason = chunk.finish_reason
+                        if func_name:
+                            yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
+                        if args_str:
+                            yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
+                            
+                if chunk.finish_reason:
+                    final_finish_reason = chunk.finish_reason
 
-        yield WorkflowFinishEvent(finish_reason=final_finish_reason)
+            yield WorkflowFinishEvent(finish_reason=final_finish_reason)
+
+        except httpx.TimeoutException as e:
+            # 変更: LLMがタイムアウトした際、エラーにせずユーザーに通知してストリームを閉じる
+            logger.warning(f"[{model_key}] LLM timeout occurred: {e}")
+            yield TextDeltaEvent(content="\n\n[システム通知: LLMの推論がタイムアウトしました。コンテキストが長すぎる可能性があります。処理をここで一旦区切りますか？]")
+            yield WorkflowFinishEvent(finish_reason="length")
 
     async def shutdown(self):
         for client in self.mcp_clients.values():
