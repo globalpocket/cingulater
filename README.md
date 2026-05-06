@@ -4,8 +4,6 @@ Cingulater is an autonomous agent execution engine equipped with a pipeline that
 
 It is not just a system that passes user prompts to an LLM and returns the results. The true value of Cingulater lies in its **Interceptor Architecture**, which absorbs the uncertainties of LLM outputs (such as hallucinations or lack of action) at the system level and automatically ensures task completion.
 
-![Brownie Banner](docs/images/banner.jpeg)
-
 ## 🧠 Core Autonomous Mechanisms
 
 The basis for Cingulater's autonomy lies in the fact that the system makes independent judgments and repairs through the following implementation logic.

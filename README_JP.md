@@ -4,8 +4,6 @@ Cingulater は、LLM（大規模言語モデル）の推論ストリームをリ
 
 単にユーザーのプロンプトを LLM に渡し、その結果を返すだけのシステムではありません。Cingulater の真の価値は、LLM の出力の不確実性（ハルシネーションや行動の欠如）をシステム層で吸収し、タスクの完遂を自動的に担保する **Interceptor（インターセプター）アーキテクチャ** にあります。
 
-![Brownie Banner](docs/images/banner.jpeg)
-
 ## 🧠 Core Autonomous Mechanisms
 
 Cingulater が自律的である根拠は、以下の実装ロジックによってシステムが独自の判断と修復を行う点にあります。
