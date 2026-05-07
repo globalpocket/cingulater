@@ -270,7 +270,6 @@ class Orchestrator:
                     return content
             logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
         except Exception as e:
-            # 変更: その他例外のスタックトレース出力
             logger.exception("Intent extraction error:")
             
         return "Unknown intent"
@@ -349,7 +348,7 @@ class Orchestrator:
                     if attempt < max_retries:
                         logger.warning(f"LLM connection error: {e}. Attempting self-healing (relaunching server)...")
                         await self._launch_llm_server()
-                        await asyncio.sleep(2)  # サーバー起動待ち
+                        await asyncio.sleep(20)  # サーバー起動待ち (変更: 2秒から20秒へ延長)
                         continue
                 # リトライ上限、または対象外のエラーの場合は再送出
                 raise e

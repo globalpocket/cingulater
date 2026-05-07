@@ -282,7 +282,11 @@ async def chat_completions(request: ChatCompletionRequest):
                             yield f"data: {json.dumps(delta_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                             
                         elif isinstance(event, ErrorEvent):
-                            chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Cingulater Error: {event.message}]\n\n"}, "finish_reason": "error"}]
+                            delta = {"content": f"\n\n[Cingulater Error: {event.message}]\n\n"}
+                            if is_first_chunk:
+                                delta["role"] = "assistant"
+                                is_first_chunk = False
+                            chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": "error"}]
                             yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                             
                         elif isinstance(event, WorkflowFinishEvent):
@@ -291,12 +295,17 @@ async def chat_completions(request: ChatCompletionRequest):
 
                 except Exception as e:
                     logger.error(f"Streaming error: {e}")
+                    delta = {"content": f"Internal Server Error: {e}"}
+                    if is_first_chunk:
+                        delta["role"] = "assistant"
+                        is_first_chunk = False
+                        
                     err_chunk = {
                         "id": f"chatcmpl-{int(time.time())}",
                         "object": "chat.completion.chunk",
                         "created": int(time.time()),
                         "model": model_name,
-                        "choices": [{"index": 0, "delta": {"content": f"Internal Server Error: {e}"}, "finish_reason": "error"}]
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": "error"}]
                     }
                     yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                 finally:
