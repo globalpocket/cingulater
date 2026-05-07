@@ -24,6 +24,7 @@ from core.events import (
 )
 
 orchestrator: Optional[Orchestrator] = None
+chat_lock: Optional[asyncio.Lock] = None
 KEEP_ALIVE_INTERVAL = 15.0  # 追加: Keep-Aliveの送信間隔
 
 # --- OpenAI Specifications ---
@@ -73,7 +74,10 @@ class ChatCompletionResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global orchestrator
+    global orchestrator, chat_lock
+    # イベントループ内で初期化するためにlifespanでLockを生成する
+    chat_lock = asyncio.Lock()
+    
     config_path = os.getenv("CINGULATER_CONFIG", "config.yaml")
     logger.info(f"Initializing Cingulater Core (Config: {config_path})")
     orchestrator = Orchestrator(config_path)
@@ -110,6 +114,16 @@ def _ensure_openai_id(internal_id: str) -> str:
     if internal_id and internal_id.startswith("call_") and len(internal_id) >= 20:
         return internal_id
     return f"call_{uuid.uuid4().hex[:24]}"
+
+@asynccontextmanager
+async def _optional_task_lock():
+    """設定に応じてタスクを直列化する条件付きロック"""
+    if orchestrator and getattr(orchestrator.settings.agent, "single_task_mode", False) and chat_lock:
+        logger.debug("[Concurrency] single_task_mode is ON. Acquiring lock...")
+        async with chat_lock:
+            yield
+    else:
+        yield
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest):
@@ -161,200 +175,197 @@ async def chat_completions(request: ChatCompletionRequest):
 
     if request.stream:
         async def generate():
-            pending_task = None
-            try:
-                base_chunk = {
-                    "id": f"chatcmpl-{int(time.time())}",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": model_name
-                }
-                
-                # 🌟 修正: ストリーミング開始直後に空の assistant チャンクを送信する
-                # これにより、自己修復(モデルのロード)に時間がかかっても、クライアント側が
-                # タイムアウトしたり「assistant messageがない」と判定するのを防ぐ。
-                initial_chunk = base_chunk.copy()
-                initial_chunk["choices"] = [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]
-                yield f"data: {json.dumps(initial_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
-                
-                is_first_chunk = False # 初期チャンクでロールを送ったため False に設定
-                
-                workflow_iterator = aiter(orchestrator.process_workflow(internal_req))
-                
-                async def _get_next(it):
-                    return await anext(it)
+            # stream全体のライフサイクルをロックで保護する
+            async with _optional_task_lock():
+                pending_task = None
+                try:
+                    base_chunk = {
+                        "id": f"chatcmpl-{int(time.time())}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model_name
+                    }
+                    
+                    is_first_chunk = True
+                    
+                    workflow_iterator = aiter(orchestrator.process_workflow(internal_req))
+                    
+                    async def _get_next(it):
+                        return await anext(it)
 
-                while True:
-                    if pending_task is None:
-                        # タスク化してキャンセルを防ぐ
-                        pending_task = asyncio.create_task(_get_next(workflow_iterator))
-                    
-                    # タスクが完了するか、タイムアウトになるまで待つ
-                    done, pending = await asyncio.wait([pending_task], timeout=KEEP_ALIVE_INTERVAL)
-                    
-                    if pending_task in done:
-                        try:
-                            event = pending_task.result()
-                            pending_task = None  # 次のイベント取得に向けてリセット
-                        except StopAsyncIteration:
-                            break
-                        except Exception as e:
-                            raise e
-                    else:
-                        # タイムアウトした場合は Keep-Alive を送って次のループへ
-                        yield ": keep-alive\n\n"
-                        continue
-                    
-                    chunk = base_chunk.copy()
-                    
-                    if isinstance(event, TextDeltaEvent):
-                        delta = {"content": event.content}
-                        if is_first_chunk:
-                            delta["role"] = "assistant"
-                            is_first_chunk = False
-                        chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                    while True:
+                        if pending_task is None:
+                            # タスク化してキャンセルを防ぐ
+                            pending_task = asyncio.create_task(_get_next(workflow_iterator))
                         
-                    elif isinstance(event, ToolCallStartEvent):
-                        client_id = _ensure_openai_id(event.id)
-                        delta = {
-                            "tool_calls": [{
-                                "index": event.index,
-                                "id": client_id,
-                                "type": "function",
-                                "function": {"name": event.tool_name, "arguments": ""}
-                            }]
-                        }
-                        if is_first_chunk:
-                            delta["role"] = "assistant"
-                            is_first_chunk = False
-                        chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                        # タスクが完了するか、タイムアウトになるまで待つ
+                        done, pending = await asyncio.wait([pending_task], timeout=KEEP_ALIVE_INTERVAL)
                         
-                    elif isinstance(event, ToolCallDeltaEvent):
-                        chunk["choices"] = [{"index": 0, "delta": {
-                            "tool_calls": [{
-                                "index": event.index,
-                                "function": {"arguments": event.arguments}
-                            }]
-                        }, "finish_reason": None}]
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                        if pending_task in done:
+                            try:
+                                event = pending_task.result()
+                                pending_task = None  # 次のイベント取得に向けてリセット
+                            except StopAsyncIteration:
+                                break
+                            except Exception as e:
+                                raise e
+                        else:
+                            # タイムアウトした場合は Keep-Alive を送って次のループへ
+                            yield ": keep-alive\n\n"
+                            continue
                         
-                    elif isinstance(event, SystemToolCallEvent):
-                        client_id = _ensure_openai_id(event.id)
-                        start_delta = {
-                            "tool_calls": [{
-                                "index": event.index,
-                                "id": client_id,
-                                "type": "function",
-                                "function": {
-                                    "name": event.tool_name, 
-                                    "arguments": ""
-                                }
-                            }]
-                        }
-                        if is_first_chunk:
-                            start_delta["role"] = "assistant"
-                            is_first_chunk = False
+                        chunk = base_chunk.copy()
                         
-                        start_chunk = base_chunk.copy()
-                        start_chunk["choices"] = [{"index": 0, "delta": start_delta, "finish_reason": None}]
-                        yield f"data: {json.dumps(start_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
-                        
-                        delta_chunk = base_chunk.copy()
-                        delta_chunk["choices"] = [{"index": 0, "delta": {
-                            "tool_calls": [{
-                                "index": event.index,
-                                "function": {
-                                    "arguments": json.dumps(event.arguments, ensure_ascii=False, separators=(',', ':'))
-                                }
-                            }]
-                        }, "finish_reason": None}]
-                        yield f"data: {json.dumps(delta_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
-                        
-                    elif isinstance(event, ErrorEvent):
-                        chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Cingulater Error: {event.message}]\n\n"}, "finish_reason": "error"}]
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
-                        
-                    elif isinstance(event, WorkflowFinishEvent):
-                        chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": event.finish_reason}]
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                        if isinstance(event, TextDeltaEvent):
+                            delta = {"content": event.content}
+                            if is_first_chunk:
+                                delta["role"] = "assistant"
+                                is_first_chunk = False
+                            chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                            
+                        elif isinstance(event, ToolCallStartEvent):
+                            client_id = _ensure_openai_id(event.id)
+                            delta = {
+                                "tool_calls": [{
+                                    "index": event.index,
+                                    "id": client_id,
+                                    "type": "function",
+                                    "function": {"name": event.tool_name, "arguments": ""}
+                                }]
+                            }
+                            if is_first_chunk:
+                                delta["role"] = "assistant"
+                                is_first_chunk = False
+                            chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                            
+                        elif isinstance(event, ToolCallDeltaEvent):
+                            chunk["choices"] = [{"index": 0, "delta": {
+                                "tool_calls": [{
+                                    "index": event.index,
+                                    "function": {"arguments": event.arguments}
+                                }]
+                            }, "finish_reason": None}]
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                            
+                        elif isinstance(event, SystemToolCallEvent):
+                            client_id = _ensure_openai_id(event.id)
+                            start_delta = {
+                                "tool_calls": [{
+                                    "index": event.index,
+                                    "id": client_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": event.tool_name, 
+                                        "arguments": ""
+                                    }
+                                }]
+                            }
+                            if is_first_chunk:
+                                start_delta["role"] = "assistant"
+                                is_first_chunk = False
+                            
+                            start_chunk = base_chunk.copy()
+                            start_chunk["choices"] = [{"index": 0, "delta": start_delta, "finish_reason": None}]
+                            yield f"data: {json.dumps(start_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                            
+                            delta_chunk = base_chunk.copy()
+                            delta_chunk["choices"] = [{"index": 0, "delta": {
+                                "tool_calls": [{
+                                    "index": event.index,
+                                    "function": {
+                                        "arguments": json.dumps(event.arguments, ensure_ascii=False, separators=(',', ':'))
+                                    }
+                                }]
+                            }, "finish_reason": None}]
+                            yield f"data: {json.dumps(delta_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                            
+                        elif isinstance(event, ErrorEvent):
+                            chunk["choices"] = [{"index": 0, "delta": {"content": f"\n\n[Cingulater Error: {event.message}]\n\n"}, "finish_reason": "error"}]
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                            
+                        elif isinstance(event, WorkflowFinishEvent):
+                            chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": event.finish_reason}]
+                            yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
-            except Exception as e:
-                logger.error(f"Streaming error: {e}")
-                err_chunk = {
-                    "id": f"chatcmpl-{int(time.time())}",
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": model_name,
-                    "choices": [{"index": 0, "delta": {"content": f"Internal Server Error: {e}"}, "finish_reason": "error"}]
-                }
-                yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
-            finally:
-                if pending_task and not pending_task.done():
-                    pending_task.cancel()
-                yield "data: [DONE]\n\n"
+                except Exception as e:
+                    logger.error(f"Streaming error: {e}")
+                    err_chunk = {
+                        "id": f"chatcmpl-{int(time.time())}",
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": model_name,
+                        "choices": [{"index": 0, "delta": {"content": f"Internal Server Error: {e}"}, "finish_reason": "error"}]
+                    }
+                    yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                finally:
+                    if pending_task and not pending_task.done():
+                        pending_task.cancel()
+                    yield "data: [DONE]\n\n"
                 
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     else:
-        full_content = ""
-        tool_calls_dict = {}
-        finish_reason = "stop"
-        has_error = False
-        error_message = ""
-        
-        try:
-            async for event in orchestrator.process_workflow(internal_req):
-                if isinstance(event, TextDeltaEvent):
-                    full_content += event.content
-                elif isinstance(event, ToolCallStartEvent):
-                    tool_calls_dict[event.index] = {
-                        "id": _ensure_openai_id(event.id),
-                        "type": "function",
-                        "function": {"name": event.tool_name, "arguments": ""}
-                    }
-                elif isinstance(event, ToolCallDeltaEvent):
-                    if event.index in tool_calls_dict:
-                        tool_calls_dict[event.index]["function"]["arguments"] += event.arguments
-                elif isinstance(event, SystemToolCallEvent):
-                    tool_calls_dict[event.index] = {
-                        "id": _ensure_openai_id(event.id),
-                        "type": "function",
-                        "function": {"name": event.tool_name, "arguments": json.dumps(event.arguments, ensure_ascii=False, separators=(',', ':'))}
-                    }
-                elif isinstance(event, WorkflowFinishEvent):
-                    finish_reason = event.finish_reason
-                elif isinstance(event, ErrorEvent):
-                    has_error = True
-                    error_message = event.message
-                    finish_reason = "error"
-        except Exception as e:
-            logger.error(f"Error processing workflow: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+        # 非ストリーム処理時もロックで保護する
+        async with _optional_task_lock():
+            full_content = ""
+            tool_calls_dict = {}
+            finish_reason = "stop"
+            has_error = False
+            error_message = ""
             
-        if has_error:
-            full_content += f"\n\nERROR: {error_message}"
+            try:
+                async for event in orchestrator.process_workflow(internal_req):
+                    if isinstance(event, TextDeltaEvent):
+                        full_content += event.content
+                    elif isinstance(event, ToolCallStartEvent):
+                        tool_calls_dict[event.index] = {
+                            "id": _ensure_openai_id(event.id),
+                            "type": "function",
+                            "function": {"name": event.tool_name, "arguments": ""}
+                        }
+                    elif isinstance(event, ToolCallDeltaEvent):
+                        if event.index in tool_calls_dict:
+                            tool_calls_dict[event.index]["function"]["arguments"] += event.arguments
+                    elif isinstance(event, SystemToolCallEvent):
+                        tool_calls_dict[event.index] = {
+                            "id": _ensure_openai_id(event.id),
+                            "type": "function",
+                            "function": {"name": event.tool_name, "arguments": json.dumps(event.arguments, ensure_ascii=False, separators=(',', ':'))}
+                        }
+                    elif isinstance(event, WorkflowFinishEvent):
+                        finish_reason = event.finish_reason
+                    elif isinstance(event, ErrorEvent):
+                        has_error = True
+                        error_message = event.message
+                        finish_reason = "error"
+            except Exception as e:
+                logger.error(f"Error processing workflow: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+                
+            if has_error:
+                full_content += f"\n\nERROR: {error_message}"
 
-        message = {"role": "assistant"}
-        if full_content:
-            message["content"] = full_content
-        else:
-            message["content"] = None
+            message = {"role": "assistant"}
+            if full_content:
+                message["content"] = full_content
+            else:
+                message["content"] = None
 
-        if tool_calls_dict:
-            message["tool_calls"] = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())]
+            if tool_calls_dict:
+                message["tool_calls"] = [tool_calls_dict[i] for i in sorted(tool_calls_dict.keys())]
 
-        return ChatCompletionResponse(
-            model=model_name,
-            choices=[
-                ChatCompletionResponseChoice(
-                    index=0,
-                    message=ChatMessage(**message),
-                    finish_reason=finish_reason
-                )
-            ]
-        )
+            return ChatCompletionResponse(
+                model=model_name,
+                choices=[
+                    ChatCompletionResponseChoice(
+                        index=0,
+                        message=ChatMessage(**message),
+                        finish_reason=finish_reason
+                    )
+                ]
+            )
 
 @app.get("/health")
 async def health():

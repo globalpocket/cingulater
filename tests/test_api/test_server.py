@@ -134,18 +134,15 @@ def test_chat_completions_stream(test_client, mock_workflow_factory):
     
     content = response.text
     lines = content.strip().split("\n\n")
-    # 初期空チャンクが追加されたため、合計4チャンクになる
-    assert len(lines) == 4
+    assert len(lines) == 3
     
     data_chunk1 = json.loads(lines[0].replace("data: ", ""))
     data_chunk2 = json.loads(lines[1].replace("data: ", ""))
-    data_chunk3 = json.loads(lines[2].replace("data: ", ""))
-    data_done = lines[3]
+    data_done = lines[2]
     
     assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
-    assert data_chunk1["choices"][0]["delta"]["content"] == ""
-    assert data_chunk2["choices"][0]["delta"]["content"] == "Hi there from stream!"
-    assert data_chunk3["choices"][0]["finish_reason"] == "stop"
+    assert data_chunk1["choices"][0]["delta"]["content"] == "Hi there from stream!"
+    assert data_chunk2["choices"][0]["finish_reason"] == "stop"
     assert data_done == "data: [DONE]"
 
 def test_chat_completions_system_tool_calls_stream(test_client, mock_workflow_factory):
@@ -166,31 +163,27 @@ def test_chat_completions_system_tool_calls_stream(test_client, mock_workflow_fa
     
     content = response.text
     lines = content.strip().split("\n\n")
-    # Initial empty chunk, Start chunk, Delta chunk, Finish chunk, DONE
-    assert len(lines) == 5
+    # Start chunk, Delta chunk, Finish chunk, DONE
+    assert len(lines) == 4
     
     data_chunk1 = json.loads(lines[0].replace("data: ", ""))
     data_chunk2 = json.loads(lines[1].replace("data: ", ""))
     data_chunk3 = json.loads(lines[2].replace("data: ", ""))
-    data_chunk4 = json.loads(lines[3].replace("data: ", ""))
-    data_done = lines[4]
+    data_done = lines[3]
     
-    # 最初のチャンクは role: assistant と空の content を含む
+    # 最初のチャンクは role: assistant と name を含む
     assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
-    assert data_chunk1["choices"][0]["delta"]["content"] == ""
-
-    # 2番目のチャンクは name を含む
-    tc1 = data_chunk2["choices"][0]["delta"]["tool_calls"][0]
+    tc1 = data_chunk1["choices"][0]["delta"]["tool_calls"][0]
     assert tc1["id"].startswith("call_")
     assert len(tc1["id"]) >= 20  # サーバー側でID補完されているか
     assert tc1["function"]["name"] == "sys_tool"
     assert tc1["function"]["arguments"] == ""
     
-    # 3つ目のチャンクは arguments を含む
-    tc2 = data_chunk3["choices"][0]["delta"]["tool_calls"][0]
+    # 2つ目のチャンクは arguments を含む
+    tc2 = data_chunk2["choices"][0]["delta"]["tool_calls"][0]
     assert json.loads(tc2["function"]["arguments"]) == {"key": "val"}
     
-    assert data_chunk4["choices"][0]["finish_reason"] == "tool_calls"
+    assert data_chunk3["choices"][0]["finish_reason"] == "tool_calls"
     assert data_done == "data: [DONE]"
 
 def test_chat_completions_error_response(test_client, mock_workflow_factory):
@@ -265,3 +258,55 @@ async def test_chat_completions_stream_keep_alive(test_client):
         assert ": keep-alive" in response.text
         assert "Start..." in response.text
         assert "Delayed..." in response.text
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_single_task_mode(test_client, mock_workflow_factory):
+    """single_task_mode が有効な場合、ロックが取得されるか検証"""
+    client, mock_orch = test_client
+    
+    mock_orch.settings.agent.single_task_mode = True
+    
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        TextDeltaEvent(content="Single task mode response"),
+        WorkflowFinishEvent(finish_reason="stop")
+    ])
+    
+    with patch("api.server.chat_lock", new_callable=AsyncMock) as mock_lock:
+        response = client.post("/v1/chat/completions", json={
+            "model": "brownie-v2",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": False
+        })
+        
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "Single task mode response"
+        # ロックが取得・解放されたことを確認
+        assert mock_lock.__aenter__.called
+        assert mock_lock.__aexit__.called
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_stream_single_task_mode(test_client, mock_workflow_factory):
+    """single_task_mode が有効な場合 (ストリーミング時)、ロックが取得されるか検証"""
+    client, mock_orch = test_client
+    
+    mock_orch.settings.agent.single_task_mode = True
+    
+    mock_orch.process_workflow.side_effect = mock_workflow_factory([
+        TextDeltaEvent(content="Single task mode stream"),
+        WorkflowFinishEvent(finish_reason="stop")
+    ])
+    
+    with patch("api.server.chat_lock", new_callable=AsyncMock) as mock_lock:
+        response = client.post("/v1/chat/completions", json={
+            "model": "brownie-v2",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": True
+        })
+        
+        assert response.status_code == 200
+        assert "Single task mode stream" in response.text
+        # ロックが取得・解放されたことを確認
+        assert mock_lock.__aenter__.called
+        assert mock_lock.__aexit__.called

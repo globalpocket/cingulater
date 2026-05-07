@@ -50,6 +50,7 @@ from core.interceptors import (
 # ==========================================
 class AgentSettings(BaseModel):
     max_retries: int = Field(default=3)
+    single_task_mode: bool = Field(default=False)
 
 class LLMSettings(BaseModel):
     models: dict[str, str] = Field(default_factory=dict)
