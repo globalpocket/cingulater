@@ -134,15 +134,18 @@ def test_chat_completions_stream(test_client, mock_workflow_factory):
     
     content = response.text
     lines = content.strip().split("\n\n")
-    assert len(lines) == 3
+    # 初期空チャンクが追加されたため、合計4チャンクになる
+    assert len(lines) == 4
     
     data_chunk1 = json.loads(lines[0].replace("data: ", ""))
     data_chunk2 = json.loads(lines[1].replace("data: ", ""))
-    data_done = lines[2]
+    data_chunk3 = json.loads(lines[2].replace("data: ", ""))
+    data_done = lines[3]
     
     assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
-    assert data_chunk1["choices"][0]["delta"]["content"] == "Hi there from stream!"
-    assert data_chunk2["choices"][0]["finish_reason"] == "stop"
+    assert data_chunk1["choices"][0]["delta"]["content"] == ""
+    assert data_chunk2["choices"][0]["delta"]["content"] == "Hi there from stream!"
+    assert data_chunk3["choices"][0]["finish_reason"] == "stop"
     assert data_done == "data: [DONE]"
 
 def test_chat_completions_system_tool_calls_stream(test_client, mock_workflow_factory):
@@ -163,27 +166,31 @@ def test_chat_completions_system_tool_calls_stream(test_client, mock_workflow_fa
     
     content = response.text
     lines = content.strip().split("\n\n")
-    # Start chunk, Delta chunk, Finish chunk, DONE
-    assert len(lines) == 4
+    # Initial empty chunk, Start chunk, Delta chunk, Finish chunk, DONE
+    assert len(lines) == 5
     
     data_chunk1 = json.loads(lines[0].replace("data: ", ""))
     data_chunk2 = json.loads(lines[1].replace("data: ", ""))
     data_chunk3 = json.loads(lines[2].replace("data: ", ""))
-    data_done = lines[3]
+    data_chunk4 = json.loads(lines[3].replace("data: ", ""))
+    data_done = lines[4]
     
-    # 最初のチャンクは role: assistant と name を含む
+    # 最初のチャンクは role: assistant と空の content を含む
     assert data_chunk1["choices"][0]["delta"]["role"] == "assistant"
-    tc1 = data_chunk1["choices"][0]["delta"]["tool_calls"][0]
+    assert data_chunk1["choices"][0]["delta"]["content"] == ""
+
+    # 2番目のチャンクは name を含む
+    tc1 = data_chunk2["choices"][0]["delta"]["tool_calls"][0]
     assert tc1["id"].startswith("call_")
     assert len(tc1["id"]) >= 20  # サーバー側でID補完されているか
     assert tc1["function"]["name"] == "sys_tool"
     assert tc1["function"]["arguments"] == ""
     
-    # 2つ目のチャンクは arguments を含む
-    tc2 = data_chunk2["choices"][0]["delta"]["tool_calls"][0]
+    # 3つ目のチャンクは arguments を含む
+    tc2 = data_chunk3["choices"][0]["delta"]["tool_calls"][0]
     assert json.loads(tc2["function"]["arguments"]) == {"key": "val"}
     
-    assert data_chunk3["choices"][0]["finish_reason"] == "tool_calls"
+    assert data_chunk4["choices"][0]["finish_reason"] == "tool_calls"
     assert data_done == "data: [DONE]"
 
 def test_chat_completions_error_response(test_client, mock_workflow_factory):

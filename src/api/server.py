@@ -170,7 +170,14 @@ async def chat_completions(request: ChatCompletionRequest):
                     "model": model_name
                 }
                 
-                is_first_chunk = True
+                # 🌟 修正: ストリーミング開始直後に空の assistant チャンクを送信する
+                # これにより、自己修復(モデルのロード)に時間がかかっても、クライアント側が
+                # タイムアウトしたり「assistant messageがない」と判定するのを防ぐ。
+                initial_chunk = base_chunk.copy()
+                initial_chunk["choices"] = [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]
+                yield f"data: {json.dumps(initial_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                
+                is_first_chunk = False # 初期チャンクでロールを送ったため False に設定
                 
                 workflow_iterator = aiter(orchestrator.process_workflow(internal_req))
                 
