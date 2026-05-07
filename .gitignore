@@ -222,3 +222,4 @@ logs/
 
 # Analysis results
 .analyze/
+.roo/mcp.json
