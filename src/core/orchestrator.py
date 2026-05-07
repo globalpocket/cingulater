@@ -1,10 +1,9 @@
 # src/core/orchestrator.py
 import os
-import time
-import yaml
 import json
+import time
 import asyncio
-import logging
+import datetime
 from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any, Dict, List, Optional, AsyncGenerator
@@ -18,31 +17,15 @@ import mcp.types as types
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client, StdioServerParameters
 
-from core.schema import InternalAgentRequest, InternalMessage, InternalTool
+from core.schema import InternalAgentRequest
 from core.events import (
     AgentEvent,
     TextDeltaEvent,
-    ToolCallStartEvent,
-    ToolCallDeltaEvent,
     SystemToolCallEvent,
     WorkflowFinishEvent,
     ErrorEvent
 )
 from core.llm_client import OpenAILLMClient
-from core.interceptors import (
-    InterceptorPipeline,
-    SystemPromptInterceptor,
-    ToolHallucinationInterceptor,
-    ReflectionInterceptor,
-    ModelConfigurationInterceptor,
-    ErrorHandlingInterceptor,
-    LoggingInterceptor,
-    ContextLimitInterceptor,
-    WorkflowInterceptorPipeline,
-    WorkflowLoadInterceptor,
-    ToolFetchInterceptor,
-    WorkflowExecutionInterceptor
-)
 
 
 # ==========================================
@@ -72,6 +55,7 @@ class Settings(BaseSettings):
     def load(cls, config_path: str) -> "Settings":
         try:
             with open(config_path, "r", encoding="utf-8") as f:
+                import yaml
                 yaml_data = yaml.safe_load(f) or {}
             return cls(**yaml_data)
         except Exception as e:
@@ -95,15 +79,13 @@ class GatewayClient:
         self._init_event = asyncio.Event()
 
     async def start(self):
-        """Starts the MCP server in a background task to maintain the context."""
         self._stop_event.clear()
         self._init_event.clear()
         self._task = asyncio.create_task(self._run())
         
-        # Wait for initialization or error
         await self._init_event.wait()
         if not self.session:
-            logger.error(f"Failed to initialize MCP session for {self.command}. Continuing without it.")
+            logger.error(f"Failed to initialize MCP session for {self.command}.")
 
     async def _run(self):
         try:
@@ -119,17 +101,14 @@ class GatewayClient:
                     logger.info(f"✅ Successfully connected to MCP via {self.command}.")
                     self._init_event.set()
                     
-                    # Wait until stop() is called
                     await self._stop_event.wait()
         except Exception as e:
             logger.error(f"❌ MCP session error ({self.command}): {e}")
-            # Ensure initialization wait is released even on error
             self._init_event.set()
         finally:
             self.session = None
 
     async def stop(self):
-        """Signals the background task to exit gracefully."""
         self._stop_event.set()
         if self._task:
             try:
@@ -137,16 +116,6 @@ class GatewayClient:
             except asyncio.CancelledError:
                 pass
             self._task = None
-
-    async def fetch_tools(self) -> List[Dict[str, Any]]:
-        if not self.session:
-            return []
-        try:
-            tools_result = await self.session.list_tools()
-            return [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in tools_result.tools]
-        except Exception as e:
-            logger.error(f"Failed to fetch tools: {e}")
-            return []
 
     async def call_tool(self, tool_name: str, arguments: dict) -> str:
         if not self.session:
@@ -160,35 +129,17 @@ class GatewayClient:
 
 
 # ==========================================
-# 3. Core Orchestrator
+# 3. Core Orchestrator (Prompt Chaining Pipeline)
 # ==========================================
 class Orchestrator:
     def __init__(self, config_path: str):
         self.settings = get_settings(config_path)
         self.project_root = Path(__file__).parent.parent.parent
-        self.system_prompt_path = self.project_root / ".cingulater" / "system_prompt.md"
         self.mcp_config_path = self.project_root / "mcp_config.json"
+        self.gateway_log_path = self.project_root / "logs" / "gateway.log"
         
-        self.system_prompt = self._load_system_prompt()
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
         self.llm_client = OpenAILLMClient()
-        
-        self.llm_pipeline = InterceptorPipeline([
-            LoggingInterceptor(),
-            ContextLimitInterceptor(max_messages=2000),
-            SystemPromptInterceptor(),
-            ModelConfigurationInterceptor(),
-            ToolHallucinationInterceptor(),
-            ReflectionInterceptor(), # Restored: Evaluates content to trigger finish tools
-            ErrorHandlingInterceptor()
-        ])
-
-        self.workflow_pipeline = WorkflowInterceptorPipeline([
-            WorkflowLoadInterceptor(),
-            ToolFetchInterceptor(), # Restored: Fetches tools for reflection/reranking
-            WorkflowExecutionInterceptor()
-        ])
-
         self.mcp_clients: Dict[str, GatewayClient] = {}
         
         if self.mcp_config_path.exists():
@@ -196,27 +147,56 @@ class Orchestrator:
                 with open(self.mcp_config_path, "r", encoding="utf-8") as f:
                     servers = json.load(f).get("mcpServers", {})
                     for name, config in servers.items():
-                        if name == "mcp-routing-gateway":
+                        if name not in ["mlx-launcher", "mcp-reranker"]:
                             continue
                             
                         cmd = config.get("command")
                         args = config.get("args", [])
-                        
                         if cmd:
                             self.mcp_clients[name] = GatewayClient(command=cmd, args=args)
             except Exception as e:
                 logger.error(f"Failed to load mcp_config.json: {e}")
 
+    def _log_to_gateway(self, request: InternalAgentRequest, reranker_query: str, available_tools: list, selected_tool: str, tool_args: dict):
+        try:
+            self.gateway_log_path.parent.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.datetime.now().isoformat()
+            with open(self.gateway_log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] === GATEWAY LOG ===\n")
+                
+                last_user_msg = "None"
+                if request.messages:
+                    for msg in reversed(request.messages):
+                        if msg.role == "user":
+                            last_user_msg = msg.content or ""
+                            if len(last_user_msg) > 500:
+                                last_user_msg = last_user_msg[:500] + "...(truncated)"
+                            break
+                        
+                f.write(f"--- LAST USER MESSAGE ---\n{last_user_msg}\n\n")
+                
+                f.write("--- AVAILABLE TOOLS FROM CLIENT ---\n")
+                if available_tools:
+                    for t in available_tools:
+                        name = t.function.get("name", "unknown")
+                        desc = t.function.get("description", "no description")
+                        f.write(f"- {name}: {desc}\n")
+                f.write("\n")
+                
+                f.write(f"--- RERANKER QUERY ---\n{reranker_query}\n\n")
+                f.write(f"--- SELECTED TOOL ---\n{selected_tool}\n\n")
+                f.write(f"--- GENERATED TOOL ARGS ---\n{json.dumps(tool_args, ensure_ascii=False, indent=2)}\n")
+                f.write("=========================================\n\n")
+        except Exception as e:
+            logger.error(f"Failed to write gateway log: {e}")
+
     async def start(self):
-        # Start all MCP clients
         for name, client in self.mcp_clients.items():
             logger.info(f"Starting MCP Client: {name}")
             await client.start()
             
-        # Auto-Launch LLM Server
         await self._launch_llm_server()
-            
-        logger.info("✅ Orchestrator: Hybrid-Workflow engine ready.")
+        logger.info("✅ Orchestrator: Prompt Chaining engine ready.")
 
     async def _launch_llm_server(self):
         try:
@@ -233,136 +213,184 @@ class Orchestrator:
                             logger.info(f"Launching/Restarting LLM Server for {key} model: {model} on port {port}")
                             await launcher_client.call_tool(launcher_tool_name, {"model_name": model, "port": port})
                 else:
-                    logger.debug(f"Launcher client '{launcher_client_name}' is missing or offline. Skipping auto-launch.")
+                    logger.debug(f"Launcher client '{launcher_client_name}' is missing or offline.")
         except Exception as e:
             logger.error(f"Auto-launch failed: {e}")
 
-    def _load_system_prompt(self) -> str:
-        if self.system_prompt_path.exists():
-            return self.system_prompt_path.read_text(encoding="utf-8")
-        return "You are CINGULATER."
+    async def _generate_tool_arguments(self, endpoint: str, model: str, last_user_message: str, assistant_content: str, tool_name: str, tool_schema: dict) -> dict:
+        prompt = f"""
+あなたはAIアシスタントの内部システムとして機能する、ツール引数生成エンジンです。
+以下の「ユーザーの発言」と「アシスタントの返答意図」を読み取り、対象ツールを実行するための正しいJSON引数を生成してください。
 
-    async def _extract_intent(self, text: str) -> str:
-        """Restored: Extracted intent for Reranker evaluation."""
-        prompt = (
-            "Translate the following text to English, extract the core user intent, "
-            "and summarize it in a short phrase (e.g., 'Asking a clarifying question', 'Completed the task'). "
-            "Output ONLY the summary phrase.\n\n"
-            f"Text: {text}"
-        )
-        endpoint = self.settings.llm.interlocutor_endpoint
-        model_name = self.settings.llm.models.get("interlocutor", "default")
+[ユーザーの発言]
+{last_user_message}
+
+[アシスタントの返答意図]
+{assistant_content.strip()}
+
+[対象ツール]
+名前: {tool_name}
+引数スキーマ (JSON Schema):
+{json.dumps(tool_schema.get("parameters", {}), ensure_ascii=False, indent=2)}
+
+【重要な指示】
+- スキーマの要件（プロパティ名、型、必須項目）を厳密に満たすJSONオブジェクトを生成してください。
+- アシスタントの返答意図から、ツールに必要な情報を抽出して引数に割り当ててください。
+- markdownの装飾(```jsonなど)や説明文、挨拶などは一切書かず、純粋なJSON文字列だけを出力してください。
+"""
         payload = {
-            "model": model_name,
+            "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 10240, # CoTモデルなどを考慮して大きなサイズを維持
+            "max_tokens": 8192,  # 空文字返却を防ぐために必ず指定
             "temperature": 0.0,
             "stream": False
         }
         
-        max_retries = 1
-        for attempt in range(max_retries + 1):
-            try:
-                resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                    if content:
-                        logger.debug(f"[Intent Extraction] Original -> Intent: {content}")
-                        return content
-                logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
-                break # ステータスコードエラーの場合はリトライしない
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "connect" in error_msg or "timeout" in error_msg:
-                    if attempt < max_retries:
-                        logger.warning(f"Intent extraction LLM connection error: {e}. Attempting self-healing (relaunching server)...")
-                        await self._launch_llm_server()
-                        await asyncio.sleep(20)  # サーバー起動待ち
-                        continue
-                logger.exception("Intent extraction error:")
-                break
+        args = {}
+        try:
+            resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload, timeout=60)
+            if resp.status_code == 200:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
+                content = content.strip()
+                
+                # ブロックの切り出し（LLMが余計な文字を含めた場合の対策）
+                if "{" in content and "}" in content:
+                    start = content.find("{")
+                    end = content.rfind("}") + 1
+                    json_str = content[start:end]
+                    try:
+                        args = json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"JSON Decode Error in args generation: {e}\nContent was: {content}")
+                else:
+                    logger.error(f"No JSON object found in args generation.\nContent was: {content}")
+            else:
+                logger.error(f"HTTP Error in args generation: {resp.status_code} - {resp.text}")
+        except Exception as e:
+            logger.error(f"Error generating tool args: {e}")
             
-        return "Unknown intent"
+        # --- 鉄壁のフォールバック処理 ---
+        # 必須パラメータが欠落している場合は、システム側で安全に補完する
+        reqs = tool_schema.get("parameters", {}).get("required", [])
+        props = tool_schema.get("parameters", {}).get("properties", {})
+        
+        missing_reqs = [r for r in reqs if r not in args]
+        if missing_reqs:
+            logger.warning(f"Missing required parameters {missing_reqs}. Using fallback mapping.")
+            for req in missing_reqs:
+                req_lower = req.lower()
+                # 文脈を持たせるべきテキスト系引数にはアシスタントの返答内容を代入
+                if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response", "command", "query"]):
+                    args[req] = assistant_content.strip()
+                else:
+                    ptype = props.get(req, {}).get("type", "string")
+                    if ptype == "array": args[req] = []
+                    elif ptype == "object": args[req] = {}
+                    elif ptype == "boolean": args[req] = False
+                    elif ptype in ["number", "integer"]: args[req] = 0
+                    else: args[req] = "undefined"
+
+        return args
 
     async def process_workflow(self, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        actor = "interlocutor"
-        workflow_steps = [{"type": "llm_chat", "model_key": "interlocutor"}]
-        logger.info(f"Selected Actor: {actor}")
-        
-        async for event in self.workflow_pipeline.process(actor, request, self, self._raw_run_workflow, workflow_steps=workflow_steps):
-            yield event
-
-    async def _raw_run_workflow(self, actor: str, request: InternalAgentRequest, **kwargs) -> AsyncGenerator[AgentEvent, None]:
-        steps = kwargs.get("workflow_steps", [])
-        final_reason = "stop"
-
-        for i, step in enumerate(steps):
-            model_key = step.get("model_key")
-            if not model_key:
-                logger.error(f"Validation Error: Step {i+1} is missing required 'model_key'.")
-                yield ErrorEvent(message=f"Step {i+1} is missing required 'model_key'.")
-                return
-
-            endpoint = getattr(self.settings.llm, f"{model_key}_endpoint", self.settings.llm.interlocutor_endpoint)
-            
-            async for event in self._call_llm(model_key, endpoint, request):
-                if isinstance(event, WorkflowFinishEvent):
-                    final_reason = event.finish_reason
-                else:
-                    yield event
-        
-        yield WorkflowFinishEvent(finish_reason=final_reason)
-
-    async def _call_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
-        processed_request = await self.llm_pipeline.pre_process(
-            request.model_copy(deep=True), self, model_key=model_key, endpoint=endpoint
-        )
-        raw_stream = self._raw_stream_llm(model_key, endpoint, processed_request)
-        async for event in self.llm_pipeline.post_process_stream(
-            raw_stream, processed_request, self, model_key=model_key, endpoint=endpoint
-        ):
-            yield event
-
-    async def _raw_stream_llm(self, model_key: str, endpoint: str, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
+        import time
+        endpoint = self.settings.llm.interlocutor_endpoint
+        model_name = self.settings.llm.models.get("interlocutor", "default")
         json_payload = request.model_dump(exclude_none=True)
-        final_finish_reason = "stop"
         
         max_retries = 1
         for attempt in range(max_retries + 1):
             try:
+                full_content = ""
+                # Step 1 & 3: LLMからストリーミングでテキスト(返答文)のみ取得
                 async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
                     if chunk.content:
+                        full_content += chunk.content
                         yield TextDeltaEvent(content=chunk.content)
-                    
-                    if chunk.tool_calls:
-                        for tc in chunk.tool_calls:
-                            func_name = tc.name
-                            args_str = tc.arguments or ""
-                            tc_id = tc.id or f"call_{tc.index}"
-                            
-                            if func_name:
-                                yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
-                            if args_str:
-                                yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
-                                
-                    if chunk.finish_reason:
-                        final_finish_reason = chunk.finish_reason
+
+                final_finish_reason = "stop"
+
+                # Step 2: ツールが提供されている場合、パイプラインを実行
+                if request.tools:
+                    available_tools_dict = {
+                        t.function.get("name"): t.function
+                        for t in request.tools
+                        if t.function and t.function.get("name")
+                    }
+                    if available_tools_dict:
+                        available_tool_names = list(available_tools_dict.keys())
+                        docs = [
+                            f"Name: {tn}. Description: {available_tools_dict[tn].get('description', 'No description provided')}"
+                            for tn in available_tool_names
+                        ]
+                        
+                        selected_tool = available_tool_names[0]
+                        reranker_client = self.mcp_clients.get("mcp-reranker")
+                        
+                        last_user_message = ""
+                        if request.messages:
+                            for msg in reversed(request.messages):
+                                if msg.role == "user":
+                                    last_user_message = msg.content or ""
+                                    break
+                        
+                        # Step 4: Rerankerにツールを選択させる
+                        query = (
+                            f"ユーザーの発言: 「{last_user_message}」\n"
+                            f"AIの返答: 「{full_content.strip()}」\n"
+                            "この返答をクライアントに返す際に使用すべき、最も適切なツールをリストから1つ選択してください。"
+                        )
+                        
+                        if reranker_client and reranker_client.session:
+                            try:
+                                result_str = await reranker_client.call_tool(
+                                    "rerank_documents", 
+                                    {"query": query, "documents": docs}
+                                )
+                                results = json.loads(result_str)
+                                if results:
+                                    best_doc = results[0]["document"]
+                                    for idx, doc_text in enumerate(docs):
+                                        if doc_text == best_doc:
+                                            selected_tool = available_tool_names[idx]
+                                            break
+                            except Exception as e:
+                                logger.error(f"Reranker error: {e}")
+
+                        # Step 5: LLMにツールの引数を生成させる
+                        tool_schema = available_tools_dict[selected_tool]
+                        args = await self._generate_tool_arguments(
+                            endpoint=endpoint,
+                            model=model_name,
+                            last_user_message=last_user_message,
+                            assistant_content=full_content,
+                            tool_name=selected_tool,
+                            tool_schema=tool_schema
+                        )
+                        
+                        self._log_to_gateway(request, query, request.tools, selected_tool, args)
+                        
+                        # Step 6: レスポンスに載せてクライアントに返却
+                        tc_id = f"call_rerank_{int(time.time())}"
+                        yield SystemToolCallEvent(index=0, id=tc_id, tool_name=selected_tool, arguments=args)
+                        final_finish_reason = "tool_calls"
 
                 yield WorkflowFinishEvent(finish_reason=final_finish_reason)
-                break  # Success, exit retry loop
+                break
             
             except Exception as e:
                 error_msg = str(e).lower()
-                # 接続エラーやタイムアウトの場合にリトライを試みる
                 if "connect" in error_msg or "timeout" in error_msg:
                     if attempt < max_retries:
-                        logger.warning(f"LLM connection error: {e}. Attempting self-healing (relaunching server)...")
+                        logger.warning(f"LLM connection error: {e}. Relaunching server...")
                         await self._launch_llm_server()
-                        await asyncio.sleep(20)  # サーバー起動待ち
+                        await asyncio.sleep(20)
                         continue
-                # リトライ上限、または対象外のエラーの場合は再送出
-                raise e
+                
+                logger.error(f"Streaming error: {e}")
+                yield ErrorEvent(message=str(e))
+                break
 
     async def shutdown(self):
         for client in self.mcp_clients.values():
