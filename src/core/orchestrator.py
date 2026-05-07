@@ -178,13 +178,13 @@ class Orchestrator:
             SystemPromptInterceptor(),
             ModelConfigurationInterceptor(),
             ToolHallucinationInterceptor(),
-            ReflectionInterceptor(),
+            ReflectionInterceptor(), # Restored: Evaluates content to trigger finish tools
             ErrorHandlingInterceptor()
         ])
 
         self.workflow_pipeline = WorkflowInterceptorPipeline([
             WorkflowLoadInterceptor(),
-            ToolFetchInterceptor(),
+            ToolFetchInterceptor(), # Restored: Fetches tools for reflection/reranking
             WorkflowExecutionInterceptor()
         ])
 
@@ -213,6 +213,11 @@ class Orchestrator:
             await client.start()
             
         # Auto-Launch LLM Server
+        await self._launch_llm_server()
+            
+        logger.info("✅ Orchestrator: Hybrid-Workflow engine ready.")
+
+    async def _launch_llm_server(self):
         try:
             launcher_client_name = self.settings.llm.launcher_client
             launcher_tool_name = self.settings.llm.launcher_tool
@@ -224,13 +229,12 @@ class Orchestrator:
                         model = self.settings.llm.models.get(key)
                         if model:
                             port = urlparse(getattr(self.settings.llm, f"{key}_endpoint")).port or 8080
+                            logger.info(f"Launching/Restarting LLM Server for {key} model: {model} on port {port}")
                             await launcher_client.call_tool(launcher_tool_name, {"model_name": model, "port": port})
                 else:
                     logger.debug(f"Launcher client '{launcher_client_name}' is missing or offline. Skipping auto-launch.")
         except Exception as e:
             logger.error(f"Auto-launch failed: {e}")
-            
-        logger.info("✅ Orchestrator: Hybrid-Workflow engine ready.")
 
     def _load_system_prompt(self) -> str:
         if self.system_prompt_path.exists():
@@ -238,11 +242,11 @@ class Orchestrator:
         return "You are CINGULATER."
 
     async def _extract_intent(self, text: str) -> str:
-        # 変更: 思考プロセスを出力しないようにプロンプトに制約を追加
+        """Restored: Extracted intent for Reranker evaluation."""
         prompt = (
             "Translate the following text to English, extract the core user intent, "
             "and summarize it in a short phrase (e.g., 'Asking a clarifying question', 'Completed the task'). "
-            "DO NOT output any reasoning or thought process. Output ONLY the summary phrase.\n\n"
+            "Output ONLY the summary phrase.\n\n"
             f"Text: {text}"
         )
         endpoint = self.settings.llm.interlocutor_endpoint
@@ -250,9 +254,9 @@ class Orchestrator:
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 10240,
             "temperature": 0.0,
-            "stream": False,
-            "max_tokens": 10240
+            "stream": False
         }
         
         try:
@@ -264,9 +268,6 @@ class Orchestrator:
                     logger.debug(f"[Intent Extraction] Original -> Intent: {content}")
                     return content
             logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
-        except httpx.TimeoutException as e:
-            # 変更: タイムアウトを補足
-            logger.warning(f"Intent extraction timed out: {e}")
         except Exception as e:
             # 変更: その他例外のスタックトレース出力
             logger.exception("Intent extraction error:")
@@ -316,32 +317,41 @@ class Orchestrator:
         json_payload = request.model_dump(exclude_none=True)
         final_finish_reason = "stop"
         
-        try:
-            async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
-                if chunk.content:
-                    yield TextDeltaEvent(content=chunk.content)
-                
-                if chunk.tool_calls:
-                    for tc in chunk.tool_calls:
-                        func_name = tc.name
-                        args_str = tc.arguments or ""
-                        tc_id = tc.id or f"call_{tc.index}"
-                        
-                        if func_name:
-                            yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
-                        if args_str:
-                            yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
+        max_retries = 1
+        for attempt in range(max_retries + 1):
+            try:
+                async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
+                    if chunk.content:
+                        yield TextDeltaEvent(content=chunk.content)
+                    
+                    if chunk.tool_calls:
+                        for tc in chunk.tool_calls:
+                            func_name = tc.name
+                            args_str = tc.arguments or ""
+                            tc_id = tc.id or f"call_{tc.index}"
                             
-                if chunk.finish_reason:
-                    final_finish_reason = chunk.finish_reason
+                            if func_name:
+                                yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
+                            if args_str:
+                                yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
+                                
+                    if chunk.finish_reason:
+                        final_finish_reason = chunk.finish_reason
 
-            yield WorkflowFinishEvent(finish_reason=final_finish_reason)
-
-        except httpx.TimeoutException as e:
-            # 変更: LLMがタイムアウトした際、エラーにせずユーザーに通知してストリームを閉じる
-            logger.warning(f"[{model_key}] LLM timeout occurred: {e}")
-            yield TextDeltaEvent(content="\n\n[システム通知: LLMの推論がタイムアウトしました。コンテキストが長すぎる可能性があります。処理をここで一旦区切りますか？]")
-            yield WorkflowFinishEvent(finish_reason="length")
+                yield WorkflowFinishEvent(finish_reason=final_finish_reason)
+                break  # Success, exit retry loop
+            
+            except Exception as e:
+                error_msg = str(e).lower()
+                # 接続エラーやタイムアウトの場合にリトライを試みる
+                if "connect" in error_msg or "timeout" in error_msg:
+                    if attempt < max_retries:
+                        logger.warning(f"LLM connection error: {e}. Attempting self-healing (relaunching server)...")
+                        await self._launch_llm_server()
+                        await asyncio.sleep(2)  # サーバー起動待ち
+                        continue
+                # リトライ上限、または対象外のエラーの場合は再送出
+                raise e
 
     async def shutdown(self):
         for client in self.mcp_clients.values():
