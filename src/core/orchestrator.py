@@ -255,22 +255,33 @@ class Orchestrator:
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 10240,
+            "max_tokens": 10240, # CoTモデルなどを考慮して大きなサイズを維持
             "temperature": 0.0,
             "stream": False
         }
         
-        try:
-            resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                if content:
-                    logger.debug(f"[Intent Extraction] Original -> Intent: {content}")
-                    return content
-            logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
-        except Exception as e:
-            logger.exception("Intent extraction error:")
+        max_retries = 1
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if content:
+                        logger.debug(f"[Intent Extraction] Original -> Intent: {content}")
+                        return content
+                logger.warning(f"Intent extraction failed with status {resp.status_code}: {resp.text}")
+                break # ステータスコードエラーの場合はリトライしない
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "connect" in error_msg or "timeout" in error_msg:
+                    if attempt < max_retries:
+                        logger.warning(f"Intent extraction LLM connection error: {e}. Attempting self-healing (relaunching server)...")
+                        await self._launch_llm_server()
+                        await asyncio.sleep(20)  # サーバー起動待ち
+                        continue
+                logger.exception("Intent extraction error:")
+                break
             
         return "Unknown intent"
 
@@ -348,7 +359,7 @@ class Orchestrator:
                     if attempt < max_retries:
                         logger.warning(f"LLM connection error: {e}. Attempting self-healing (relaunching server)...")
                         await self._launch_llm_server()
-                        await asyncio.sleep(20)  # サーバー起動待ち (変更: 2秒から20秒へ延長)
+                        await asyncio.sleep(20)  # サーバー起動待ち
                         continue
                 # リトライ上限、または対象外のエラーの場合は再送出
                 raise e

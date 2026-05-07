@@ -25,7 +25,7 @@ from core.events import (
 
 orchestrator: Optional[Orchestrator] = None
 chat_lock: Optional[asyncio.Lock] = None
-KEEP_ALIVE_INTERVAL = 15.0  # 追加: Keep-Aliveの送信間隔
+KEEP_ALIVE_INTERVAL = 2.0  # 修正: クライアントのタイムアウトを防ぐため2秒ごとにPingを送信
 
 # --- OpenAI Specifications ---
 class FunctionCall(BaseModel):
@@ -207,6 +207,8 @@ async def chat_completions(request: ChatCompletionRequest):
                                 pending_task = None  # 次のイベント取得に向けてリセット
                             except StopAsyncIteration:
                                 break
+                            except asyncio.CancelledError:
+                                raise
                             except Exception as e:
                                 raise e
                         else:
@@ -290,9 +292,17 @@ async def chat_completions(request: ChatCompletionRequest):
                             yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                             
                         elif isinstance(event, WorkflowFinishEvent):
-                            chunk["choices"] = [{"index": 0, "delta": {}, "finish_reason": event.finish_reason}]
+                            # 修正: 何も出力されていない場合は空のroleを補完してエラーを防ぐ
+                            delta = {}
+                            if is_first_chunk:
+                                delta["role"] = "assistant"
+                                is_first_chunk = False
+                            chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": event.finish_reason}]
                             yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
 
+                except asyncio.CancelledError:
+                    logger.warning("Streaming cancelled by client.")
+                    raise
                 except Exception as e:
                     logger.error(f"Streaming error: {e}")
                     delta = {"content": f"Internal Server Error: {e}"}
@@ -307,11 +317,19 @@ async def chat_completions(request: ChatCompletionRequest):
                         "model": model_name,
                         "choices": [{"index": 0, "delta": delta, "finish_reason": "error"}]
                     }
-                    yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                    try:
+                        yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
+                    except (asyncio.CancelledError, GeneratorExit):
+                        pass
                 finally:
                     if pending_task and not pending_task.done():
                         pending_task.cancel()
-                    yield "data: [DONE]\n\n"
+                    
+                    # 修正: クライアント切断時に GeneratorExit が発生するのを安全に処理する
+                    try:
+                        yield "data: [DONE]\n\n"
+                    except (asyncio.CancelledError, GeneratorExit):
+                        pass
                 
         return StreamingResponse(generate(), media_type="text/event-stream")
 

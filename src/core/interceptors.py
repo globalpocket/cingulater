@@ -217,11 +217,18 @@ class ReflectionInterceptor(BaseInterceptor):
 
         logger.info("[BROWNIE DEBUG] --- Reflection Phase Started (Using Reranker) ---")
         
-        intent = await orchestrator._extract_intent(full_content[-1000:])
+        # 1000文字から500文字に削減し、LLMへの入力負荷を軽減
+        intent = await orchestrator._extract_intent(full_content[-500:])
         docs = []
         for tn in available_tool_names:
             desc = available_tools_dict[tn].get("description", "No description provided")
             docs.append(desc)
+            
+        # 意図抽出に失敗した場合は、フォールバックとして固定のプロンプトをRerankerに渡す
+        query_for_reranker = intent
+        if intent == "Unknown intent":
+            logger.warning("[BROWNIE DEBUG] Intent extraction failed. Using fallback prompt for Reranker.")
+            query_for_reranker = "Finish the task, conclude the conversation, or provide a general response."
         
         selected_tool = available_tool_names[0]
         try:
@@ -229,14 +236,14 @@ class ReflectionInterceptor(BaseInterceptor):
             if reranker_client:
                 result_str = await reranker_client.call_tool(
                     "rerank_documents", 
-                    {"query": intent, "documents": docs}
+                    {"query": query_for_reranker, "documents": docs}
                 )
                 results = json.loads(result_str)
                 if results:
                     best_doc = results[0]["document"]
                     best_idx = docs.index(best_doc)
                     selected_tool = available_tool_names[best_idx]
-                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Intent: {intent})")
+                    logger.info(f"[BROWNIE DEBUG] Reflection selected tool '{selected_tool}' with score {results[0]['score']:.4f} (Query: {query_for_reranker})")
             else:
                 logger.warning("[BROWNIE DEBUG] mcp-reranker client not connected. Using default first tool.")
         except Exception as e:
