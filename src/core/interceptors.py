@@ -194,7 +194,7 @@ class ReflectionInterceptor(BaseInterceptor):
                 has_tool_calls = True
                 yield event
             elif isinstance(event, WorkflowFinishEvent):
-                if not has_tool_calls and request.tools and full_content:
+                if not has_tool_calls and request.tools:
                     reflection_event = await self._evaluate(full_content, request.tools, orchestrator)
                     if reflection_event:
                         yield reflection_event

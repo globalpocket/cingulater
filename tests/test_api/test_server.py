@@ -201,7 +201,7 @@ def test_chat_completions_error_response(test_client, mock_workflow_factory):
     
     assert response.status_code == 200
     assert "ERROR: something went wrong" in response.json()["choices"][0]["message"]["content"]
-    assert response.json()["choices"][0]["finish_reason"] == "error"
+    assert response.json()["choices"][0]["finish_reason"] == "stop"
 
 def test_chat_completions_validation_error(test_client):
     client, _ = test_client

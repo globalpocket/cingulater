@@ -288,7 +288,7 @@ async def chat_completions(request: ChatCompletionRequest):
                             if is_first_chunk:
                                 delta["role"] = "assistant"
                                 is_first_chunk = False
-                            chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": "error"}]
+                            chunk["choices"] = [{"index": 0, "delta": delta, "finish_reason": None}]
                             yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                             
                         elif isinstance(event, WorkflowFinishEvent):
@@ -315,7 +315,7 @@ async def chat_completions(request: ChatCompletionRequest):
                         "object": "chat.completion.chunk",
                         "created": int(time.time()),
                         "model": model_name,
-                        "choices": [{"index": 0, "delta": delta, "finish_reason": "error"}]
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": "stop"}]
                     }
                     try:
                         yield f"data: {json.dumps(err_chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
@@ -366,7 +366,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     elif isinstance(event, ErrorEvent):
                         has_error = True
                         error_message = event.message
-                        finish_reason = "error"
+                        finish_reason = "stop"
             except Exception as e:
                 logger.error(f"Error processing workflow: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
