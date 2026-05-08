@@ -1,0 +1,37 @@
+# ==========================================
+# .rooignore - RooCode Context Ignore Config
+# ==========================================
+
+# 1. ログファイル (重要: コンテキスト肥大化と無限ループの防止)
+*.log
+logs/
+gateway.log
+
+# 2. Python 仮想環境・キャッシュ (ソースコードではないため除外)
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 3. テスト・Lintツール等のキャッシュ
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 4. ビルド・パッケージアーティファクト
+build/
+dist/
+*.egg-info/
+*.egg
+
+# 5. バージョン管理・OS・IDE固有ファイル
+.git/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

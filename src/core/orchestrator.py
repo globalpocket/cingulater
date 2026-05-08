@@ -345,6 +345,10 @@ class Orchestrator:
                     if chunk.finish_reason:
                         final_finish_reason = chunk.finish_reason
 
+                # ツール呼び出しがあったにもかかわらず、ローカルLLMが stop を返した場合は仕様に合わせて上書きする
+                if has_tool_calls and final_finish_reason == "stop":
+                    final_finish_reason = "tool_calls"
+
                 # 変更: LLMからのレスポンスをログに出力
                 response_for_log = full_content
                 if has_tool_calls:
