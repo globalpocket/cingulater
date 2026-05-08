@@ -21,6 +21,8 @@ from core.schema import InternalAgentRequest
 from core.events import (
     AgentEvent,
     TextDeltaEvent,
+    ToolCallStartEvent,
+    ToolCallDeltaEvent,
     SystemToolCallEvent,
     WorkflowFinishEvent,
     ErrorEvent
@@ -42,14 +44,9 @@ class LLMSettings(BaseModel):
     launcher_client: Optional[str] = Field(default="mlx-launcher")
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
-class WorkspaceSettings(BaseModel):
-    sandbox_user: str = Field(default="cingulater_sandbox")
-    base_path: str = Field(default="./workspace")
-
 class Settings(BaseSettings):
     agent: AgentSettings = Field(default_factory=AgentSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
-    workspace: WorkspaceSettings = Field(default_factory=WorkspaceSettings)
 
     @classmethod
     def load(cls, config_path: str) -> "Settings":
@@ -241,20 +238,19 @@ class Orchestrator:
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 8192,  # 空文字返却を防ぐために必ず指定
+            "max_tokens": 8192,
             "temperature": 0.0,
             "stream": False
         }
         
         args = {}
         try:
-            resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload, timeout=60)
+            resp = await self.http_client.post(f"{endpoint}/chat/completions", json=payload, timeout=self.settings.llm.timeout_sec)
             if resp.status_code == 200:
                 data = resp.json()
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
                 content = content.strip()
                 
-                # ブロックの切り出し（LLMが余計な文字を含めた場合の対策）
                 if "{" in content and "}" in content:
                     start = content.find("{")
                     end = content.rfind("}") + 1
@@ -270,8 +266,6 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Error generating tool args: {e}")
             
-        # --- 鉄壁のフォールバック処理 ---
-        # 必須パラメータが欠落している場合は、システム側で安全に補完する
         reqs = tool_schema.get("parameters", {}).get("required", [])
         props = tool_schema.get("parameters", {}).get("properties", {})
         
@@ -280,7 +274,6 @@ class Orchestrator:
             logger.warning(f"Missing required parameters {missing_reqs}. Using fallback mapping.")
             for req in missing_reqs:
                 req_lower = req.lower()
-                # 文脈を持たせるべきテキスト系引数にはアシスタントの返答内容を代入
                 if any(k in req_lower for k in ["question", "ask", "result", "summary", "message", "text", "content", "response", "command", "query"]):
                     args[req] = assistant_content.strip()
                 else:
@@ -296,23 +289,39 @@ class Orchestrator:
     async def process_workflow(self, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
         import time
         endpoint = self.settings.llm.interlocutor_endpoint
-        model_name = self.settings.llm.models.get("interlocutor", "default")
+        model_name = request.model # リクエストで指定されたモデル名を利用（パススルー）
+        
+        # Pydanticから辞書に変換。この段階でtemperatureなど設定値が漏れなく含まれます
         json_payload = request.model_dump(exclude_none=True)
         
-        max_retries = 1
+        max_retries = self.settings.agent.max_retries
         for attempt in range(max_retries + 1):
             try:
                 full_content = ""
-                # Step 1 & 3: LLMからストリーミングでテキスト(返答文)のみ取得
+                has_tool_calls = False
+                final_finish_reason = "stop"
+                
                 async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
                     if chunk.content:
                         full_content += chunk.content
                         yield TextDeltaEvent(content=chunk.content)
+                    
+                    if chunk.tool_calls:
+                        has_tool_calls = True
+                        for tc in chunk.tool_calls:
+                            func_name = tc.name
+                            args_str = tc.arguments or ""
+                            tc_id = tc.id or f"call_{tc.index}"
+                            
+                            if func_name:
+                                yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
+                            if args_str:
+                                yield ToolCallDeltaEvent(index=tc.index, arguments=args_str)
+                    
+                    if chunk.finish_reason:
+                        final_finish_reason = chunk.finish_reason
 
-                final_finish_reason = "stop"
-
-                # Step 2: ツールが提供されている場合、パイプラインを実行
-                if request.tools:
+                if request.tools and not has_tool_calls:
                     available_tools_dict = {
                         t.function.get("name"): t.function
                         for t in request.tools
@@ -335,7 +344,6 @@ class Orchestrator:
                                     last_user_message = msg.content or ""
                                     break
                         
-                        # Step 4: Rerankerにツールを選択させる
                         query = (
                             f"ユーザーの発言: 「{last_user_message}」\n"
                             f"AIの返答: 「{full_content.strip()}」\n"
@@ -358,7 +366,6 @@ class Orchestrator:
                             except Exception as e:
                                 logger.error(f"Reranker error: {e}")
 
-                        # Step 5: LLMにツールの引数を生成させる
                         tool_schema = available_tools_dict[selected_tool]
                         args = await self._generate_tool_arguments(
                             endpoint=endpoint,
@@ -371,7 +378,6 @@ class Orchestrator:
                         
                         self._log_to_gateway(request, query, request.tools, selected_tool, args)
                         
-                        # Step 6: レスポンスに載せてクライアントに返却
                         tc_id = f"call_rerank_{int(time.time())}"
                         yield SystemToolCallEvent(index=0, id=tc_id, tool_name=selected_tool, arguments=args)
                         final_finish_reason = "tool_calls"
