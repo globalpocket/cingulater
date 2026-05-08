@@ -54,6 +54,7 @@ def kill_all_cingulater():
                 parts = line.strip().split()
                 if not parts: continue
                 pid = int(parts[0])
+        
                 if pid != os.getpid():
                     try:
                         os.kill(pid, signal.SIGKILL)
@@ -104,7 +105,7 @@ def start_engine_server():
     env["PYTHONPATH"] = base_dir
 
     process = subprocess.Popen(
-        [venv_python, "src/main.py"],
+        [venv_python, "-u", "src/main.py"],  # 変更: -u を追加してリアルタイム出力（アンバッファリング）にする
         start_new_session=True,
         stdout=engine_log,
         stderr=engine_log,
@@ -160,8 +161,8 @@ def run_command(args):
         if pid:
             print(f"Stopping Cingulater system (PID: {pid})...")
             try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-                time.sleep(2)
+                 os.killpg(os.getpgid(pid), signal.SIGTERM)
+                 time.sleep(2)
             except: pass
         
         kill_all_cingulater()
