@@ -154,6 +154,25 @@ class Orchestrator:
             except Exception as e:
                 logger.error(f"Failed to load mcp_config.json: {e}")
 
+    def _log_llm_interaction(self, request_payload: dict, response_content: str, error: Optional[str] = None):
+        """LLMとの通信内容（リクエストとレスポンス）をgateway.logにリアルタイムで記録する"""
+        try:
+            self.gateway_log_path.parent.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.datetime.now().isoformat()
+            with open(self.gateway_log_path, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] === LLM INTERACTION ===\n")
+                f.write("--- REQUEST PAYLOAD ---\n")
+                f.write(json.dumps(request_payload, ensure_ascii=False, indent=2) + "\n\n")
+                f.write("--- LLM RESPONSE ---\n")
+                if error:
+                    f.write(f"ERROR: {error}\n")
+                else:
+                    f.write(response_content + "\n")
+                f.write("=========================================\n\n")
+                f.flush()  # 変更: バッファせずに即時書き込み
+        except Exception as e:
+            logger.error(f"Failed to write LLM interaction log: {e}")
+
     def _log_to_gateway(self, request: InternalAgentRequest, reranker_query: str, available_tools: list, selected_tool: str, tool_args: dict):
         try:
             self.gateway_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +203,7 @@ class Orchestrator:
                 f.write(f"--- SELECTED TOOL ---\n{selected_tool}\n\n")
                 f.write(f"--- GENERATED TOOL ARGS ---\n{json.dumps(tool_args, ensure_ascii=False, indent=2)}\n")
                 f.write("=========================================\n\n")
+                f.flush()  # 変更: バッファせずに即時書き込み
         except Exception as e:
             logger.error(f"Failed to write gateway log: {e}")
 
@@ -300,6 +320,7 @@ class Orchestrator:
                 full_content = ""
                 has_tool_calls = False
                 final_finish_reason = "stop"
+                tool_calls_log = []  # 変更: ログ出力用にツールコールの情報を保持
                 
                 async for chunk in self.llm_client.stream_chat(endpoint, json_payload, self.settings.llm.timeout_sec):
                     if chunk.content:
@@ -313,6 +334,9 @@ class Orchestrator:
                             args_str = tc.arguments or ""
                             tc_id = tc.id or f"call_{tc.index}"
                             
+                            # 変更: ログ用に記録
+                            tool_calls_log.append({"id": tc_id, "name": func_name, "arguments": args_str})
+
                             if func_name:
                                 yield ToolCallStartEvent(index=tc.index, id=tc_id, tool_name=func_name)
                             if args_str:
@@ -320,6 +344,13 @@ class Orchestrator:
                     
                     if chunk.finish_reason:
                         final_finish_reason = chunk.finish_reason
+
+                # 変更: LLMからのレスポンスをログに出力
+                response_for_log = full_content
+                if has_tool_calls:
+                    response_for_log += f"\n[Tool Calls]: {json.dumps(tool_calls_log, ensure_ascii=False)}"
+                
+                self._log_llm_interaction(json_payload, response_for_log)
 
                 if request.tools and not has_tool_calls:
                     available_tools_dict = {
@@ -395,6 +426,7 @@ class Orchestrator:
                         continue
                 
                 logger.error(f"Streaming error: {e}")
+                self._log_llm_interaction(json_payload, "", error=str(e))  # 変更: エラー発生時もログを出力
                 yield ErrorEvent(message=str(e))
                 break
 
