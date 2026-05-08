@@ -25,7 +25,7 @@ from core.events import (
 
 orchestrator: Optional[Orchestrator] = None
 chat_lock: Optional[asyncio.Lock] = None
-KEEP_ALIVE_INTERVAL = 2.0  # 修正: クライアントのタイムアウトを防ぐため2秒ごとにPingを送信
+KEEP_ALIVE_INTERVAL = 2.0
 
 # --- OpenAI Specifications ---
 class FunctionCall(BaseModel):
@@ -53,7 +53,20 @@ class ChatCompletionRequest(BaseModel):
     messages: List[ChatMessage]
     tools: Optional[List[Dict[str, Any]]] = None
     stream: bool = False
+    
+    # クライアントからの推論パラメータ
+    system_message: Optional[str] = None
+    user_message: Optional[str] = None
+    developer_message: Optional[str] = None
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
     max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
+    response_format: Optional[Dict[str, Any]] = None
+    reasoning_effort: Optional[str] = None
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    parallel_tool: Optional[bool] = None
 
     model_config = {
         "extra": "allow"
@@ -75,7 +88,6 @@ class ChatCompletionResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global orchestrator, chat_lock
-    # イベントループ内で初期化するためにlifespanでLockを生成する
     chat_lock = asyncio.Lock()
     
     config_path = os.getenv("CINGULATER_CONFIG", "config.yaml")
@@ -110,14 +122,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 def _ensure_openai_id(internal_id: str) -> str:
-    """クライアントが期待する厳格なOpenAI IDフォーマット (call_ + 24文字) をサーバー層で保証する"""
     if internal_id and internal_id.startswith("call_") and len(internal_id) >= 20:
         return internal_id
     return f"call_{uuid.uuid4().hex[:24]}"
 
 @asynccontextmanager
 async def _optional_task_lock():
-    """設定に応じてタスクを直列化する条件付きロック"""
     if orchestrator and getattr(orchestrator.settings.agent, "single_task_mode", False) and chat_lock:
         logger.debug("[Concurrency] single_task_mode is ON. Acquiring lock...")
         async with chat_lock:
@@ -167,7 +177,18 @@ async def chat_completions(request: ChatCompletionRequest):
         messages=internal_messages,
         tools=internal_tools,
         stream=request.stream,
-        max_tokens=request.max_tokens if request.max_tokens is not None else 8192,
+        system_message=request.system_message,
+        user_message=request.user_message,
+        developer_message=request.developer_message,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_tokens=request.max_tokens,
+        max_completion_tokens=request.max_completion_tokens,
+        response_format=request.response_format,
+        reasoning_effort=request.reasoning_effort,
+        frequency_penalty=request.frequency_penalty,
+        presence_penalty=request.presence_penalty,
+        parallel_tool=request.parallel_tool,
         **(request.model_extra or {})
     )
     
@@ -175,7 +196,6 @@ async def chat_completions(request: ChatCompletionRequest):
 
     if request.stream:
         async def generate():
-            # stream全体のライフサイクルをロックで保護する
             async with _optional_task_lock():
                 pending_task = None
                 try:
@@ -187,7 +207,6 @@ async def chat_completions(request: ChatCompletionRequest):
                     }
                     
                     is_first_chunk = True
-                    
                     workflow_iterator = aiter(orchestrator.process_workflow(internal_req))
                     
                     async def _get_next(it):
@@ -195,16 +214,14 @@ async def chat_completions(request: ChatCompletionRequest):
 
                     while True:
                         if pending_task is None:
-                            # タスク化してキャンセルを防ぐ
                             pending_task = asyncio.create_task(_get_next(workflow_iterator))
                         
-                        # タスクが完了するか、タイムアウトになるまで待つ
                         done, pending = await asyncio.wait([pending_task], timeout=KEEP_ALIVE_INTERVAL)
                         
                         if pending_task in done:
                             try:
                                 event = pending_task.result()
-                                pending_task = None  # 次のイベント取得に向けてリセット
+                                pending_task = None
                             except StopAsyncIteration:
                                 break
                             except asyncio.CancelledError:
@@ -212,7 +229,6 @@ async def chat_completions(request: ChatCompletionRequest):
                             except Exception as e:
                                 raise e
                         else:
-                            # タイムアウトした場合は Keep-Alive を送って次のループへ
                             yield ": keep-alive\n\n"
                             continue
                         
@@ -292,7 +308,6 @@ async def chat_completions(request: ChatCompletionRequest):
                             yield f"data: {json.dumps(chunk, ensure_ascii=False, separators=(',', ':'))}\n\n"
                             
                         elif isinstance(event, WorkflowFinishEvent):
-                            # 修正: 何も出力されていない場合は空のroleを補完してエラーを防ぐ
                             delta = {}
                             if is_first_chunk:
                                 delta["role"] = "assistant"
@@ -325,7 +340,6 @@ async def chat_completions(request: ChatCompletionRequest):
                     if pending_task and not pending_task.done():
                         pending_task.cancel()
                     
-                    # 修正: クライアント切断時に GeneratorExit が発生するのを安全に処理する
                     try:
                         yield "data: [DONE]\n\n"
                     except (asyncio.CancelledError, GeneratorExit):
@@ -334,7 +348,6 @@ async def chat_completions(request: ChatCompletionRequest):
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     else:
-        # 非ストリーム処理時もロックで保護する
         async with _optional_task_lock():
             full_content = ""
             tool_calls_dict = {}
