@@ -38,9 +38,8 @@ class AgentSettings(BaseModel):
     single_task_mode: bool = Field(default=False)
 
 class LLMSettings(BaseModel):
-    models: dict[str, str] = Field(default_factory=dict)
     interlocutor_endpoint: str = Field(default="http://localhost:8080/v1")
-    timeout_sec: int = Field(default=120)
+    timeout_sec: int = Field(default=300)
     launcher_client: Optional[str] = Field(default="mlx-launcher")
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
@@ -138,6 +137,7 @@ class Orchestrator:
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
         self.llm_client = OpenAILLMClient()
         self.mcp_clients: Dict[str, GatewayClient] = {}
+        self.current_loaded_model: Optional[str] = None
         
         if self.mcp_config_path.exists():
             try:
@@ -192,27 +192,26 @@ class Orchestrator:
             logger.info(f"Starting MCP Client: {name}")
             await client.start()
             
-        await self._launch_llm_server()
         logger.info("✅ Orchestrator: Prompt Chaining engine ready.")
 
-    async def _launch_llm_server(self):
+    def _parse_json_safe(self, text: str) -> Any:
+        if not text:
+            return None
+        text = text.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
         try:
-            launcher_client_name = self.settings.llm.launcher_client
-            launcher_tool_name = self.settings.llm.launcher_tool
-            
-            if launcher_client_name and launcher_tool_name:
-                launcher_client = self.mcp_clients.get(launcher_client_name)
-                if launcher_client and launcher_client.session:
-                    for key in ["interlocutor"]:
-                        model = self.settings.llm.models.get(key)
-                        if model:
-                            port = urlparse(getattr(self.settings.llm, f"{key}_endpoint")).port or 8080
-                            logger.info(f"Launching/Restarting LLM Server for {key} model: {model} on port {port}")
-                            await launcher_client.call_tool(launcher_tool_name, {"model_name": model, "port": port})
-                else:
-                    logger.debug(f"Launcher client '{launcher_client_name}' is missing or offline.")
-        except Exception as e:
-            logger.error(f"Auto-launch failed: {e}")
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            if text.lower() == "true": return True
+            if text.lower() == "false": return False
+            logger.debug(f"JSON Parse Error: {e} - Raw string: {text[:100]}")
+            return None
 
     async def _generate_tool_arguments(self, endpoint: str, model: str, last_user_message: str, assistant_content: str, tool_name: str, tool_schema: dict) -> dict:
         prompt = f"""
@@ -249,18 +248,11 @@ class Orchestrator:
             if resp.status_code == 200:
                 data = resp.json()
                 content = data.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-                content = content.strip()
-                
-                if "{" in content and "}" in content:
-                    start = content.find("{")
-                    end = content.rfind("}") + 1
-                    json_str = content[start:end]
-                    try:
-                        args = json.loads(json_str)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"JSON Decode Error in args generation: {e}\nContent was: {content}")
+                parsed = self._parse_json_safe(content)
+                if isinstance(parsed, dict):
+                    args = parsed
                 else:
-                    logger.error(f"No JSON object found in args generation.\nContent was: {content}")
+                    logger.error(f"No valid JSON object found in args generation.\nContent was: {content}")
             else:
                 logger.error(f"HTTP Error in args generation: {resp.status_code} - {resp.text}")
         except Exception as e:
@@ -289,12 +281,77 @@ class Orchestrator:
     async def process_workflow(self, request: InternalAgentRequest) -> AsyncGenerator[AgentEvent, None]:
         import time
         endpoint = self.settings.llm.interlocutor_endpoint
-        model_name = request.model # リクエストで指定されたモデル名を利用（パススルー）
+        model_name = request.model
         
-        # Pydanticから辞書に変換。この段階でtemperatureなど設定値が漏れなく含まれます
+        launcher_client_name = self.settings.llm.launcher_client
+        launcher_client = self.mcp_clients.get(launcher_client_name) if launcher_client_name else None
+
+        if launcher_client and launcher_client.session:
+            try:
+                # 1. 現在稼働中のサーバーを取得して確認
+                running_str = await launcher_client.call_tool("list_running_servers", {})
+                running_servers = self._parse_json_safe(running_str)
+                if not isinstance(running_servers, list):
+                    running_servers = []
+                
+                is_running = any(
+                    isinstance(s, dict) and (s.get("model") == model_name or s.get("modelId") == model_name)
+                    for s in running_servers
+                )
+                
+                if not is_running:
+                    # 2. モデルが存在するか検索で確認
+                    search_str = await launcher_client.call_tool("search_mlx_models", {"search_query": model_name, "limit": 10})
+                    search_results = self._parse_json_safe(search_str)
+                    if not isinstance(search_results, list):
+                        search_results = []
+                    
+                    target_info = next((m for m in search_results if isinstance(m, dict) and (m.get("modelId") == model_name or m.get("id") == model_name)), None)
+                    
+                    if not target_info and search_results:
+                        # [要件1] クライアントから指定されたモデルが存在しない場合
+                        yield TextDeltaEvent(content=f"エラー: 指定されたモデル '{model_name}' はHugging Face上に存在しないか、MLXフォーマットではありません。正しいモデル名(ID)を指定してください。")
+                        yield WorkflowFinishEvent(finish_reason="stop")
+                        return
+                    
+                    is_cached = False
+                    if target_info:
+                        is_cached = target_info.get("cached", False) or target_info.get("is_cached", False) or target_info.get("downloaded", False)
+                    
+                    if not is_cached and target_info:
+                        # [要件2] モデルは存在するが未ダウンロードの場合
+                        yield TextDeltaEvent(content=f"モデル '{model_name}' は未ダウンロードです。これからダウンロードを開始します...\n")
+                        try:
+                            await launcher_client.call_tool("download_model", {"model_name": model_name})
+                            yield TextDeltaEvent(content=f"\nモデル '{model_name}' のダウンロードが完了しました！起動準備をします...\n")
+                        except Exception as e:
+                            logger.warning(f"Download model tool returned error or warning: {e}")
+                            yield TextDeltaEvent(content=f"\nダウンロード中に警告が発生しましたが、起動を試みます...\n")
+                        
+                    # [要件3] モデルがローカルに存在する場合 (起動する)
+                    port = urlparse(endpoint).port or 8080
+                    logger.info(f"Launching LLM Server for model: {model_name} on port {port}")
+                    try:
+                        await launcher_client.call_tool("launch_llm_server", {"port": port, "model_name": model_name})
+                    except Exception as e_launch:
+                        logger.debug(f"launch_llm_server failed ({e_launch}), trying restart_llm_server...")
+                        await launcher_client.call_tool("restart_llm_server", {"port": port, "model_name": model_name})
+                        
+                    self.current_loaded_model = model_name
+                    await asyncio.sleep(5)  # 起動完了バッファ
+                else:
+                    self.current_loaded_model = model_name
+                    
+            except Exception as e:
+                logger.error(f"Failed to check/launch model via MCP tool: {e}")
+                # 万が一ツール呼び出しに失敗した場合もフォールバックとして推論フローの続行を試みる
+        else:
+            logger.warning(f"Launcher client '{launcher_client_name}' is not available. Skipping pre-flight checks.")
+
+        # --- 以降、通常のワークフロー（LLMからのストリーミング推論） ---
         json_payload = request.model_dump(exclude_none=True)
-        
         max_retries = self.settings.agent.max_retries
+        
         for attempt in range(max_retries + 1):
             try:
                 full_content = ""
@@ -356,9 +413,9 @@ class Orchestrator:
                                     "rerank_documents", 
                                     {"query": query, "documents": docs}
                                 )
-                                results = json.loads(result_str)
-                                if results:
-                                    best_doc = results[0]["document"]
+                                results = self._parse_json_safe(result_str)
+                                if isinstance(results, list) and results:
+                                    best_doc = results[0].get("document")
                                     for idx, doc_text in enumerate(docs):
                                         if doc_text == best_doc:
                                             selected_tool = available_tool_names[idx]
@@ -389,8 +446,16 @@ class Orchestrator:
                 error_msg = str(e).lower()
                 if "connect" in error_msg or "timeout" in error_msg:
                     if attempt < max_retries:
-                        logger.warning(f"LLM connection error: {e}. Relaunching server...")
-                        await self._launch_llm_server()
+                        logger.warning(f"LLM connection error: {e}. Relaunching server via MCP tool...")
+                        if launcher_client and launcher_client.session:
+                            port = urlparse(endpoint).port or 8080
+                            try:
+                                await launcher_client.call_tool("launch_llm_server", {"port": port, "model_name": model_name})
+                            except Exception:
+                                try:
+                                    await launcher_client.call_tool("restart_llm_server", {"port": port, "model_name": model_name})
+                                except Exception as e_restart:
+                                    logger.error(f"Restart failed: {e_restart}")
                         await asyncio.sleep(20)
                         continue
                 
