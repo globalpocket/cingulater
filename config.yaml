@@ -21,7 +21,3 @@ llm:
   # 以下に接続先のクライアント名とツール名を指定してください。
   launcher_client: "mlx-launcher"
   launcher_tool: "launch_llm_server"
-
-workspace:
-  sandbox_user: "cingulater_sandbox"
-  base_path: "./workspace"
