@@ -1,5 +1,5 @@
 # src/core/schema.py
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 class InternalFunctionCall(BaseModel):
@@ -13,7 +13,7 @@ class InternalToolCall(BaseModel):
 
 class InternalMessage(BaseModel):
     role: str
-    content: Optional[Union[str, List[Dict[str, Any]]]] = None
+    content: Optional[str] = None
     tool_calls: Optional[List[InternalToolCall]] = None
     name: Optional[str] = None
     tool_call_id: Optional[str] = None
@@ -27,21 +27,9 @@ class InternalAgentRequest(BaseModel):
     messages: List[InternalMessage]
     tools: Optional[List[InternalTool]] = None
     stream: bool = False
-    
-    # クライアント指定の推論パラメータを透過的に受け取るための定義
-    system_message: Optional[str] = None
-    user_message: Optional[str] = None
-    developer_message: Optional[str] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    max_tokens: Optional[int] = None
-    max_completion_tokens: Optional[int] = None
-    response_format: Optional[Dict[str, Any]] = None
-    reasoning_effort: Optional[str] = None
-    frequency_penalty: Optional[float] = None
-    presence_penalty: Optional[float] = None
-    parallel_tool: Optional[bool] = None
+    max_tokens: int = Field(default=8192)
 
     model_config = {
+        # Orchestratorが利用する可能性のある、OpenAI固有の追加パラメータ（temperatureなど）を保持できるように許容する
         "extra": "allow"
     }
