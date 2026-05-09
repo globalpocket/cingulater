@@ -44,9 +44,16 @@ class LLMSettings(BaseModel):
     launcher_client: Optional[str] = Field(default="mlx-launcher")
     launcher_tool: Optional[str] = Field(default="launch_llm_server")
 
+class LoggingSettings(BaseModel):
+    enabled: bool = Field(default=True)
+    level: str = Field(default="INFO")
+    output_path: Optional[str] = Field(default="logs/cingulater.log")
+    gateway_log_path: Optional[str] = Field(default="logs/gateway.log")
+
 class Settings(BaseSettings):
     agent: AgentSettings = Field(default_factory=AgentSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     @classmethod
     def load(cls, config_path: str) -> "Settings":
@@ -133,7 +140,12 @@ class Orchestrator:
         self.settings = get_settings(config_path)
         self.project_root = Path(__file__).parent.parent.parent
         self.mcp_config_path = self.project_root / "mcp_config.json"
-        self.gateway_log_path = self.project_root / "logs" / "gateway.log"
+        
+        # ログパスを config から取得するように変更
+        if self.settings.logging.gateway_log_path:
+            self.gateway_log_path = self.project_root / self.settings.logging.gateway_log_path
+        else:
+            self.gateway_log_path = self.project_root / "logs" / "gateway.log"
         
         self.http_client = httpx.AsyncClient(timeout=self.settings.llm.timeout_sec)
         self.llm_client = OpenAILLMClient()
@@ -156,6 +168,9 @@ class Orchestrator:
 
     def _log_llm_interaction(self, request_payload: dict, response_content: str, error: Optional[str] = None):
         """LLMとの通信内容（リクエストとレスポンス）をgateway.logにリアルタイムで記録する"""
+        if not self.settings.logging.enabled:
+            return
+
         try:
             self.gateway_log_path.parent.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.datetime.now().isoformat()
@@ -169,11 +184,14 @@ class Orchestrator:
                 else:
                     f.write(response_content + "\n")
                 f.write("=========================================\n\n")
-                f.flush()  # 変更: バッファせずに即時書き込み
+                f.flush()
         except Exception as e:
             logger.error(f"Failed to write LLM interaction log: {e}")
 
     def _log_to_gateway(self, request: InternalAgentRequest, reranker_query: str, available_tools: list, selected_tool: str, tool_args: dict):
+        if not self.settings.logging.enabled:
+            return
+
         try:
             self.gateway_log_path.parent.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.datetime.now().isoformat()
@@ -203,7 +221,7 @@ class Orchestrator:
                 f.write(f"--- SELECTED TOOL ---\n{selected_tool}\n\n")
                 f.write(f"--- GENERATED TOOL ARGS ---\n{json.dumps(tool_args, ensure_ascii=False, indent=2)}\n")
                 f.write("=========================================\n\n")
-                f.flush()  # 変更: バッファせずに即時書き込み
+                f.flush()
         except Exception as e:
             logger.error(f"Failed to write gateway log: {e}")
 

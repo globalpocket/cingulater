@@ -21,3 +21,9 @@ llm:
   # 以下に接続先のクライアント名とツール名を指定してください。
   launcher_client: "mlx-launcher"
   launcher_tool: "launch_llm_server"
+
+logging:
+  enabled: false
+  level: "INFO"
+  output_path: "logs/cingulater.log"   # システムログ
+  gateway_log_path: "logs/gateway.log" # 通信履歴などのログ
