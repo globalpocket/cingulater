@@ -22,6 +22,7 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+coverage.xml
 
 # 4. ビルド・パッケージアーティファクト
 build/
